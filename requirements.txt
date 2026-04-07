@@ -1,0 +1,13 @@
+# =========================
+# FILE: requirements.txt
+# =========================
+streamlit
+pandas
+numpy
+matplotlib
+openpyxl
+fpdf
+pdfplumber
+pytesseract
+pdf2image
+reportlab

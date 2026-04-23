@@ -8,11 +8,11 @@ from analytics import (
     build_report_context,
     detect_anomalies,
     detect_duplicates,
-    detect_recurring_expenses,
     detect_saved_duplicates,
 )
 from classification import classify_transactions
 from db import (
+    DB_PATH,
     add_category,
     full_reset_database,
     get_categories,
@@ -23,16 +23,35 @@ from db import (
     reset_runtime_data,
     save_classified_transactions,
 )
-from mailer import build_email_html, get_secrets_config, maybe_auto_send_monthly_email, send_email_report
+from mailer import (
+    build_email_html,
+    get_secrets_config,
+    maybe_auto_send_monthly_email,
+    send_email_report,
+)
 from parsing import parse_csv, parse_excel, parse_pdf
-from reporting import REPORTLAB_AVAILABLE, build_csv_report, build_excel_report, build_pdf_report
-from utils import format_currency
+from reporting import (
+    REPORTLAB_AVAILABLE,
+    build_csv_report,
+    build_excel_report,
+    build_pdf_report,
+)
+from utils import (
+    format_currency,
+    normalize_description,
+    simplify_merchant,
+    extract_beneficiary,
+    infer_transaction_type,
+)
 
 st.set_page_config(page_title="CFO Financial Dashboard", layout="wide")
 init_db()
 
 st.title("CFO Financial Dashboard")
-st.caption("Controlled logic, memory, executive reporting, KPI dashboard, exports, PDF, email reporting, duplicates, and reset tools")
+st.caption(
+    "Controlled logic, memory, executive reporting, KPI dashboard, exports, "
+    "PDF, email reporting, duplicates, and reset tools"
+)
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "1. Upload & Classify",
@@ -47,7 +66,65 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.subheader("Upload CSV, Excel, or PDF statement")
 
-    uploaded_file = st.file_uploader("Choose a file", type=["csv", "xlsx", "xls", "pdf"])
+    st.markdown("### Currency Settings")
+    usd_rate = st.number_input(
+        "EUR → USD rate",
+        min_value=0.5,
+        max_value=2.0,
+        value=1.08,
+        step=0.01,
+    )
+
+    st.markdown("### Manual Transaction Entry")
+
+    with st.expander("Add transaction manually", expanded=False):
+        m_date = st.date_input("Date")
+        m_desc = st.text_input("Description")
+        m_amount = st.number_input("Amount", format="%.2f")
+        m_category = st.selectbox("Category", get_categories(), key="manual_category")
+
+        if st.button("Add Manual Transaction"):
+            norm_desc = simplify_merchant(normalize_description(m_desc))
+            beneficiary = extract_beneficiary(m_desc)
+            txn_type = infer_transaction_type(m_desc, m_amount)
+
+            if not norm_desc:
+                norm_desc = str(m_desc).upper().strip()
+
+            manual_row = {
+                "Date": str(m_date),
+                "Description": m_desc,
+                "normalized_description": norm_desc,
+                "Amount": m_amount,
+                "currency": "EUR",
+                "usd_amount": m_amount * usd_rate,
+                "beneficiary": beneficiary,
+                "transaction_type": txn_type,
+                "final_category": m_category,
+                "match_type": "manual",
+                "confidence": 1.0,
+                "reviewed": 1,
+                "account_name": "",
+                "account_number": "",
+            }
+
+            df_manual = pd.DataFrame([manual_row])
+            save_classified_transactions(df_manual)
+            remember_transaction(
+                norm_desc,
+                beneficiary,
+                txn_type,
+                m_category,
+            )
+            st.success("Manual transaction saved successfully.")
+
+    st.markdown("### Account Information")
+    account_name = st.text_input("Account name (e.g. Revolut, Bank of Cyprus)")
+    account_number = st.text_input("Account number / IBAN")
+
+    uploaded_file = st.file_uploader(
+        "Choose a file", type=["csv", "xlsx", "xls", "pdf"]
+    )
 
     if uploaded_file is not None:
         try:
@@ -60,13 +137,43 @@ with tab1:
             else:
                 df = parse_csv(uploaded_file)
 
+            # account info for all file types
+            df["account_name"] = account_name
+            df["account_number"] = account_number
+
+            # normalization
+            df["normalized_description"] = df["Description"].apply(normalize_description)
+            df["normalized_description"] = df["normalized_description"].apply(simplify_merchant)
+            df["normalized_description"] = df.apply(
+                lambda r: r["normalized_description"]
+                if str(r["normalized_description"]).strip()
+                else str(r["Description"]).upper().strip(),
+                axis=1,
+            )
+
+            # beneficiary / transaction type
+            df["beneficiary"] = df["Description"].apply(extract_beneficiary)
+            df["transaction_type"] = df.apply(
+                lambda r: infer_transaction_type(r["Description"], r["Amount"]),
+                axis=1,
+            )
+
+            # duplicates
             df = detect_duplicates(df)
 
+            # classify
             memory_df = get_memory()
             classified_df = classify_transactions(df, memory_df)
+            if "reviewed" not in classified_df.columns:
+                classified_df["reviewed"] = 0
 
             if "dup_flag" in df.columns:
                 classified_df["dup_flag"] = df["dup_flag"].values
+
+            classified_df["currency"] = "EUR"
+            classified_df["usd_amount"] = classified_df["Amount"] * usd_rate
+            classified_df["account_name"] = account_name
+            classified_df["account_number"] = account_number
 
             st.success(f"Loaded {len(classified_df)} transactions")
 
@@ -75,11 +182,19 @@ with tab1:
             c2.metric("Similar matches", int((classified_df["match_type"] == "similar").sum()))
             c3.metric("Rule-based", int((classified_df["match_type"] == "rule").sum()))
             c4.metric("AI fallback", int((classified_df["match_type"] == "ai").sum()))
-            c5.metric("Potential duplicates", int(classified_df["dup_flag"].sum()) if "dup_flag" in classified_df.columns else 0)
+            c5.metric(
+                "Potential duplicates",
+                int(classified_df["dup_flag"].sum()) if "dup_flag" in classified_df.columns else 0,
+            )
 
             st.markdown("### Review transactions")
 
             categories = get_categories()
+            if "reviewed" not in classified_df.columns:
+                classified_df["reviewed"] = 0
+
+            classified_df = classified_df[classified_df["reviewed"] == 0]
+
             reviewed_rows = []
 
             for i, row in classified_df.iterrows():
@@ -90,10 +205,13 @@ with tab1:
                         st.write(f"**Date:** {row['Date']}")
                     with col2:
                         st.write(f"**Description:** {row['Description']}")
+                        st.caption(f"Normalized: {row['normalized_description']}")
                     with col3:
                         st.write(f"**Amount:** {row['Amount']:.2f}")
+                        st.caption(f"USD: {row['usd_amount']:.2f}")
                     with col4:
                         st.write(f"**Match type:** {row['match_type']}")
+                        st.caption(f"Currency: {row['currency']}")
 
                     if row.get("dup_flag", False):
                         st.error("⚠️ Potential duplicate transaction detected")
@@ -111,12 +229,12 @@ with tab1:
                         )
                     elif row["match_type"] == "rule":
                         st.info(
-                            f"Rule-based classification "
+                            "Rule-based classification "
                             f"→ suggested category: **{row['suggested_category']}**"
                         )
                     elif row["match_type"] == "ai":
                         st.info(
-                            f"AI fallback suggestion "
+                            "AI fallback suggestion "
                             f"→ suggested category: **{row['suggested_category']}** "
                             f"(confidence {row['confidence']})"
                         )
@@ -133,7 +251,7 @@ with tab1:
 
                     reviewed = st.checkbox(
                         f"Mark row {i + 1} as reviewed",
-                        value=True,
+                        value=False,
                         key=f"reviewed_{i}",
                     )
 
@@ -146,15 +264,41 @@ with tab1:
                 final_df = pd.DataFrame(reviewed_rows)
                 reviewed_only = final_df[final_df["reviewed"] == 1].copy()
 
-                for _, row in reviewed_only.iterrows():
+                reviewed_only["normalized_description"] = reviewed_only["Description"].apply(
+                    lambda x: simplify_merchant(normalize_description(x))
+                )
+
+                reviewed_only["normalized_description"] = reviewed_only.apply(
+                    lambda r: r["normalized_description"]
+                    if str(r["normalized_description"]).strip()
+                    else str(r["Description"]).upper().strip(),
+                    axis=1,
+                )
+
+                reviewed_only = reviewed_only.drop_duplicates(
+                    subset=["Date", "Description", "Amount"]
+                )
+
+                for idx, row in reviewed_only.iterrows():
+                    clean_desc = row.get("normalized_description", "")
+
+                    if not str(clean_desc).strip():
+                        clean_desc = simplify_merchant(normalize_description(row["Description"]))
+
+                    if not str(clean_desc).strip():
+                        clean_desc = str(row["Description"]).upper().strip()
+
                     remember_transaction(
-                        row["normalized_description"],
+                        clean_desc,
                         row["beneficiary"],
                         row["transaction_type"],
                         row["final_category"],
                     )
 
+                    reviewed_only.at[idx, "normalized_description"] = clean_desc
+
                 save_classified_transactions(reviewed_only)
+
                 st.success(
                     f"Saved {len(reviewed_only)} reviewed transactions and updated memory."
                 )
@@ -164,12 +308,15 @@ with tab1:
                 preview_df = pd.DataFrame(reviewed_rows)[[
                     "Date",
                     "Description",
+                    "normalized_description",
                     "Amount",
+                    "currency",
+                    "usd_amount",
                     "match_type",
                     "suggested_category",
                     "final_category",
                     "reviewed",
-                    "dup_flag"
+                    "dup_flag",
                 ]]
                 st.dataframe(preview_df, use_container_width=True)
 
@@ -195,7 +342,7 @@ with tab2:
             filtered = memory_df[
                 memory_df["normalized_description"].str.contains(
                     search_term.upper(),
-                    na=False
+                    na=False,
                 )
             ]
             st.dataframe(filtered, use_container_width=True)
@@ -222,6 +369,12 @@ with tab3:
     else:
         saved_df["txn_date"] = pd.to_datetime(saved_df["txn_date"], errors="coerce")
         saved_df["amount"] = pd.to_numeric(saved_df["amount"], errors="coerce").fillna(0)
+
+        if "currency" not in saved_df.columns:
+            saved_df["currency"] = "EUR"
+        if "usd_amount" not in saved_df.columns:
+            saved_df["usd_amount"] = saved_df["amount"] * 1.08
+
         saved_df = detect_saved_duplicates(saved_df)
 
         r1, r2 = st.columns(2)
@@ -235,6 +388,11 @@ with tab3:
 
         cutoff = pd.Timestamp.now() - pd.DateOffset(months=months)
         report_df = saved_df[saved_df["txn_date"] >= cutoff].copy()
+
+        report_df = report_df.drop_duplicates(
+            subset=["txn_date", "original_description", "amount"]
+        )
+        report_df = report_df.sort_values("txn_date", ascending=False)
 
         if selected_category != "All":
             report_df = report_df[report_df["category"] == selected_category]
@@ -255,17 +413,24 @@ with tab3:
 
         st.markdown(f"### Transactions for the last {months} month(s)")
 
-        display_df = report_df[[
+        display_cols = [
             "txn_date",
             "month",
             "original_description",
+            "normalized_description",
             "amount",
             "category",
             "match_type",
             "reviewed",
             "anomaly",
-            "dup_flag"
-        ]].sort_values("txn_date", ascending=False)
+            "dup_flag",
+        ]
+        if "currency" in report_df.columns:
+            display_cols.append("currency")
+        if "usd_amount" in report_df.columns:
+            display_cols.append("usd_amount")
+
+        display_df = report_df[display_cols].sort_values("txn_date", ascending=False)
 
         def highlight_flags(row):
             styles = [""] * len(row)
@@ -277,37 +442,51 @@ with tab3:
 
         st.dataframe(
             display_df.style.apply(highlight_flags, axis=1),
-            use_container_width=True
+            use_container_width=True,
         )
 
         duplicates_only = report_df[report_df["dup_flag"]].copy()
         if not duplicates_only.empty:
             st.markdown("### Potential duplicate transactions")
+            dup_cols = [
+                "txn_date",
+                "month",
+                "original_description",
+                "normalized_description",
+                "amount",
+                "category",
+                "match_type",
+            ]
+            if "currency" in duplicates_only.columns:
+                dup_cols.append("currency")
+            if "usd_amount" in duplicates_only.columns:
+                dup_cols.append("usd_amount")
+
             st.dataframe(
-                duplicates_only[[
-                    "txn_date",
-                    "month",
-                    "original_description",
-                    "amount",
-                    "category",
-                    "match_type"
-                ]].sort_values("txn_date", ascending=False),
-                use_container_width=True
+                duplicates_only[dup_cols].sort_values("txn_date", ascending=False),
+                use_container_width=True,
             )
 
         anomalies_only = report_df[report_df["anomaly"]].copy()
         if not anomalies_only.empty:
             st.markdown("### Suspicious expenses detected")
+            an_cols = [
+                "txn_date",
+                "month",
+                "original_description",
+                "normalized_description",
+                "amount",
+                "category",
+                "match_type",
+            ]
+            if "currency" in anomalies_only.columns:
+                an_cols.append("currency")
+            if "usd_amount" in anomalies_only.columns:
+                an_cols.append("usd_amount")
+
             st.dataframe(
-                anomalies_only[[
-                    "txn_date",
-                    "month",
-                    "original_description",
-                    "amount",
-                    "category",
-                    "match_type"
-                ]].sort_values("txn_date", ascending=False),
-                use_container_width=True
+                anomalies_only[an_cols].sort_values("txn_date", ascending=False),
+                use_container_width=True,
             )
 
         st.markdown("### Executive KPI Dashboard")
@@ -327,13 +506,23 @@ with tab3:
         st.dataframe(summary, use_container_width=True)
 
         if st.button("Show 'Subscriptions' paid in the last 6 months"):
-            subs_df = saved_df[
-                (saved_df["txn_date"] >= pd.Timestamp.now() - pd.DateOffset(months=6)) &
-                (saved_df["category"] == "Subscriptions")
-            ][["txn_date", "original_description", "amount", "category"]].sort_values(
+            subs_cols = [
                 "txn_date",
-                ascending=False
-            )
+                "original_description",
+                "normalized_description",
+                "amount",
+                "category",
+            ]
+            if "currency" in saved_df.columns:
+                subs_cols.append("currency")
+            if "usd_amount" in saved_df.columns:
+                subs_cols.append("usd_amount")
+
+            subs_df = saved_df[
+                (saved_df["txn_date"] >= pd.Timestamp.now() - pd.DateOffset(months=6))
+                & (saved_df["category"] == "Subscriptions")
+            ][subs_cols].sort_values("txn_date", ascending=False)
+
             st.dataframe(subs_df, use_container_width=True)
 
         st.markdown("### Monthly totals")
@@ -347,15 +536,14 @@ with tab3:
                     return ""
                 if val > 0:
                     return "color: red; font-weight: bold; background-color: #ffe6e6;"
-                elif val < 0:
+                if val < 0:
                     return "color: green; font-weight: bold; background-color: #e6ffe6;"
-                else:
-                    return "color: gray;"
+                return "color: gray;"
 
             st.dataframe(
                 monthly_total[["month", "amount", "diff", "change_%", "trend"]]
                 .style.applymap(highlight_diff, subset=["diff"]),
-                use_container_width=True
+                use_container_width=True,
             )
         else:
             st.info("No monthly expense difference available.")
@@ -387,7 +575,7 @@ with tab3:
                 "min_amount",
                 "max_amount",
                 "variation_pct",
-                "last_seen"
+                "last_seen",
             ]].copy()
             recurring_display["period"] = context["period_label"]
             recurring_display["month"] = "ALL"
@@ -420,8 +608,8 @@ with tab3:
                     prediction_chart,
                     pd.DataFrame({
                         "month": [str(next_period)],
-                        "expense_total": [prediction]
-                    })
+                        "expense_total": [prediction],
+                    }),
                 ], ignore_index=True)
 
                 st.line_chart(prediction_chart.set_index("month"))
@@ -514,17 +702,70 @@ with tab3:
 # -------------------------
 # TAB 4
 # -------------------------
+
 with tab4:
+    st.info(f"Database location: {DB_PATH}")
+
+    st.markdown("## 👁️ Audit & Database Transparency")
+
+    view_option = st.selectbox(
+        "Select data to view",
+        ["Transactions", "Memory", "Categories"]
+    )
+
+    audit_df = None
+
+    if view_option == "Transactions":
+        audit_df = get_saved_transactions()
+    elif view_option == "Memory":
+        audit_df = get_memory()
+    elif view_option == "Categories":
+        audit_df = pd.DataFrame({"category": get_categories()})
+
+    if audit_df is not None:
+        st.dataframe(audit_df, use_container_width=True)
+
+    if audit_df is not None and not audit_df.empty:
+        csv = audit_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download as CSV",
+            csv,
+            file_name=f"{view_option}.csv",
+            mime="text/csv",
+        )
+
     st.subheader("Manage categories")
 
     current_categories = get_categories()
     st.write(", ".join(current_categories))
 
     new_category = st.text_input("Add new category")
+
     if st.button("Add category"):
         add_category(new_category)
         st.success(f"Category added: {new_category}")
         st.rerun()
+
+    st.markdown("### Upload Categories from Excel")
+
+    cat_file = st.file_uploader("Upload categories file", type=["xlsx"])
+
+    if cat_file is not None:
+        try:
+            from db import replace_categories
+
+            df_cat = pd.read_excel(cat_file)
+            st.write(df_cat.head())
+
+            if "category" not in df_cat.columns:
+                st.error("Excel must have a column named 'category'")
+            else:
+                replace_categories(df_cat["category"].dropna().tolist())
+                st.success("Categories updated from Excel.")
+                st.rerun()
+
+        except Exception as e:
+            st.error(str(e))
 
     st.markdown("### System Reset")
 

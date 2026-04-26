@@ -175,6 +175,9 @@ def parse_pdf(uploaded_file):
         try:
             uploaded_file.seek(0)
             data = []
+            transaction_pattern = re.compile(
+                r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(.*?)\s+(-?\d[\d,]*\.\d{2})$"
+            )
 
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
@@ -182,19 +185,32 @@ def parse_pdf(uploaded_file):
 
                     if text:
                         lines = text.split("\n")
+                        current_transaction = None
 
                         for line in lines:
                             line = re.sub(r"\s+", " ", line).strip()
+                            if not line:
+                                continue
 
-                            match = re.search(
-                                r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(.*?)\s+(-?\d[\d,]*\.\d{2})",
-                                line
-                            )
+                            match = transaction_pattern.search(line)
 
                             if match:
+                                if current_transaction is not None:
+                                    data.append(current_transaction)
+
                                 date, desc, amount = match.groups()
-                                amount = amount.replace(",", "")
-                                data.append([date, desc, amount])
+                                current_transaction = [
+                                    date,
+                                    desc.strip(),
+                                    amount.replace(",", ""),
+                                ]
+                            elif current_transaction is not None:
+                                current_transaction[1] = (
+                                    f"{current_transaction[1]} {line}"
+                                ).strip()
+
+                        if current_transaction is not None:
+                            data.append(current_transaction)
 
             if data:
                 df = pd.DataFrame(data, columns=["Date", "Description", "Amount"])

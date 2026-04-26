@@ -4,6 +4,20 @@
 import pandas as pd
 
 
+def _with_analysis_amount(df: pd.DataFrame):
+    work = df.copy()
+    fallback_amount = pd.to_numeric(work.get("amount"), errors="coerce")
+
+    if "usd_amount" in work.columns:
+        usd_amount = pd.to_numeric(work["usd_amount"], errors="coerce")
+        work["analysis_amount"] = usd_amount.fillna(fallback_amount)
+    else:
+        work["analysis_amount"] = fallback_amount
+
+    work["analysis_amount"] = work["analysis_amount"].fillna(0.0)
+    return work
+
+
 def detect_duplicates(df: pd.DataFrame):
     if df.empty:
         df = df.copy()
@@ -34,40 +48,40 @@ def detect_anomalies(df: pd.DataFrame):
         df["anomaly"] = False
         return df
 
-    df = df.copy()
+    df = _with_analysis_amount(df)
     df["anomaly"] = False
 
-    expense_df = df[df["amount"] < 0].copy()
+    expense_df = df[df["analysis_amount"] < 0].copy()
 
     if expense_df.empty:
         return df
 
-    mean_abs = expense_df["amount"].abs().mean()
-    std_abs = expense_df["amount"].abs().std()
+    mean_abs = expense_df["analysis_amount"].abs().mean()
+    std_abs = expense_df["analysis_amount"].abs().std()
 
     if pd.isna(std_abs) or std_abs == 0:
         return df
 
-    z_scores = (df["amount"].abs() - mean_abs) / std_abs
-    df["anomaly"] = (df["amount"] < 0) & (z_scores > 2)
+    z_scores = (df["analysis_amount"].abs() - mean_abs) / std_abs
+    df["anomaly"] = (df["analysis_amount"] < 0) & (z_scores > 2)
 
-    return df
+    return df.drop(columns=["analysis_amount"], errors="ignore")
 
 
 def detect_recurring_expenses(df: pd.DataFrame):
     if df.empty:
         return pd.DataFrame()
 
-    work = df.copy()
+    work = _with_analysis_amount(df)
     work["txn_date"] = pd.to_datetime(work["txn_date"], errors="coerce")
     work = work.dropna(subset=["txn_date"])
-    work = work[work["amount"] < 0].copy()
+    work = work[work["analysis_amount"] < 0].copy()
 
     if work.empty:
         return pd.DataFrame()
 
     work["month"] = work["txn_date"].dt.to_period("M").astype(str)
-    work["abs_amount"] = work["amount"].abs().round(2)
+    work["abs_amount"] = work["analysis_amount"].abs().round(2)
 
     recurring = (
         work.groupby(["normalized_description", "category"], dropna=False)
@@ -111,10 +125,10 @@ def predict_next_month_expense(df: pd.DataFrame):
     if df.empty:
         return None, pd.DataFrame()
 
-    work = df.copy()
+    work = _with_analysis_amount(df)
     work["txn_date"] = pd.to_datetime(work["txn_date"], errors="coerce")
     work = work.dropna(subset=["txn_date"])
-    work = work[work["amount"] < 0].copy()
+    work = work[work["analysis_amount"] < 0].copy()
 
     if work.empty:
         return None, pd.DataFrame()
@@ -122,7 +136,7 @@ def predict_next_month_expense(df: pd.DataFrame):
     work["month"] = work["txn_date"].dt.to_period("M").astype(str)
 
     monthly = (
-        work.groupby("month")["amount"]
+        work.groupby("month")["analysis_amount"]
         .sum()
         .abs()
         .reset_index(name="expense_total")
@@ -153,7 +167,7 @@ def detect_seasonality(df: pd.DataFrame):
     if df.empty:
         return pd.DataFrame()
 
-    work = df.copy()
+    work = _with_analysis_amount(df)
     work["txn_date"] = pd.to_datetime(work["txn_date"], errors="coerce")
     work = work.dropna(subset=["txn_date"])
 
@@ -161,13 +175,13 @@ def detect_seasonality(df: pd.DataFrame):
         return pd.DataFrame()
 
     work["month_num"] = work["txn_date"].dt.month
-    work = work[work["amount"] < 0].copy()
+    work = work[work["analysis_amount"] < 0].copy()
 
     if work.empty:
         return pd.DataFrame()
 
     seasonal = (
-        work.groupby("month_num")["amount"]
+        work.groupby("month_num")["analysis_amount"]
         .sum()
         .abs()
         .reset_index(name="expense_total")
@@ -184,15 +198,15 @@ def build_monthly_income_expense(report_df: pd.DataFrame):
     if report_df.empty:
         return pd.DataFrame(columns=["month", "income", "expense", "net"])
 
-    work = report_df.copy()
+    work = _with_analysis_amount(report_df)
     work["txn_date"] = pd.to_datetime(work["txn_date"], errors="coerce")
     work = work.dropna(subset=["txn_date"])
     work["month"] = work["txn_date"].dt.to_period("M").astype(str)
 
     monthly_income_expense = (
         work.assign(
-            income=work["amount"].where(work["amount"] > 0, 0),
-            expense=work["amount"].where(work["amount"] < 0, 0).abs()
+            income=work["analysis_amount"].where(work["analysis_amount"] > 0, 0),
+            expense=work["analysis_amount"].where(work["analysis_amount"] < 0, 0).abs()
         )
         .groupby("month")[["income", "expense"]]
         .sum()
@@ -205,11 +219,12 @@ def build_monthly_income_expense(report_df: pd.DataFrame):
 
 
 def calculate_kpis(report_df: pd.DataFrame, monthly_income_expense: pd.DataFrame):
-    income_df = report_df[report_df["amount"] > 0].copy()
-    expense_df = report_df[report_df["amount"] < 0].copy()
+    work = _with_analysis_amount(report_df)
+    income_df = work[work["analysis_amount"] > 0].copy()
+    expense_df = work[work["analysis_amount"] < 0].copy()
 
-    total_income = float(income_df["amount"].sum()) if not income_df.empty else 0.0
-    total_expenses = float(expense_df["amount"].abs().sum()) if not expense_df.empty else 0.0
+    total_income = float(income_df["analysis_amount"].sum()) if not income_df.empty else 0.0
+    total_expenses = float(expense_df["analysis_amount"].abs().sum()) if not expense_df.empty else 0.0
     net_result = total_income - total_expenses
 
     avg_monthly_income = float(monthly_income_expense["income"].mean()) if not monthly_income_expense.empty else 0.0
@@ -245,7 +260,7 @@ def build_period_label(months: int, selected_category: str):
 
 def build_report_context(report_df: pd.DataFrame, months: int, selected_category: str):
     context = {}
-    work = report_df.copy()
+    work = _with_analysis_amount(report_df)
     work["txn_date"] = pd.to_datetime(work["txn_date"], errors="coerce")
     work = work.dropna(subset=["txn_date"]).copy()
     work["month"] = work["txn_date"].dt.to_period("M").astype(str)
@@ -254,21 +269,21 @@ def build_report_context(report_df: pd.DataFrame, months: int, selected_category
     month_coverage = ", ".join(sorted(work["month"].unique().tolist())) if not work.empty else "N/A"
 
     summary = (
-        work.groupby("category", dropna=False)["amount"]
+        work.groupby("category", dropna=False)["analysis_amount"]
         .agg(["count", "sum", "mean"])
         .reset_index()
     )
 
     monthly_summary = (
-        work.groupby(["month", "category"])["amount"]
+        work.groupby(["month", "category"])["analysis_amount"]
         .sum()
         .reset_index()
         .sort_values(["month", "category"])
     )
 
-    expense_monthly = work[work["amount"] < 0].copy()
+    expense_monthly = work[work["analysis_amount"] < 0].copy()
     monthly_total = (
-        expense_monthly.groupby("month")["amount"]
+        expense_monthly.groupby("month")["analysis_amount"]
         .sum()
         .abs()
         .reset_index(name="amount")
@@ -295,15 +310,15 @@ def build_report_context(report_df: pd.DataFrame, months: int, selected_category
     prediction, prediction_source = predict_next_month_expense(work)
 
     category_expenses = (
-        work[work["amount"] < 0]
-        .groupby("category")["amount"]
+        work[work["analysis_amount"] < 0]
+        .groupby("category")["analysis_amount"]
         .sum()
         .abs()
         .reset_index(name="expense_total")
         .sort_values("expense_total", ascending=False)
     )
 
-    context["report_df"] = work
+    context["report_df"] = work.drop(columns=["analysis_amount"], errors="ignore")
     context["summary"] = summary
     context["monthly_summary"] = monthly_summary
     context["monthly_total"] = monthly_total

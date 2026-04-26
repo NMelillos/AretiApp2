@@ -3,10 +3,11 @@
 # =========================
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
-DB_PATH = "transactions.db"
+DB_PATH = str((Path(__file__).resolve().parent / "transactions.db").resolve())
 
 DEFAULT_CATEGORIES = [
     "Subscriptions",
@@ -87,6 +88,41 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS monthly_rates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_month TEXT NOT NULL,
+            source_currency TEXT NOT NULL,
+            rate_to_usd REAL NOT NULL,
+            UNIQUE(report_month, source_currency)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS account_registry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_name TEXT NOT NULL,
+            bank TEXT,
+            account_number TEXT NOT NULL,
+            currency TEXT NOT NULL,
+            UNIQUE(account_name, account_number)
+        )
+    """)
+
+    existing_columns = {
+        row[1] for row in cur.execute("PRAGMA table_info(classified_transactions)").fetchall()
+    }
+    if "currency" not in existing_columns:
+        cur.execute("ALTER TABLE classified_transactions ADD COLUMN currency TEXT")
+    if "usd_amount" not in existing_columns:
+        cur.execute("ALTER TABLE classified_transactions ADD COLUMN usd_amount REAL")
+    if "account_name" not in existing_columns:
+        cur.execute("ALTER TABLE classified_transactions ADD COLUMN account_name TEXT")
+    if "account_number" not in existing_columns:
+        cur.execute("ALTER TABLE classified_transactions ADD COLUMN account_number TEXT")
+    if "bank" not in existing_columns:
+        cur.execute("ALTER TABLE classified_transactions ADD COLUMN bank TEXT")
+
     conn.commit()
 
     cur.execute("SELECT COUNT(*) FROM category_list")
@@ -112,6 +148,44 @@ def get_categories():
     return df["category"].tolist()
 
 
+def get_category_records():
+    conn = get_connection()
+    df = pd.read_sql_query(
+        "SELECT id, category FROM category_list ORDER BY id ASC",
+        conn
+    )
+    conn.close()
+    return df
+
+
+def get_monthly_rates():
+    conn = get_connection()
+    df = pd.read_sql_query(
+        """
+        SELECT id, report_month, source_currency, rate_to_usd
+        FROM monthly_rates
+        ORDER BY report_month ASC, source_currency ASC
+        """,
+        conn,
+    )
+    conn.close()
+    return df
+
+
+def get_account_registry():
+    conn = get_connection()
+    df = pd.read_sql_query(
+        """
+        SELECT id, account_name, bank, account_number, currency
+        FROM account_registry
+        ORDER BY account_name ASC, bank ASC, account_number ASC
+        """,
+        conn,
+    )
+    conn.close()
+    return df
+
+
 def add_category(category: str):
     category = str(category).strip()
     if not category:
@@ -121,6 +195,31 @@ def add_category(category: str):
     cur.execute(
         "INSERT OR IGNORE INTO category_list (category) VALUES (?)",
         (category,)
+    )
+    conn.commit()
+    conn.close()
+
+
+def replace_categories(categories):
+    cleaned_categories = []
+    seen = set()
+
+    for category in categories:
+        value = str(category).strip()
+        if not value or value in seen:
+            continue
+        cleaned_categories.append(value)
+        seen.add(value)
+
+    if not cleaned_categories:
+        return
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM category_list")
+    cur.executemany(
+        "INSERT INTO category_list (category) VALUES (?)",
+        [(category,) for category in cleaned_categories],
     )
     conn.commit()
     conn.close()
@@ -184,8 +283,9 @@ def save_classified_transactions(df):
             INSERT INTO classified_transactions
             (txn_date, original_description, normalized_description, amount,
              beneficiary, transaction_type, category, match_type, confidence,
-             reviewed, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             reviewed, created_at, currency, usd_amount, account_name,
+             account_number, bank)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             str(row.get("Date", "")),
             str(row.get("Description", "")),
@@ -198,6 +298,11 @@ def save_classified_transactions(df):
             float(row.get("confidence", 0)),
             int(row.get("reviewed", 0)),
             now,
+            str(row.get("currency", "USD")),
+            float(row.get("usd_amount", row.get("Amount", 0))),
+            str(row.get("account_name", "")),
+            str(row.get("account_number", "")),
+            str(row.get("bank", "")),
         ))
 
     conn.commit()
@@ -213,6 +318,130 @@ def get_saved_transactions():
     """, conn)
     conn.close()
     return df
+
+
+def _normalize_db_value(value):
+    if pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def _replace_table_from_dataframe(table_name, df, columns, required_columns=None):
+    working_df = df.copy()
+    working_df = working_df.reindex(columns=columns)
+
+    cleaned_rows = []
+    non_id_columns = [column for column in columns if column != "id"]
+
+    for _, row in working_df.iterrows():
+        normalized_row = {}
+
+        for column in columns:
+            value = _normalize_db_value(row[column])
+            if isinstance(value, str):
+                value = value.strip()
+            normalized_row[column] = value
+
+        if all(
+            normalized_row[column] in (None, "")
+            for column in non_id_columns
+        ):
+            continue
+
+        if required_columns and any(
+            normalized_row[column] in (None, "")
+            for column in required_columns
+        ):
+            continue
+
+        cleaned_rows.append(tuple(normalized_row[column] for column in columns))
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM {table_name}")
+
+    if cleaned_rows:
+        placeholders = ", ".join(["?"] * len(columns))
+        cur.executemany(
+            f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})",
+            cleaned_rows,
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def replace_category_records(df):
+    _replace_table_from_dataframe(
+        "category_list",
+        df,
+        ["id", "category"],
+        required_columns=["category"],
+    )
+
+
+def replace_monthly_rate_records(df):
+    _replace_table_from_dataframe(
+        "monthly_rates",
+        df,
+        ["id", "report_month", "source_currency", "rate_to_usd"],
+        required_columns=["report_month", "source_currency", "rate_to_usd"],
+    )
+
+
+def replace_account_registry_records(df):
+    _replace_table_from_dataframe(
+        "account_registry",
+        df,
+        ["id", "account_name", "bank", "account_number", "currency"],
+        required_columns=["account_name", "account_number", "currency"],
+    )
+
+
+def replace_memory_records(df):
+    _replace_table_from_dataframe(
+        "transaction_memory",
+        df,
+        [
+            "id",
+            "normalized_description",
+            "beneficiary",
+            "transaction_type",
+            "category",
+            "first_seen",
+            "last_seen",
+            "times_seen",
+        ],
+        required_columns=["normalized_description", "category"],
+    )
+
+
+def replace_saved_transaction_records(df):
+    _replace_table_from_dataframe(
+        "classified_transactions",
+        df,
+        [
+            "id",
+            "txn_date",
+            "original_description",
+            "normalized_description",
+            "amount",
+            "beneficiary",
+            "transaction_type",
+            "category",
+            "match_type",
+            "confidence",
+            "reviewed",
+            "created_at",
+            "currency",
+            "usd_amount",
+            "account_name",
+            "account_number",
+            "bank",
+        ],
+    )
 
 
 def report_already_sent(report_month: str, delivery_type: str, recipient: str) -> bool:

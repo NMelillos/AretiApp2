@@ -15,11 +15,19 @@ from db import (
     DB_PATH,
     add_category,
     full_reset_database,
+    get_account_registry,
+    get_category_records,
     get_categories,
     get_memory,
+    get_monthly_rates,
     get_saved_transactions,
     init_db,
     remember_transaction,
+    replace_account_registry_records,
+    replace_category_records,
+    replace_memory_records,
+    replace_monthly_rate_records,
+    replace_saved_transaction_records,
     reset_runtime_data,
     save_classified_transactions,
 )
@@ -44,6 +52,309 @@ from utils import (
     infer_transaction_type,
 )
 
+CURRENCY_NAME_TO_CODE = {
+    "DOLLAR": "USD",
+    "USD": "USD",
+    "US DOLLAR": "USD",
+    "EURO": "EUR",
+    "EUR": "EUR",
+    "POUND": "GBP",
+    "GBP": "GBP",
+    "SHEKEL": "ILS",
+    "ILS": "ILS",
+    "KZT": "KZT",
+    "RUB": "RUB",
+}
+
+
+def normalize_currency_code(value):
+    text = str(value).strip().upper().replace("_", " ")
+    text = text.replace("  ", " ")
+    return CURRENCY_NAME_TO_CODE.get(text, text if len(text) == 3 else "")
+
+
+def parse_rate_month(value):
+    if pd.isna(value):
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        for fmt in ["%b-%y", "%b-%Y", "%B-%y", "%B-%Y", "%m-%Y", "%m/%Y"]:
+            try:
+                parsed = pd.to_datetime(text, format=fmt)
+                break
+            except Exception:
+                parsed = pd.NaT
+
+    if pd.isna(parsed):
+        return None
+
+    return parsed.to_period("M").strftime("%Y-%m")
+
+
+def extract_currency_from_rate_label(label):
+    text = str(label).strip().replace("–", "-").replace("—", "-")
+    if "-" not in text:
+        return ""
+
+    _, right_part = text.split("-", 1)
+    return normalize_currency_code(right_part)
+
+
+def parse_monthly_rates_excel(uploaded_file):
+    uploaded_file.seek(0)
+    raw_df = pd.read_excel(uploaded_file, header=None)
+
+    header_row_index = None
+    month_columns = {}
+
+    for row_index, row in raw_df.iterrows():
+        parsed_months = {}
+        for column_index, value in row.items():
+            report_month = parse_rate_month(value)
+            if report_month:
+                parsed_months[column_index] = report_month
+
+        if len(parsed_months) > len(month_columns):
+            header_row_index = row_index
+            month_columns = parsed_months
+
+    if not month_columns:
+        raise ValueError("Could not detect month columns in the rates Excel file.")
+
+    records = []
+
+    for row_index in range((header_row_index or 0) + 1, len(raw_df)):
+        label = raw_df.iat[row_index, 0]
+        source_currency = extract_currency_from_rate_label(label)
+        if not source_currency:
+            continue
+
+        for column_index, report_month in month_columns.items():
+            raw_rate = raw_df.iat[row_index, column_index]
+            rate_value = pd.to_numeric(pd.Series([raw_rate]), errors="coerce").iloc[0]
+
+            if pd.isna(rate_value) or float(rate_value) <= 0:
+                continue
+
+            if source_currency == "USD":
+                rate_to_usd = 1.0
+            else:
+                rate_to_usd = round(1 / float(rate_value), 8)
+
+            records.append({
+                "report_month": report_month,
+                "source_currency": source_currency,
+                "rate_to_usd": rate_to_usd,
+            })
+
+    if not records:
+        raise ValueError("Could not extract any monthly FX rates from the uploaded Excel file.")
+
+    rates_df = pd.DataFrame(records)
+    rates_df = rates_df.drop_duplicates(
+        subset=["report_month", "source_currency"],
+        keep="last",
+    ).sort_values(["report_month", "source_currency"])
+    return rates_df
+
+
+def get_statement_currencies(rates_df):
+    currencies = ["USD"]
+    if rates_df is not None and not rates_df.empty:
+        currencies.extend(sorted(rates_df["source_currency"].dropna().unique().tolist()))
+    return list(dict.fromkeys(currencies))
+
+
+def parse_account_registry_excel(uploaded_file):
+    uploaded_file.seek(0)
+    df = pd.read_excel(uploaded_file)
+    normalized_columns = {str(column).strip().lower(): column for column in df.columns}
+
+    required_mapping = {
+        "account name": "account_name",
+        "bank": "bank",
+        "account number": "account_number",
+        "currency": "currency",
+    }
+
+    missing_columns = [source for source in required_mapping if source not in normalized_columns]
+    if missing_columns:
+        raise ValueError(
+            "Account registry Excel must include columns: Account Name, Bank, Account number, Currency."
+        )
+
+    records_df = pd.DataFrame({
+        target: df[normalized_columns[source]]
+        for source, target in required_mapping.items()
+    })
+
+    records_df["account_name"] = records_df["account_name"].astype(str).str.strip()
+    records_df["bank"] = records_df["bank"].fillna("").astype(str).str.strip()
+    records_df["account_number"] = records_df["account_number"].astype(str).str.strip()
+    records_df["currency"] = records_df["currency"].apply(normalize_currency_code)
+    records_df = records_df[
+        (records_df["account_name"] != "")
+        & (records_df["account_number"] != "")
+        & (records_df["currency"] != "")
+    ]
+    records_df = records_df.drop_duplicates(
+        subset=["account_name", "account_number"],
+        keep="last",
+    ).sort_values(["account_name", "bank", "account_number"])
+
+    if records_df.empty:
+        raise ValueError("No valid account registry rows found in the uploaded Excel file.")
+
+    return records_df
+
+
+def build_account_option_label(row):
+    bank = str(row.get("bank", "")).strip()
+    account_number = str(row.get("account_number", "")).strip()
+    currency = str(row.get("currency", "")).strip()
+    parts = [str(row.get("account_name", "")).strip()]
+    if bank:
+        parts.append(bank)
+    if account_number:
+        parts.append(account_number)
+    if currency:
+        parts.append(currency)
+    return " | ".join(parts)
+
+
+def get_uploaded_file_token(uploaded_file):
+    if uploaded_file is None:
+        return None
+    return (getattr(uploaded_file, "name", ""), getattr(uploaded_file, "size", 0))
+
+
+def build_rates_lookup(rates_df):
+    if rates_df is None or rates_df.empty:
+        return {}
+
+    lookup = {}
+
+    for _, row in rates_df.iterrows():
+        currency = str(row["source_currency"])
+        month = parse_rate_month(row["report_month"])
+        if not month:
+            continue
+        lookup.setdefault(currency, {})[month] = float(row["rate_to_usd"])
+
+    return lookup
+
+
+def get_current_rate(rates_lookup, statement_currency):
+    currency_rates = rates_lookup.get(statement_currency, {})
+    if not currency_rates:
+        return None
+
+    latest_month = max(currency_rates)
+    return currency_rates[latest_month]
+
+
+def attach_statement_currency(df, statement_currency, rates_df):
+    work = df.copy()
+    work["Amount"] = pd.to_numeric(work["Amount"], errors="coerce").fillna(0.0)
+    work["currency"] = statement_currency
+
+    if statement_currency == "USD":
+        work["usd_amount"] = work["Amount"]
+        return work
+
+    rates_lookup = build_rates_lookup(rates_df)
+    current_rate = get_current_rate(rates_lookup, statement_currency)
+    if current_rate is None:
+        raise ValueError(
+            f"Missing current USD rate for {statement_currency}. Upload the monthly rates Excel first."
+        )
+
+    work["usd_amount"] = work["Amount"] * float(current_rate)
+    return work
+
+
+def apply_audit_filters(df, key_prefix):
+    if df is None or df.empty:
+        return df
+
+    st.caption("Use the filter controls above each column to narrow the editable rows.")
+    filter_columns = st.columns(len(df.columns))
+    filtered_df = df.copy()
+
+    for idx, column in enumerate(df.columns):
+        column_values = df[column].dropna().astype(str).str.strip()
+        column_values = [value for value in column_values.unique().tolist() if value]
+        column_values.sort(key=str.lower)
+
+        with filter_columns[idx]:
+            st.markdown(
+                (
+                    "<div style='font-size:0.8rem; color: rgba(250, 250, 250, 0.6); "
+                    "margin-bottom: 0.25rem; white-space: nowrap; overflow: hidden; "
+                    f"text-overflow: ellipsis;' title='{column}'>{column}</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+
+            selected_values = st.session_state.get(f"{key_prefix}_{column}", [])
+            if selected_values:
+                filter_summary = f"{len(selected_values)} selected"
+            else:
+                filter_summary = "All"
+
+            with st.popover(filter_summary):
+                selected_values = st.multiselect(
+                    f"Filter {column}",
+                    options=column_values,
+                    default=selected_values,
+                    key=f"{key_prefix}_{column}",
+                    label_visibility="collapsed",
+                    placeholder="All",
+                )
+
+                if st.button("Clear", key=f"clear_{key_prefix}_{column}"):
+                    st.session_state[f"{key_prefix}_{column}"] = []
+                    st.rerun()
+
+        if selected_values:
+            filtered_df = filtered_df[
+                filtered_df[column].astype(str).isin(selected_values)
+            ]
+
+    return filtered_df
+
+
+def merge_filtered_audit_edits(original_df, filtered_original_df, edited_filtered_df):
+    if "id" not in original_df.columns:
+        return edited_filtered_df.copy()
+
+    full_df = original_df.copy()
+    visible_ids = set(
+        pd.to_numeric(filtered_original_df["id"], errors="coerce").dropna().astype(int)
+    )
+
+    edited_df = edited_filtered_df.copy()
+    edited_df["id"] = pd.to_numeric(edited_df["id"], errors="coerce")
+
+    full_df = full_df[
+        ~pd.to_numeric(full_df["id"], errors="coerce").isin(visible_ids)
+    ]
+
+    edited_existing_rows = edited_df[edited_df["id"].notna()].copy()
+    new_rows = edited_df[edited_df["id"].isna()].copy()
+
+    updated_df = pd.concat(
+        [full_df, edited_existing_rows, new_rows],
+        ignore_index=True,
+    )
+
+    return updated_df.reindex(columns=original_df.columns)
+
 st.set_page_config(page_title="CFO Financial Dashboard", layout="wide")
 init_db()
 
@@ -66,14 +377,80 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.subheader("Upload CSV, Excel, or PDF statement")
 
-    st.markdown("### Currency Settings")
-    usd_rate = st.number_input(
-        "EUR → USD rate",
-        min_value=0.5,
-        max_value=2.0,
-        value=1.08,
-        step=0.01,
+    rates_df = get_monthly_rates()
+    account_registry_df = get_account_registry()
+
+    st.markdown("### Monthly FX Rates")
+    rates_file = st.file_uploader(
+        "Upload monthly rates Excel",
+        type=["xlsx", "xls"],
+        key="monthly_rates_upload",
     )
+
+    if rates_file is None:
+        st.session_state["processed_rates_file"] = None
+
+    if rates_file is not None:
+        try:
+            rates_file_token = get_uploaded_file_token(rates_file)
+            if st.session_state.get("processed_rates_file") != rates_file_token:
+                imported_rates_df = parse_monthly_rates_excel(rates_file)
+                replace_monthly_rate_records(imported_rates_df)
+                rates_df = get_monthly_rates()
+                st.session_state["processed_rates_file"] = rates_file_token
+                st.success(f"Imported {len(imported_rates_df)} monthly FX rate rows.")
+        except Exception as e:
+            st.error(str(e))
+
+    if rates_df.empty:
+        st.warning("No monthly FX rates imported yet. Non-USD statements will require the rates Excel first.")
+    else:
+        rates_table = (
+            rates_df
+            .pivot(index="source_currency", columns="report_month", values="rate_to_usd")
+            .sort_index()
+        )
+        st.dataframe(rates_table, use_container_width=True)
+        st.caption("Rates are stored as USD equivalent per 1 unit of source currency.")
+
+    available_currencies = get_statement_currencies(rates_df)
+
+    st.markdown("### Account Registry")
+    account_registry_file = st.file_uploader(
+        "Upload 'Who made the expense' Excel",
+        type=["xlsx", "xls"],
+        key="account_registry_upload",
+    )
+
+    if account_registry_file is None:
+        st.session_state["processed_account_registry_file"] = None
+
+    if account_registry_file is not None:
+        try:
+            account_registry_file_token = get_uploaded_file_token(account_registry_file)
+            if st.session_state.get("processed_account_registry_file") != account_registry_file_token:
+                imported_accounts_df = parse_account_registry_excel(account_registry_file)
+                replace_account_registry_records(imported_accounts_df)
+                account_registry_df = get_account_registry()
+                st.session_state["processed_account_registry_file"] = account_registry_file_token
+                st.success(f"Imported {len(imported_accounts_df)} account registry rows.")
+        except Exception as e:
+            st.error(str(e))
+
+    if account_registry_df.empty:
+        st.warning("Upload the 'Who made the expense' Excel to populate account name, bank, account number, and currency.")
+        selected_account = None
+    else:
+        account_options = account_registry_df.to_dict("records")
+        selected_account = st.selectbox(
+            "Who made the expense",
+            account_options,
+            format_func=build_account_option_label,
+            key="selected_account_registry",
+        )
+
+        selected_account_df = pd.DataFrame(account_options)
+        st.dataframe(selected_account_df, use_container_width=True, height=220)
 
     st.markdown("### Manual Transaction Entry")
 
@@ -81,6 +458,7 @@ with tab1:
         m_date = st.date_input("Date")
         m_desc = st.text_input("Description")
         m_amount = st.number_input("Amount", format="%.2f")
+        m_currency = st.selectbox("Currency", available_currencies, key="manual_currency")
         m_category = st.selectbox("Category", get_categories(), key="manual_category")
 
         if st.button("Add Manual Transaction"):
@@ -96,19 +474,22 @@ with tab1:
                 "Description": m_desc,
                 "normalized_description": norm_desc,
                 "Amount": m_amount,
-                "currency": "EUR",
-                "usd_amount": m_amount * usd_rate,
                 "beneficiary": beneficiary,
                 "transaction_type": txn_type,
                 "final_category": m_category,
                 "match_type": "manual",
                 "confidence": 1.0,
                 "reviewed": 1,
-                "account_name": "",
-                "account_number": "",
+                "account_name": selected_account["account_name"] if selected_account else "",
+                "account_number": selected_account["account_number"] if selected_account else "",
+                "bank": selected_account["bank"] if selected_account else "",
             }
 
-            df_manual = pd.DataFrame([manual_row])
+            df_manual = attach_statement_currency(
+                pd.DataFrame([manual_row]),
+                selected_account["currency"] if selected_account else m_currency,
+                rates_df,
+            )
             save_classified_transactions(df_manual)
             remember_transaction(
                 norm_desc,
@@ -119,8 +500,15 @@ with tab1:
             st.success("Manual transaction saved successfully.")
 
     st.markdown("### Account Information")
-    account_name = st.text_input("Account name (e.g. Revolut, Bank of Cyprus)")
-    account_number = st.text_input("Account number / IBAN")
+    account_name = selected_account["account_name"] if selected_account else ""
+    account_number = selected_account["account_number"] if selected_account else ""
+    account_bank = selected_account["bank"] if selected_account else ""
+    statement_currency = selected_account["currency"] if selected_account else "USD"
+
+    st.text_input("Account name", value=account_name, disabled=True)
+    st.text_input("Bank", value=account_bank, disabled=True)
+    st.text_input("Account number / IBAN", value=account_number, disabled=True)
+    st.text_input("Statement currency", value=statement_currency, disabled=True)
 
     uploaded_file = st.file_uploader(
         "Choose a file", type=["csv", "xlsx", "xls", "pdf"]
@@ -140,6 +528,7 @@ with tab1:
             # account info for all file types
             df["account_name"] = account_name
             df["account_number"] = account_number
+            df["bank"] = account_bank
 
             # normalization
             df["normalized_description"] = df["Description"].apply(normalize_description)
@@ -170,10 +559,14 @@ with tab1:
             if "dup_flag" in df.columns:
                 classified_df["dup_flag"] = df["dup_flag"].values
 
-            classified_df["currency"] = "EUR"
-            classified_df["usd_amount"] = classified_df["Amount"] * usd_rate
+            classified_df = attach_statement_currency(
+                classified_df,
+                statement_currency,
+                rates_df,
+            )
             classified_df["account_name"] = account_name
             classified_df["account_number"] = account_number
+            classified_df["bank"] = account_bank
 
             st.success(f"Loaded {len(classified_df)} transactions")
 
@@ -207,7 +600,7 @@ with tab1:
                         st.write(f"**Description:** {row['Description']}")
                         st.caption(f"Normalized: {row['normalized_description']}")
                     with col3:
-                        st.write(f"**Amount:** {row['Amount']:.2f}")
+                        st.write(f"**Amount:** {row['Amount']:.2f} {row['currency']}")
                         st.caption(f"USD: {row['usd_amount']:.2f}")
                     with col4:
                         st.write(f"**Match type:** {row['match_type']}")
@@ -369,11 +762,15 @@ with tab3:
     else:
         saved_df["txn_date"] = pd.to_datetime(saved_df["txn_date"], errors="coerce")
         saved_df["amount"] = pd.to_numeric(saved_df["amount"], errors="coerce").fillna(0)
+        if "usd_amount" in saved_df.columns:
+            saved_df["usd_amount"] = pd.to_numeric(saved_df["usd_amount"], errors="coerce")
 
         if "currency" not in saved_df.columns:
-            saved_df["currency"] = "EUR"
+            saved_df["currency"] = "USD"
         if "usd_amount" not in saved_df.columns:
-            saved_df["usd_amount"] = saved_df["amount"] * 1.08
+            saved_df["usd_amount"] = saved_df["amount"]
+        else:
+            saved_df["usd_amount"] = saved_df["usd_amount"].fillna(saved_df["amount"])
 
         saved_df = detect_saved_duplicates(saved_df)
 
@@ -412,6 +809,7 @@ with tab3:
         category_expenses = context["category_expenses"]
 
         st.markdown(f"### Transactions for the last {months} month(s)")
+        st.caption("All KPIs, summaries, charts, and exports use USD equivalent amounts when available.")
 
         display_cols = [
             "txn_date",
@@ -710,20 +1108,50 @@ with tab4:
 
     view_option = st.selectbox(
         "Select data to view",
-        ["Transactions", "Memory", "Categories"]
+        ["Transactions", "Memory", "Categories", "Accounts", "Rates"]
     )
 
     audit_df = None
+    save_audit_changes = None
 
     if view_option == "Transactions":
         audit_df = get_saved_transactions()
+        save_audit_changes = replace_saved_transaction_records
     elif view_option == "Memory":
         audit_df = get_memory()
+        save_audit_changes = replace_memory_records
     elif view_option == "Categories":
-        audit_df = pd.DataFrame({"category": get_categories()})
+        audit_df = get_category_records()
+        save_audit_changes = replace_category_records
+    elif view_option == "Accounts":
+        audit_df = get_account_registry()
+        save_audit_changes = replace_account_registry_records
+    elif view_option == "Rates":
+        audit_df = get_monthly_rates()
+        save_audit_changes = replace_monthly_rate_records
 
     if audit_df is not None:
-        st.dataframe(audit_df, use_container_width=True)
+        filtered_audit_df = apply_audit_filters(
+            audit_df,
+            f"audit_filter_{view_option.lower()}",
+        )
+
+        edited_audit_df = st.data_editor(
+            filtered_audit_df,
+            use_container_width=True,
+            num_rows="dynamic",
+            key=f"audit_editor_{view_option.lower()}",
+        )
+
+        if st.button(f"Save {view_option} changes", key=f"save_{view_option.lower()}"):
+            updated_audit_df = merge_filtered_audit_edits(
+                audit_df,
+                filtered_audit_df,
+                edited_audit_df,
+            )
+            save_audit_changes(updated_audit_df)
+            st.success(f"{view_option} updated successfully.")
+            st.rerun()
 
     if audit_df is not None and not audit_df.empty:
         csv = audit_df.to_csv(index=False).encode("utf-8")
@@ -755,12 +1183,26 @@ with tab4:
             from db import replace_categories
 
             df_cat = pd.read_excel(cat_file)
-            st.write(df_cat.head())
 
             if "category" not in df_cat.columns:
                 st.error("Excel must have a column named 'category'")
             else:
-                replace_categories(df_cat["category"].dropna().tolist())
+                imported_categories = (
+                    df_cat["category"].dropna().astype(str).str.strip()
+                )
+                imported_categories = imported_categories[imported_categories != ""]
+
+                with st.expander(
+                    f"Imported categories ({len(imported_categories)})",
+                    expanded=True,
+                ):
+                    st.dataframe(
+                        pd.DataFrame({"category": imported_categories}).reset_index(drop=True),
+                        use_container_width=True,
+                        height=320,
+                    )
+
+                replace_categories(imported_categories.tolist())
                 st.success("Categories updated from Excel.")
                 st.rerun()
 

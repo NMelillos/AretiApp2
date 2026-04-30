@@ -180,12 +180,13 @@ def parse_account_registry_excel(uploaded_file):
         "bank": "bank",
         "account number": "account_number",
         "currency": "currency",
+        "rate type": "rate_type",
     }
 
     missing_columns = [source for source in required_mapping if source not in normalized_columns]
     if missing_columns:
         raise ValueError(
-            "Account registry Excel must include columns: Account Name, Bank, Account number, Currency."
+            "Account registry Excel must include columns: Account Name, Bank, Account number, Currency, Rate Type."
         )
 
     records_df = pd.DataFrame({
@@ -197,10 +198,12 @@ def parse_account_registry_excel(uploaded_file):
     records_df["bank"] = records_df["bank"].fillna("").astype(str).str.strip()
     records_df["account_number"] = records_df["account_number"].astype(str).str.strip()
     records_df["currency"] = records_df["currency"].apply(normalize_currency_code)
+    records_df["rate_type"] = records_df["rate_type"].fillna("").astype(str).str.strip()
     records_df = records_df[
         (records_df["account_name"] != "")
         & (records_df["account_number"] != "")
         & (records_df["currency"] != "")
+        & (records_df["rate_type"] != "")
     ]
     records_df = records_df.drop_duplicates(
         subset=["account_name", "account_number"],
@@ -217,6 +220,7 @@ def build_account_option_label(row):
     bank = str(row.get("bank", "")).strip()
     account_number = str(row.get("account_number", "")).strip()
     currency = str(row.get("currency", "")).strip()
+    rate_type = str(row.get("rate_type", "")).strip()
     parts = [str(row.get("account_name", "")).strip()]
     if bank:
         parts.append(bank)
@@ -224,6 +228,8 @@ def build_account_option_label(row):
         parts.append(account_number)
     if currency:
         parts.append(currency)
+    if rate_type:
+        parts.append(rate_type)
     return " | ".join(parts)
 
 
@@ -276,6 +282,268 @@ def attach_statement_currency(df, statement_currency, rates_df):
 
     work["usd_amount"] = work["Amount"] * float(current_rate)
     return work
+
+
+def add_source_occurrence(df, date_col, description_col, amount_col, account_number_col="account_number"):
+    work = df.copy()
+    occurrence_key = pd.DataFrame({
+        "txn_date": work[date_col].astype(str).fillna(""),
+        "original_description": work[description_col].astype(str).fillna(""),
+        "amount": pd.to_numeric(work[amount_col], errors="coerce").fillna(0.0).round(2),
+        "account_number": work.get(account_number_col, "").astype(str).fillna(""),
+    })
+    work["source_occurrence"] = occurrence_key.groupby(
+        ["txn_date", "original_description", "amount", "account_number"],
+        dropna=False,
+    ).cumcount()
+    return work
+
+
+def merge_saved_review_state(classified_df, saved_df):
+    work = add_source_occurrence(classified_df, "Date", "Description", "Amount")
+    if saved_df is None or saved_df.empty:
+        if "category" not in work.columns:
+            work["category"] = ""
+        return work
+
+    saved_work = saved_df.copy()
+    if "source_occurrence" not in saved_work.columns:
+        saved_work = add_source_occurrence(saved_work, "txn_date", "original_description", "amount")
+    else:
+        saved_work["source_occurrence"] = pd.to_numeric(
+            saved_work["source_occurrence"], errors="coerce"
+        ).fillna(0).astype(int)
+
+    saved_work["txn_date"] = saved_work["txn_date"].astype(str).fillna("")
+    saved_work["original_description"] = saved_work["original_description"].astype(str).fillna("")
+    saved_work["amount"] = pd.to_numeric(saved_work["amount"], errors="coerce").fillna(0.0).round(2)
+    saved_work["account_number"] = saved_work.get("account_number", "").astype(str).fillna("")
+
+    saved_state = saved_work[[
+        "txn_date",
+        "original_description",
+        "amount",
+        "account_number",
+        "source_occurrence",
+        "reviewed",
+        "category",
+    ]].copy()
+    saved_state = saved_state.sort_values(["reviewed"]).drop_duplicates(
+        subset=["txn_date", "original_description", "amount", "account_number", "source_occurrence"],
+        keep="last",
+    )
+
+    merged = work.merge(
+        saved_state,
+        left_on=["Date", "Description", "Amount", "account_number", "source_occurrence"],
+        right_on=["txn_date", "original_description", "amount", "account_number", "source_occurrence"],
+        how="left",
+        suffixes=("", "_saved"),
+    )
+    merged["reviewed"] = pd.to_numeric(merged["reviewed_saved"], errors="coerce").fillna(
+        pd.to_numeric(merged.get("reviewed", 0), errors="coerce").fillna(0)
+    ).astype(int)
+    merged["final_category"] = merged["category"].fillna(merged.get("suggested_category", ""))
+    merged = merged.drop(
+        columns=[
+            "txn_date",
+            "original_description",
+            "amount",
+            "reviewed_saved",
+            "category",
+        ],
+        errors="ignore",
+    )
+    return merged
+
+
+def prepare_saved_transactions_for_review(saved_df):
+    if saved_df is None or saved_df.empty:
+        return pd.DataFrame()
+
+    pending_df = saved_df.copy()
+    pending_df["reviewed"] = pd.to_numeric(pending_df.get("reviewed", 0), errors="coerce").fillna(0).astype(int)
+    pending_df = pending_df[pending_df["reviewed"] == 0].copy()
+    if pending_df.empty:
+        return pending_df
+
+    pending_df = pending_df.rename(columns={
+        "txn_date": "Date",
+        "original_description": "Description",
+        "amount": "Amount",
+        "category": "final_category",
+    })
+    pending_df["suggested_category"] = pending_df["final_category"].fillna("Other")
+    pending_df["matched_reference"] = (
+        pending_df["matched_reference"] if "matched_reference" in pending_df.columns else ""
+    )
+    pending_df["dup_flag"] = pending_df["dup_flag"] if "dup_flag" in pending_df.columns else False
+    pending_df["normalized_description"] = (
+        pending_df["normalized_description"].fillna("")
+        if "normalized_description" in pending_df.columns
+        else ""
+    )
+    pending_df["currency"] = (
+        pending_df["currency"].fillna("USD")
+        if "currency" in pending_df.columns
+        else "USD"
+    )
+    usd_amount_series = (
+        pending_df["usd_amount"]
+        if "usd_amount" in pending_df.columns
+        else pending_df["Amount"]
+    )
+    pending_df["usd_amount"] = pd.to_numeric(usd_amount_series, errors="coerce").fillna(
+        pd.to_numeric(pending_df["Amount"], errors="coerce").fillna(0.0)
+    )
+    pending_df["source_occurrence"] = pd.to_numeric(
+        pending_df.get("source_occurrence", 0), errors="coerce"
+    ).fillna(0).astype(int)
+    return pending_df
+
+
+def render_review_queue(review_df, categories, section_key):
+    if review_df is None or review_df.empty:
+        return
+
+    working_df = review_df.copy()
+    if "reviewed" not in working_df.columns:
+        working_df["reviewed"] = 0
+
+    working_df = working_df[working_df["reviewed"] == 0].copy()
+    if working_df.empty:
+        st.success("No pending transactions to review.")
+        return
+
+    reviewed_rows = []
+
+    for i, row in working_df.iterrows():
+        with st.container(border=True):
+            col1, col2, col3, col4 = st.columns([2, 4, 2, 3])
+
+            with col1:
+                st.write(f"**Date:** {row['Date']}")
+            with col2:
+                st.write(f"**Description:** {row['Description']}")
+                st.caption(f"Normalized: {row['normalized_description']}")
+            with col3:
+                st.write(f"**Amount:** {row['Amount']:.2f} {row['currency']}")
+                st.caption(f"USD: {row['usd_amount']:.2f}")
+            with col4:
+                st.write(f"**Match type:** {row['match_type']}")
+                st.caption(f"Currency: {row['currency']}")
+
+            if row.get("dup_flag", False):
+                st.error("⚠️ Potential duplicate transaction detected")
+
+            if row["match_type"] == "exact":
+                st.info(
+                    f"Identical to past transaction: `{row['matched_reference']}` "
+                    f"→ suggested category: **{row['suggested_category']}**"
+                )
+            elif row["match_type"] == "similar":
+                st.warning(
+                    f"Similar to past transaction: `{row['matched_reference']}` "
+                    f"→ suggested category: **{row['suggested_category']}** "
+                    f"(confidence {row['confidence']})"
+                )
+            elif row["match_type"] == "rule":
+                st.info(
+                    "Rule-based classification "
+                    f"→ suggested category: **{row['suggested_category']}**"
+                )
+            elif row["match_type"] == "ai":
+                st.info(
+                    "AI fallback suggestion "
+                    f"→ suggested category: **{row['suggested_category']}** "
+                    f"(confidence {row['confidence']})"
+                )
+            else:
+                st.error("New or unusual transaction. Review required.")
+
+            selected_category = st.selectbox(
+                f"Category for row {i + 1}",
+                categories,
+                index=categories.index(row["final_category"])
+                if row.get("final_category") in categories
+                else categories.index(row["suggested_category"])
+                if row["suggested_category"] in categories else 0,
+                key=f"cat_{section_key}_{i}",
+            )
+
+            reviewed = st.checkbox(
+                f"Mark row {i + 1} as reviewed",
+                value=bool(row.get("reviewed", 0)),
+                key=f"reviewed_{section_key}_{i}",
+            )
+
+            final_row = row.to_dict()
+            final_row["final_category"] = selected_category
+            final_row["reviewed"] = 1 if reviewed else 0
+            reviewed_rows.append(final_row)
+
+    if st.button("Save reviewed classifications", type="primary", key=f"save_{section_key}"):
+        final_df = pd.DataFrame(reviewed_rows)
+        if final_df.empty:
+            st.info("No transactions available to save.")
+            return
+
+        final_df["normalized_description"] = final_df["Description"].apply(
+            lambda x: simplify_merchant(normalize_description(x))
+        )
+
+        final_df["normalized_description"] = final_df.apply(
+            lambda r: r["normalized_description"]
+            if str(r["normalized_description"]).strip()
+            else str(r["Description"]).upper().strip(),
+            axis=1,
+        )
+
+        final_df = final_df.drop_duplicates(
+            subset=["Date", "Description", "Amount", "account_number", "source_occurrence"]
+        )
+
+        for idx, row in final_df.iterrows():
+            clean_desc = row.get("normalized_description", "")
+
+            if not str(clean_desc).strip():
+                clean_desc = simplify_merchant(normalize_description(row["Description"]))
+
+            if not str(clean_desc).strip():
+                clean_desc = str(row["Description"]).upper().strip()
+
+            if int(row.get("reviewed", 0)) == 1:
+                remember_transaction(
+                    clean_desc,
+                    row["beneficiary"],
+                    row["transaction_type"],
+                    row["final_category"],
+                )
+
+            final_df.at[idx, "normalized_description"] = clean_desc
+
+        save_classified_transactions(final_df)
+        st.success(
+            f"Saved {int((final_df['reviewed'] == 1).sum())} reviewed transactions. "
+            f"{int((final_df['reviewed'] == 0).sum())} transactions remain pending."
+        )
+        st.rerun()
+
+    st.markdown("### Preview")
+    preview_df = pd.DataFrame(reviewed_rows)[[
+        "Date",
+        "Description",
+        "normalized_description",
+        "Amount",
+        "currency",
+        "usd_amount",
+        "match_type",
+        "suggested_category",
+        "final_category",
+        "reviewed",
+        "dup_flag",
+    ]]
+    st.dataframe(preview_df, use_container_width=True)
 
 
 def apply_audit_filters(df, key_prefix):
@@ -438,19 +706,34 @@ with tab1:
             st.error(str(e))
 
     if account_registry_df.empty:
-        st.warning("Upload the 'Who made the expense' Excel to populate account name, bank, account number, and currency.")
+        st.warning("Upload the 'Who made the expense' Excel to populate account name, bank, account number, currency, and rate type.")
+        account_options = []
         selected_account = None
     else:
         account_options = account_registry_df.to_dict("records")
+        selected_account_df = pd.DataFrame(account_options)
+        st.dataframe(selected_account_df, use_container_width=True, height=220)
+
+    st.markdown("### Account Information")
+    if account_options:
         selected_account = st.selectbox(
-            "Who made the expense",
+            "Select account",
             account_options,
             format_func=build_account_option_label,
             key="selected_account_registry",
         )
 
-        selected_account_df = pd.DataFrame(account_options)
-        st.dataframe(selected_account_df, use_container_width=True, height=220)
+    account_name = selected_account["account_name"] if selected_account else ""
+    account_number = selected_account["account_number"] if selected_account else ""
+    account_bank = selected_account["bank"] if selected_account else ""
+    statement_currency = selected_account["currency"] if selected_account else "USD"
+    rate_type = selected_account["rate_type"] if selected_account else ""
+
+    st.text_input("Account name", value=account_name, disabled=True)
+    st.text_input("Bank", value=account_bank, disabled=True)
+    st.text_input("Account number / IBAN", value=account_number, disabled=True)
+    st.text_input("Statement currency", value=statement_currency, disabled=True)
+    st.text_input("Rate type", value=rate_type, disabled=True)
 
     st.markdown("### Manual Transaction Entry")
 
@@ -499,20 +782,16 @@ with tab1:
             )
             st.success("Manual transaction saved successfully.")
 
-    st.markdown("### Account Information")
-    account_name = selected_account["account_name"] if selected_account else ""
-    account_number = selected_account["account_number"] if selected_account else ""
-    account_bank = selected_account["bank"] if selected_account else ""
-    statement_currency = selected_account["currency"] if selected_account else "USD"
-
-    st.text_input("Account name", value=account_name, disabled=True)
-    st.text_input("Bank", value=account_bank, disabled=True)
-    st.text_input("Account number / IBAN", value=account_number, disabled=True)
-    st.text_input("Statement currency", value=statement_currency, disabled=True)
-
     uploaded_file = st.file_uploader(
         "Choose a file", type=["csv", "xlsx", "xls", "pdf"]
     )
+
+    pending_review_df = prepare_saved_transactions_for_review(get_saved_transactions())
+
+    if uploaded_file is None and not pending_review_df.empty:
+        st.markdown("### Pending transactions")
+        st.caption("Previously saved pending transactions remain here until you review them.")
+        render_review_queue(pending_review_df, get_categories(), "pending_db")
 
     if uploaded_file is not None:
         try:
@@ -567,6 +846,7 @@ with tab1:
             classified_df["account_name"] = account_name
             classified_df["account_number"] = account_number
             classified_df["bank"] = account_bank
+            classified_df = merge_saved_review_state(classified_df, get_saved_transactions())
 
             st.success(f"Loaded {len(classified_df)} transactions")
 
@@ -583,135 +863,7 @@ with tab1:
             st.markdown("### Review transactions")
 
             categories = get_categories()
-            if "reviewed" not in classified_df.columns:
-                classified_df["reviewed"] = 0
-
-            classified_df = classified_df[classified_df["reviewed"] == 0]
-
-            reviewed_rows = []
-
-            for i, row in classified_df.iterrows():
-                with st.container(border=True):
-                    col1, col2, col3, col4 = st.columns([2, 4, 2, 3])
-
-                    with col1:
-                        st.write(f"**Date:** {row['Date']}")
-                    with col2:
-                        st.write(f"**Description:** {row['Description']}")
-                        st.caption(f"Normalized: {row['normalized_description']}")
-                    with col3:
-                        st.write(f"**Amount:** {row['Amount']:.2f} {row['currency']}")
-                        st.caption(f"USD: {row['usd_amount']:.2f}")
-                    with col4:
-                        st.write(f"**Match type:** {row['match_type']}")
-                        st.caption(f"Currency: {row['currency']}")
-
-                    if row.get("dup_flag", False):
-                        st.error("⚠️ Potential duplicate transaction detected")
-
-                    if row["match_type"] == "exact":
-                        st.info(
-                            f"Identical to past transaction: `{row['matched_reference']}` "
-                            f"→ suggested category: **{row['suggested_category']}**"
-                        )
-                    elif row["match_type"] == "similar":
-                        st.warning(
-                            f"Similar to past transaction: `{row['matched_reference']}` "
-                            f"→ suggested category: **{row['suggested_category']}** "
-                            f"(confidence {row['confidence']})"
-                        )
-                    elif row["match_type"] == "rule":
-                        st.info(
-                            "Rule-based classification "
-                            f"→ suggested category: **{row['suggested_category']}**"
-                        )
-                    elif row["match_type"] == "ai":
-                        st.info(
-                            "AI fallback suggestion "
-                            f"→ suggested category: **{row['suggested_category']}** "
-                            f"(confidence {row['confidence']})"
-                        )
-                    else:
-                        st.error("New or unusual transaction. Review required.")
-
-                    selected_category = st.selectbox(
-                        f"Category for row {i + 1}",
-                        categories,
-                        index=categories.index(row["suggested_category"])
-                        if row["suggested_category"] in categories else 0,
-                        key=f"cat_{i}",
-                    )
-
-                    reviewed = st.checkbox(
-                        f"Mark row {i + 1} as reviewed",
-                        value=False,
-                        key=f"reviewed_{i}",
-                    )
-
-                    final_row = row.to_dict()
-                    final_row["final_category"] = selected_category
-                    final_row["reviewed"] = 1 if reviewed else 0
-                    reviewed_rows.append(final_row)
-
-            if st.button("Save reviewed classifications", type="primary"):
-                final_df = pd.DataFrame(reviewed_rows)
-                reviewed_only = final_df[final_df["reviewed"] == 1].copy()
-
-                reviewed_only["normalized_description"] = reviewed_only["Description"].apply(
-                    lambda x: simplify_merchant(normalize_description(x))
-                )
-
-                reviewed_only["normalized_description"] = reviewed_only.apply(
-                    lambda r: r["normalized_description"]
-                    if str(r["normalized_description"]).strip()
-                    else str(r["Description"]).upper().strip(),
-                    axis=1,
-                )
-
-                reviewed_only = reviewed_only.drop_duplicates(
-                    subset=["Date", "Description", "Amount"]
-                )
-
-                for idx, row in reviewed_only.iterrows():
-                    clean_desc = row.get("normalized_description", "")
-
-                    if not str(clean_desc).strip():
-                        clean_desc = simplify_merchant(normalize_description(row["Description"]))
-
-                    if not str(clean_desc).strip():
-                        clean_desc = str(row["Description"]).upper().strip()
-
-                    remember_transaction(
-                        clean_desc,
-                        row["beneficiary"],
-                        row["transaction_type"],
-                        row["final_category"],
-                    )
-
-                    reviewed_only.at[idx, "normalized_description"] = clean_desc
-
-                save_classified_transactions(reviewed_only)
-
-                st.success(
-                    f"Saved {len(reviewed_only)} reviewed transactions and updated memory."
-                )
-
-            if reviewed_rows:
-                st.markdown("### Preview")
-                preview_df = pd.DataFrame(reviewed_rows)[[
-                    "Date",
-                    "Description",
-                    "normalized_description",
-                    "Amount",
-                    "currency",
-                    "usd_amount",
-                    "match_type",
-                    "suggested_category",
-                    "final_category",
-                    "reviewed",
-                    "dup_flag",
-                ]]
-                st.dataframe(preview_df, use_container_width=True)
+            render_review_queue(classified_df, categories, "uploaded")
 
         except Exception as e:
             st.error(str(e))
@@ -1136,10 +1288,21 @@ with tab4:
             f"audit_filter_{view_option.lower()}",
         )
 
+        column_config = None
+        if view_option == "Transactions":
+            column_config = {
+                "category": st.column_config.SelectboxColumn(
+                    "category",
+                    options=get_categories(),
+                    required=False,
+                )
+            }
+
         edited_audit_df = st.data_editor(
             filtered_audit_df,
             use_container_width=True,
             num_rows="dynamic",
+            column_config=column_config,
             key=f"audit_editor_{view_option.lower()}",
         )
 

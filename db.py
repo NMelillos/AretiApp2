@@ -105,6 +105,7 @@ def init_db():
             bank TEXT,
             account_number TEXT NOT NULL,
             currency TEXT NOT NULL,
+            rate_type TEXT,
             UNIQUE(account_name, account_number)
         )
     """)
@@ -122,6 +123,14 @@ def init_db():
         cur.execute("ALTER TABLE classified_transactions ADD COLUMN account_number TEXT")
     if "bank" not in existing_columns:
         cur.execute("ALTER TABLE classified_transactions ADD COLUMN bank TEXT")
+    if "source_occurrence" not in existing_columns:
+        cur.execute("ALTER TABLE classified_transactions ADD COLUMN source_occurrence INTEGER DEFAULT 0")
+
+    account_registry_columns = {
+        row[1] for row in cur.execute("PRAGMA table_info(account_registry)").fetchall()
+    }
+    if "rate_type" not in account_registry_columns:
+        cur.execute("ALTER TABLE account_registry ADD COLUMN rate_type TEXT")
 
     conn.commit()
 
@@ -176,7 +185,7 @@ def get_account_registry():
     conn = get_connection()
     df = pd.read_sql_query(
         """
-        SELECT id, account_name, bank, account_number, currency
+        SELECT id, account_name, bank, account_number, currency, rate_type
         FROM account_registry
         ORDER BY account_name ASC, bank ASC, account_number ASC
         """,
@@ -279,31 +288,87 @@ def save_classified_transactions(df):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     for _, row in df.iterrows():
-        cur.execute("""
-            INSERT INTO classified_transactions
-            (txn_date, original_description, normalized_description, amount,
-             beneficiary, transaction_type, category, match_type, confidence,
-             reviewed, created_at, currency, usd_amount, account_name,
-             account_number, bank)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            str(row.get("Date", "")),
-            str(row.get("Description", "")),
+        txn_date = str(row.get("Date", ""))
+        description = str(row.get("Description", ""))
+        amount = float(row.get("Amount", 0))
+        currency = str(row.get("currency", "USD"))
+        account_number = str(row.get("account_number", ""))
+        source_occurrence = int(row.get("source_occurrence", 0))
+
+        cur.execute(
+            """
+            SELECT id
+            FROM classified_transactions
+            WHERE txn_date = ?
+              AND original_description = ?
+              AND amount = ?
+              AND currency = ?
+              AND account_number = ?
+              AND COALESCE(source_occurrence, 0) = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (txn_date, description, amount, currency, account_number, source_occurrence),
+        )
+        existing_row = cur.fetchone()
+
+        row_values = (
+            txn_date,
+            description,
             str(row.get("normalized_description", "")),
-            float(row.get("Amount", 0)),
+            amount,
             str(row.get("beneficiary", "")),
             str(row.get("transaction_type", "")),
-            str(row.get("final_category", "")),
+            str(row.get("final_category", row.get("category", ""))),
             str(row.get("match_type", "")),
             float(row.get("confidence", 0)),
             int(row.get("reviewed", 0)),
             now,
-            str(row.get("currency", "USD")),
+            currency,
             float(row.get("usd_amount", row.get("Amount", 0))),
             str(row.get("account_name", "")),
-            str(row.get("account_number", "")),
+            account_number,
             str(row.get("bank", "")),
-        ))
+            source_occurrence,
+        )
+
+        if existing_row:
+            cur.execute(
+                """
+                UPDATE classified_transactions
+                SET txn_date = ?,
+                    original_description = ?,
+                    normalized_description = ?,
+                    amount = ?,
+                    beneficiary = ?,
+                    transaction_type = ?,
+                    category = ?,
+                    match_type = ?,
+                    confidence = ?,
+                    reviewed = ?,
+                    created_at = ?,
+                    currency = ?,
+                    usd_amount = ?,
+                    account_name = ?,
+                    account_number = ?,
+                    bank = ?,
+                    source_occurrence = ?
+                WHERE id = ?
+                """,
+                row_values + (existing_row[0],),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO classified_transactions
+                (txn_date, original_description, normalized_description, amount,
+                 beneficiary, transaction_type, category, match_type, confidence,
+                 reviewed, created_at, currency, usd_amount, account_name,
+                 account_number, bank, source_occurrence)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                row_values,
+            )
 
     conn.commit()
     conn.close()
@@ -395,7 +460,7 @@ def replace_account_registry_records(df):
     _replace_table_from_dataframe(
         "account_registry",
         df,
-        ["id", "account_name", "bank", "account_number", "currency"],
+        ["id", "account_name", "bank", "account_number", "currency", "rate_type"],
         required_columns=["account_name", "account_number", "currency"],
     )
 
@@ -440,6 +505,7 @@ def replace_saved_transaction_records(df):
             "account_name",
             "account_number",
             "bank",
+            "source_occurrence",
         ],
     )
 

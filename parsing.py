@@ -29,6 +29,92 @@ except Exception:
     convert_from_bytes = None
 
 
+DATE_AT_START_PATTERN = re.compile(r"^(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+")
+AMOUNT_TOKEN_PATTERN = re.compile(r"-?\d[\d,]*\.\d{2}")
+PDF_NOISE_MARKERS = [
+    "bank of cyprus",
+    "privacy statement",
+    "privacystatement",
+    "deposit guarantee scheme",
+    "depositguaranteescheme",
+    "analysis of interest rate",
+    "please review the present statement",
+    "if you wish to contact your branch",
+    "you can reach this",
+    "page ",
+    "do not print",
+    "www.",
+    "http://",
+    "https://",
+]
+PDF_BALANCE_SUFFIX_MARKERS = [
+    "total / balance carried forward",
+    "balance carried forward",
+    "balance brought forward",
+]
+
+
+def extract_pdf_transaction_parts(line: str):
+    normalized_line = re.sub(r"\s+", " ", str(line)).strip()
+    if not normalized_line:
+        return None
+
+    date_match = DATE_AT_START_PATTERN.match(normalized_line)
+    if not date_match:
+        return None
+
+    candidate_line = normalized_line
+    candidate_line_lower = candidate_line.lower()
+    for marker in PDF_BALANCE_SUFFIX_MARKERS:
+        marker_index = candidate_line_lower.find(marker)
+        if marker_index != -1:
+            candidate_line = candidate_line[:marker_index].rstrip()
+            break
+
+    amount_matches = list(AMOUNT_TOKEN_PATTERN.finditer(candidate_line))
+    if not amount_matches:
+        return None
+
+    selected_amount = amount_matches[-1]
+    if len(amount_matches) >= 2 and amount_matches[-1].end() == len(candidate_line):
+        # Many bank PDFs end the row with running balance, not transaction amount.
+        selected_amount = amount_matches[-2]
+
+    description = candidate_line[date_match.end():selected_amount.start()].strip()
+    if not description:
+        return None
+
+    return (
+        date_match.group(1),
+        description,
+        selected_amount.group(0).replace(",", ""),
+    )
+
+
+def is_pdf_noise_line(line: str):
+    normalized_line = re.sub(r"\s+", " ", str(line)).strip().lower()
+    if not normalized_line:
+        return True
+
+    if any(marker in normalized_line for marker in PDF_NOISE_MARKERS):
+        return True
+
+    compact_line = normalized_line.replace(" ", "")
+    if "page" in normalized_line and re.search(r"\d+\s*/\s*\d+", normalized_line):
+        return True
+
+    if re.search(r"\biban\b|\bbic\b|\bbranch\b|\bstatement\b", normalized_line) and len(normalized_line) > 40:
+        return True
+
+    if normalized_line.count("%") >= 2:
+        return True
+
+    if "." in compact_line and len(re.findall(r"[a-z]", compact_line)) > 20 and compact_line.count(".") >= 3:
+        return True
+
+    return False
+
+
 def detect_columns(df: pd.DataFrame):
     date_col = None
     desc_col = None
@@ -175,9 +261,6 @@ def parse_pdf(uploaded_file):
         try:
             uploaded_file.seek(0)
             data = []
-            transaction_pattern = re.compile(
-                r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(.*?)\s+(-?\d[\d,]*\.\d{2})$"
-            )
 
             with pdfplumber.open(uploaded_file) as pdf:
                 for page in pdf.pages:
@@ -192,19 +275,19 @@ def parse_pdf(uploaded_file):
                             if not line:
                                 continue
 
-                            match = transaction_pattern.search(line)
+                            match = extract_pdf_transaction_parts(line)
 
                             if match:
                                 if current_transaction is not None:
                                     data.append(current_transaction)
 
-                                date, desc, amount = match.groups()
+                                date, desc, amount = match
                                 current_transaction = [
                                     date,
                                     desc.strip(),
                                     amount.replace(",", ""),
                                 ]
-                            elif current_transaction is not None:
+                            elif current_transaction is not None and not is_pdf_noise_line(line):
                                 current_transaction[1] = (
                                     f"{current_transaction[1]} {line}"
                                 ).strip()

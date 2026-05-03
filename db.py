@@ -9,25 +9,7 @@ import pandas as pd
 
 DB_PATH = str((Path(__file__).resolve().parent / "transactions.db").resolve())
 
-DEFAULT_CATEGORIES = [
-    "Subscriptions",
-    "Bank Fees",
-    "Own Funds",
-    "Utilities",
-    "Rent",
-    "Salaries",
-    "Office Supplies",
-    "Travel",
-    "Insurance",
-    "Taxes",
-    "Professional Services",
-    "Online Shopping",
-    "Entertainment",
-    "Marketing",
-    "Software",
-    "Telephone",
-    "Other",
-]
+DEFAULT_CATEGORIES = []
 
 
 def get_connection():
@@ -41,7 +23,9 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS category_list (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category TEXT UNIQUE NOT NULL
+            category TEXT NOT NULL,
+            subcategory TEXT,
+            UNIQUE(category, subcategory)
         )
     """)
 
@@ -132,6 +116,29 @@ def init_db():
     if "rate_type" not in account_registry_columns:
         cur.execute("ALTER TABLE account_registry ADD COLUMN rate_type TEXT")
 
+    category_columns = {
+        row[1] for row in cur.execute("PRAGMA table_info(category_list)").fetchall()
+    }
+    if "subcategory" not in category_columns:
+        legacy_categories = cur.execute(
+            "SELECT id, category FROM category_list ORDER BY id ASC"
+        ).fetchall()
+        cur.execute("ALTER TABLE category_list RENAME TO category_list_legacy")
+        cur.execute("""
+            CREATE TABLE category_list (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                subcategory TEXT,
+                UNIQUE(category, subcategory)
+            )
+        """)
+        if legacy_categories:
+            cur.executemany(
+                "INSERT INTO category_list (id, category, subcategory) VALUES (?, ?, ?)",
+                [(row_id, category, "") for row_id, category in legacy_categories],
+            )
+        cur.execute("DROP TABLE category_list_legacy")
+
     conn.commit()
 
     cur.execute("SELECT COUNT(*) FROM category_list")
@@ -150,7 +157,7 @@ def init_db():
 def get_categories():
     conn = get_connection()
     df = pd.read_sql_query(
-        "SELECT category FROM category_list ORDER BY category ASC",
+        "SELECT DISTINCT category FROM category_list ORDER BY category ASC",
         conn
     )
     conn.close()
@@ -160,7 +167,7 @@ def get_categories():
 def get_category_records():
     conn = get_connection()
     df = pd.read_sql_query(
-        "SELECT id, category FROM category_list ORDER BY id ASC",
+        "SELECT id, category, COALESCE(subcategory, '') AS subcategory FROM category_list ORDER BY category ASC, subcategory ASC, id ASC",
         conn
     )
     conn.close()
@@ -195,15 +202,16 @@ def get_account_registry():
     return df
 
 
-def add_category(category: str):
+def add_category(category: str, subcategory: str = ""):
     category = str(category).strip()
+    subcategory = str(subcategory).strip()
     if not category:
         return
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT OR IGNORE INTO category_list (category) VALUES (?)",
-        (category,)
+        "INSERT OR IGNORE INTO category_list (category, subcategory) VALUES (?, ?)",
+        (category, subcategory)
     )
     conn.commit()
     conn.close()
@@ -213,12 +221,26 @@ def replace_categories(categories):
     cleaned_categories = []
     seen = set()
 
-    for category in categories:
-        value = str(category).strip()
-        if not value or value in seen:
+    for entry in categories:
+        if isinstance(entry, dict):
+            category = str(entry.get("category", "")).strip()
+            subcategory = str(entry.get("subcategory", "")).strip()
+        elif isinstance(entry, (list, tuple)):
+            category = str(entry[0]).strip() if len(entry) > 0 else ""
+            subcategory = str(entry[1]).strip() if len(entry) > 1 else ""
+        else:
+            category = str(entry).strip()
+            subcategory = ""
+
+        if not category:
             continue
-        cleaned_categories.append(value)
-        seen.add(value)
+
+        dedupe_key = (category, subcategory)
+        if dedupe_key in seen:
+            continue
+
+        cleaned_categories.append((category, subcategory))
+        seen.add(dedupe_key)
 
     if not cleaned_categories:
         return
@@ -227,8 +249,8 @@ def replace_categories(categories):
     cur = conn.cursor()
     cur.execute("DELETE FROM category_list")
     cur.executemany(
-        "INSERT INTO category_list (category) VALUES (?)",
-        [(category,) for category in cleaned_categories],
+        "INSERT INTO category_list (category, subcategory) VALUES (?, ?)",
+        cleaned_categories,
     )
     conn.commit()
     conn.close()
@@ -442,7 +464,7 @@ def replace_category_records(df):
     _replace_table_from_dataframe(
         "category_list",
         df,
-        ["id", "category"],
+        ["id", "category", "subcategory"],
         required_columns=["category"],
     )
 

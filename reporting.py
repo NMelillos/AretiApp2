@@ -105,6 +105,60 @@ def build_csv_report(context: dict) -> bytes:
     return exports["transactions"].to_csv(index=False).encode("utf-8")
 
 
+def build_access_backup_frame(saved_df: pd.DataFrame) -> pd.DataFrame:
+    export_columns = [
+        "txn_date",
+        "original_description",
+        "normalized_description",
+        "amount",
+        "currency",
+        "usd_amount",
+        "beneficiary",
+        "transaction_type",
+        "category",
+        "match_type",
+        "confidence",
+        "reviewed",
+        "account_name",
+        "account_number",
+        "bank",
+        "source_occurrence",
+        "created_at",
+    ]
+    rename_map = {
+        "txn_date": "transaction_date",
+        "original_description": "description",
+    }
+
+    work = saved_df.copy()
+    for column in export_columns:
+        if column not in work.columns:
+            work[column] = ""
+
+    backup_df = work[export_columns].rename(columns=rename_map)
+    if "transaction_date" in backup_df.columns:
+        backup_df["transaction_date"] = pd.to_datetime(
+            backup_df["transaction_date"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+        backup_df["transaction_date"] = backup_df["transaction_date"].fillna("")
+
+    return backup_df
+
+
+def build_access_backup_csv(saved_df: pd.DataFrame) -> bytes:
+    return build_access_backup_frame(saved_df).to_csv(index=False).encode("utf-8")
+
+
+def build_access_backup_excel(saved_df: pd.DataFrame) -> bytes:
+    output = BytesIO()
+    backup_df = build_access_backup_frame(saved_df)
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        backup_df.to_excel(writer, index=False, sheet_name="Transactions")
+
+    return output.getvalue()
+
+
 def _pdf_table_from_df(df: pd.DataFrame, max_rows=20):
     if df.empty:
         return [["No data available"]]

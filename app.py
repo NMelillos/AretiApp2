@@ -40,6 +40,8 @@ from mailer import (
 from parsing import parse_csv, parse_excel, parse_pdf
 from reporting import (
     REPORTLAB_AVAILABLE,
+    build_access_backup_csv,
+    build_access_backup_excel,
     build_csv_report,
     build_excel_report,
     build_pdf_report,
@@ -98,11 +100,88 @@ def parse_rate_month(value):
 
 def extract_currency_from_rate_label(label):
     text = str(label).strip().replace("–", "-").replace("—", "-")
-    if "-" not in text:
-        return ""
+    for separator in ["/", "-"]:
+        if separator not in text:
+            continue
 
-    _, right_part = text.split("-", 1)
-    return normalize_currency_code(right_part)
+        left_part, right_part = text.split(separator, 1)
+        left_currency = normalize_currency_code(left_part)
+        right_currency = normalize_currency_code(right_part)
+
+        if left_currency == "USD" and right_currency:
+            return right_currency
+        if right_currency == "USD" and left_currency:
+            return left_currency
+        if left_currency == right_currency and left_currency:
+            return left_currency
+        if left_currency:
+            return left_currency
+        if right_currency:
+            return right_currency
+
+    return ""
+
+
+def convert_uploaded_rate_to_usd(label, raw_rate):
+    text = str(label).strip().replace("–", "-").replace("—", "-")
+    rate_value = float(raw_rate)
+
+    for separator in ["/", "-"]:
+        if separator not in text:
+            continue
+
+        left_part, right_part = text.split(separator, 1)
+        left_currency = normalize_currency_code(left_part)
+        right_currency = normalize_currency_code(right_part)
+
+        if left_currency == right_currency == "USD":
+            return 1.0
+        if right_currency == "USD":
+            return rate_value
+        if left_currency == "USD" and rate_value > 0:
+            return round(1 / rate_value, 8)
+
+    return rate_value
+
+
+def parse_latest_monthly_rates_excel(uploaded_file):
+    uploaded_file.seek(0)
+    raw_df = pd.read_excel(uploaded_file, header=None)
+    report_month = pd.Timestamp.today().to_period("M").strftime("%Y-%m")
+    records = []
+
+    for row_index in range(len(raw_df)):
+        label = raw_df.iat[row_index, 0]
+        source_currency = extract_currency_from_rate_label(label)
+        if not source_currency:
+            continue
+
+        rate_value = None
+        for column_index in range(1, raw_df.shape[1]):
+            raw_rate = raw_df.iat[row_index, column_index]
+            numeric_rate = pd.to_numeric(pd.Series([raw_rate]), errors="coerce").iloc[0]
+            if pd.notna(numeric_rate) and float(numeric_rate) > 0:
+                rate_value = float(numeric_rate)
+                break
+
+        if rate_value is None:
+            continue
+
+        records.append({
+            "report_month": report_month,
+            "source_currency": source_currency,
+            "rate_to_usd": 1.0 if source_currency == "USD" else convert_uploaded_rate_to_usd(label, rate_value),
+        })
+
+    if not records:
+        raise ValueError("Could not extract any FX rates from the uploaded Excel file.")
+
+    rates_df = pd.DataFrame(records)
+    rates_df = rates_df.drop_duplicates(
+        subset=["report_month", "source_currency"],
+        keep="last",
+    ).sort_values(["report_month", "source_currency"])
+    return rates_df
 
 
 def parse_monthly_rates_excel(uploaded_file):
@@ -124,7 +203,7 @@ def parse_monthly_rates_excel(uploaded_file):
             month_columns = parsed_months
 
     if not month_columns:
-        raise ValueError("Could not detect month columns in the rates Excel file.")
+        return parse_latest_monthly_rates_excel(uploaded_file)
 
     records = []
 
@@ -144,7 +223,7 @@ def parse_monthly_rates_excel(uploaded_file):
             if source_currency == "USD":
                 rate_to_usd = 1.0
             else:
-                rate_to_usd = round(1 / float(rate_value), 8)
+                rate_to_usd = convert_uploaded_rate_to_usd(label, rate_value)
 
             records.append({
                 "report_month": report_month,
@@ -216,6 +295,32 @@ def parse_account_registry_excel(uploaded_file):
     return records_df
 
 
+def parse_category_excel(uploaded_file):
+    uploaded_file.seek(0)
+    df = pd.read_excel(uploaded_file)
+    normalized_columns = {str(column).strip().lower(): column for column in df.columns}
+
+    if "category" not in normalized_columns:
+        raise ValueError("Excel must have a column named 'category'.")
+
+    subcategory_column = normalized_columns.get("subcategory")
+    records_df = pd.DataFrame({
+        "category": df[normalized_columns["category"]],
+        "subcategory": df[subcategory_column] if subcategory_column else "",
+    })
+
+    records_df["category"] = records_df["category"].fillna("").astype(str).str.strip()
+    records_df["subcategory"] = records_df["subcategory"].fillna("").astype(str).str.strip()
+    records_df = records_df[records_df["category"] != ""]
+    records_df = records_df.drop_duplicates(subset=["category", "subcategory"], keep="last")
+    records_df = records_df.sort_values(["category", "subcategory"]).reset_index(drop=True)
+
+    if records_df.empty:
+        raise ValueError("No valid category rows found in the uploaded Excel file.")
+
+    return records_df
+
+
 def build_account_option_label(row):
     bank = str(row.get("bank", "")).strip()
     account_number = str(row.get("account_number", "")).strip()
@@ -277,7 +382,7 @@ def attach_statement_currency(df, statement_currency, rates_df):
     current_rate = get_current_rate(rates_lookup, statement_currency)
     if current_rate is None:
         raise ValueError(
-            f"Missing current USD rate for {statement_currency}. Upload the monthly rates Excel first."
+            f"Missing current USD rate for {statement_currency}. Upload a newer monthly rates Excel file or use the latest saved rates upload."
         )
 
     work["usd_amount"] = work["Amount"] * float(current_rate)
@@ -373,7 +478,7 @@ def prepare_saved_transactions_for_review(saved_df):
         "amount": "Amount",
         "category": "final_category",
     })
-    pending_df["suggested_category"] = pending_df["final_category"].fillna("Other")
+    pending_df["suggested_category"] = pending_df["final_category"].fillna("")
     pending_df["matched_reference"] = (
         pending_df["matched_reference"] if "matched_reference" in pending_df.columns else ""
     )
@@ -402,8 +507,12 @@ def prepare_saved_transactions_for_review(saved_df):
     return pending_df
 
 
-def render_review_queue(review_df, categories, section_key):
+def render_review_queue(review_df, categories, section_key, action_container=None):
     if review_df is None or review_df.empty:
+        return
+
+    if not categories:
+        st.error("No categories are configured. Upload your categories Excel first.")
         return
 
     working_df = review_df.copy()
@@ -461,13 +570,17 @@ def render_review_queue(review_df, categories, section_key):
             else:
                 st.error("New or unusual transaction. Review required.")
 
+            default_category = ""
+            if row.get("final_category") in categories:
+                default_category = row["final_category"]
+            elif row.get("suggested_category") in categories:
+                default_category = row["suggested_category"]
+
             selected_category = st.selectbox(
                 f"Category for row {i + 1}",
                 categories,
-                index=categories.index(row["final_category"])
-                if row.get("final_category") in categories
-                else categories.index(row["suggested_category"])
-                if row["suggested_category"] in categories else 0,
+                index=categories.index(default_category) if default_category in categories else None,
+                placeholder="Select a category",
                 key=f"cat_{section_key}_{i}",
             )
 
@@ -482,10 +595,20 @@ def render_review_queue(review_df, categories, section_key):
             final_row["reviewed"] = 1 if reviewed else 0
             reviewed_rows.append(final_row)
 
-    if st.button("Save reviewed classifications", type="primary", key=f"save_{section_key}"):
+    button_host = action_container if action_container is not None else st
+
+    if button_host.button("Save reviewed classifications", type="primary", key=f"save_{section_key}"):
         final_df = pd.DataFrame(reviewed_rows)
         if final_df.empty:
             st.info("No transactions available to save.")
+            return
+
+        missing_review_categories = final_df[
+            (final_df["reviewed"] == 1)
+            & final_df["final_category"].fillna("").astype(str).str.strip().eq("")
+        ]
+        if not missing_review_categories.empty:
+            st.error("Select a category for every reviewed transaction before saving.")
             return
 
         final_df["normalized_description"] = final_df["Description"].apply(
@@ -512,7 +635,7 @@ def render_review_queue(review_df, categories, section_key):
             if not str(clean_desc).strip():
                 clean_desc = str(row["Description"]).upper().strip()
 
-            if int(row.get("reviewed", 0)) == 1:
+            if int(row.get("reviewed", 0)) == 1 and str(row.get("final_category", "")).strip():
                 remember_transaction(
                     clean_desc,
                     row["beneficiary"],
@@ -523,6 +646,7 @@ def render_review_queue(review_df, categories, section_key):
             final_df.at[idx, "normalized_description"] = clean_desc
 
         save_classified_transactions(final_df)
+        update_access_backup_state(get_saved_transactions())
         st.success(
             f"Saved {int((final_df['reviewed'] == 1).sum())} reviewed transactions. "
             f"{int((final_df['reviewed'] == 0).sum())} transactions remain pending."
@@ -623,6 +747,50 @@ def merge_filtered_audit_edits(original_df, filtered_original_df, edited_filtere
 
     return updated_df.reindex(columns=original_df.columns)
 
+
+def update_access_backup_state(saved_df=None):
+    backup_df = get_saved_transactions() if saved_df is None else saved_df.copy()
+    if backup_df is None or backup_df.empty:
+        st.session_state.pop("access_backup_csv", None)
+        st.session_state.pop("access_backup_excel", None)
+        st.session_state.pop("access_backup_file_stub", None)
+        return
+
+    file_stub = f"areti_access_backup_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
+    st.session_state["access_backup_csv"] = build_access_backup_csv(backup_df)
+    st.session_state["access_backup_excel"] = build_access_backup_excel(backup_df)
+    st.session_state["access_backup_file_stub"] = file_stub
+
+
+def render_access_backup_panel():
+    backup_csv = st.session_state.get("access_backup_csv")
+    backup_excel = st.session_state.get("access_backup_excel")
+    file_stub = st.session_state.get("access_backup_file_stub", "areti_access_backup")
+
+    if not backup_csv or not backup_excel:
+        return
+
+    st.warning(
+        "Hosted app storage can reset. Download this backup after each save so you can import it into Access."
+    )
+    backup_col1, backup_col2 = st.columns(2)
+
+    with backup_col1:
+        st.download_button(
+            label="Download Latest Access Backup CSV",
+            data=backup_csv,
+            file_name=f"{file_stub}.csv",
+            mime="text/csv",
+        )
+
+    with backup_col2:
+        st.download_button(
+            label="Download Latest Access Backup Excel",
+            data=backup_excel,
+            file_name=f"{file_stub}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
 st.set_page_config(page_title="CFO Financial Dashboard", layout="wide")
 init_db()
 
@@ -644,19 +812,17 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # -------------------------
 with tab1:
     st.subheader("Upload CSV, Excel, or PDF statement")
+    render_access_backup_panel()
 
     rates_df = get_monthly_rates()
     account_registry_df = get_account_registry()
 
     st.markdown("### Monthly FX Rates")
     rates_file = st.file_uploader(
-        "Upload monthly rates Excel",
+        "Upload monthly rates Excel (optional)",
         type=["xlsx", "xls"],
         key="monthly_rates_upload",
     )
-
-    if rates_file is None:
-        st.session_state["processed_rates_file"] = None
 
     if rates_file is not None:
         try:
@@ -679,7 +845,7 @@ with tab1:
             .sort_index()
         )
         st.dataframe(rates_table, use_container_width=True)
-        st.caption("Rates are stored as USD equivalent per 1 unit of source currency.")
+        st.caption("Rates are stored as USD equivalent per 1 unit of source currency and reused until you upload a newer rates file.")
 
     available_currencies = get_statement_currencies(rates_df)
 
@@ -742,9 +908,14 @@ with tab1:
         m_desc = st.text_input("Description")
         m_amount = st.number_input("Amount", format="%.2f")
         m_currency = st.selectbox("Currency", available_currencies, key="manual_currency")
-        m_category = st.selectbox("Category", get_categories(), key="manual_category")
+        manual_categories = get_categories()
+        if manual_categories:
+            m_category = st.selectbox("Category", manual_categories, key="manual_category")
+        else:
+            st.warning("Upload your categories Excel before adding manual transactions.")
+            m_category = None
 
-        if st.button("Add Manual Transaction"):
+        if st.button("Add Manual Transaction", disabled=not manual_categories):
             norm_desc = simplify_merchant(normalize_description(m_desc))
             beneficiary = extract_beneficiary(m_desc)
             txn_type = infer_transaction_type(m_desc, m_amount)
@@ -780,7 +951,9 @@ with tab1:
                 txn_type,
                 m_category,
             )
+            update_access_backup_state(get_saved_transactions())
             st.success("Manual transaction saved successfully.")
+            st.rerun()
 
     uploaded_file = st.file_uploader(
         "Choose a file", type=["csv", "xlsx", "xls", "pdf"]
@@ -789,9 +962,15 @@ with tab1:
     pending_review_df = prepare_saved_transactions_for_review(get_saved_transactions())
 
     if uploaded_file is None and not pending_review_df.empty:
+        pending_action_container = st.container()
         st.markdown("### Pending transactions")
         st.caption("Previously saved pending transactions remain here until you review them.")
-        render_review_queue(pending_review_df, get_categories(), "pending_db")
+        render_review_queue(
+            pending_review_df,
+            get_categories(),
+            "pending_db",
+            action_container=pending_action_container,
+        )
 
     if uploaded_file is not None:
         try:
@@ -830,6 +1009,11 @@ with tab1:
             df = detect_duplicates(df)
 
             # classify
+            categories = get_categories()
+            if not categories:
+                st.error("Upload your categories Excel before classifying transactions.")
+                st.stop()
+
             memory_df = get_memory()
             classified_df = classify_transactions(df, memory_df)
             if "reviewed" not in classified_df.columns:
@@ -862,7 +1046,6 @@ with tab1:
 
             st.markdown("### Review transactions")
 
-            categories = get_categories()
             render_review_queue(classified_df, categories, "uploaded")
 
         except Exception as e:
@@ -1197,6 +1380,28 @@ with tab3:
             else:
                 st.info("Install reportlab for PDF report generation.")
 
+        st.markdown("### Full Backup For Access")
+        st.caption("This exports the full saved transactions table, not only the filtered report above.")
+        access_backup_col1, access_backup_col2 = st.columns(2)
+
+        with access_backup_col1:
+            access_backup_csv = build_access_backup_csv(saved_df)
+            st.download_button(
+                label="Download Full Access Backup CSV",
+                data=access_backup_csv,
+                file_name="areti_access_full_backup.csv",
+                mime="text/csv",
+            )
+
+        with access_backup_col2:
+            access_backup_excel = build_access_backup_excel(saved_df)
+            st.download_button(
+                label="Download Full Access Backup Excel",
+                data=access_backup_excel,
+                file_name="areti_access_full_backup.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
         st.markdown("### Monthly Email Reports")
 
         secrets_cfg = get_secrets_config()
@@ -1290,13 +1495,14 @@ with tab4:
 
         column_config = None
         if view_option == "Transactions":
+            category_options = get_categories()
             column_config = {
                 "category": st.column_config.SelectboxColumn(
                     "category",
-                    options=get_categories(),
+                    options=category_options,
                     required=False,
                 )
-            }
+            } if category_options else None
 
         edited_audit_df = st.data_editor(
             filtered_audit_df,
@@ -1327,47 +1533,48 @@ with tab4:
 
     st.subheader("Manage categories")
 
-    current_categories = get_categories()
-    st.write(", ".join(current_categories))
+    current_category_records = get_category_records()
+    if current_category_records.empty:
+        st.info("No categories uploaded yet.")
+    else:
+        st.dataframe(
+            current_category_records[["category", "subcategory"]],
+            use_container_width=True,
+            hide_index=True,
+        )
 
     new_category = st.text_input("Add new category")
+    new_subcategory = st.text_input("Add subcategory (optional)")
 
     if st.button("Add category"):
-        add_category(new_category)
+        add_category(new_category, new_subcategory)
         st.success(f"Category added: {new_category}")
         st.rerun()
 
     st.markdown("### Upload Categories from Excel")
 
-    cat_file = st.file_uploader("Upload categories file", type=["xlsx"])
+    cat_file = st.file_uploader("Upload categories file", type=["xlsx", "xls"])
 
     if cat_file is not None:
         try:
             from db import replace_categories
 
-            df_cat = pd.read_excel(cat_file)
+            imported_categories_df = parse_category_excel(cat_file)
 
-            if "category" not in df_cat.columns:
-                st.error("Excel must have a column named 'category'")
-            else:
-                imported_categories = (
-                    df_cat["category"].dropna().astype(str).str.strip()
+            with st.expander(
+                f"Imported category rows ({len(imported_categories_df)})",
+                expanded=True,
+            ):
+                st.dataframe(
+                    imported_categories_df,
+                    use_container_width=True,
+                    height=320,
+                    hide_index=True,
                 )
-                imported_categories = imported_categories[imported_categories != ""]
 
-                with st.expander(
-                    f"Imported categories ({len(imported_categories)})",
-                    expanded=True,
-                ):
-                    st.dataframe(
-                        pd.DataFrame({"category": imported_categories}).reset_index(drop=True),
-                        use_container_width=True,
-                        height=320,
-                    )
-
-                replace_categories(imported_categories.tolist())
-                st.success("Categories updated from Excel.")
-                st.rerun()
+            replace_categories(imported_categories_df.to_dict("records"))
+            st.success("Categories updated from Excel.")
+            st.rerun()
 
         except Exception as e:
             st.error(str(e))

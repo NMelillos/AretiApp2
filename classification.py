@@ -174,6 +174,7 @@ def classify_transactions(df: pd.DataFrame, memory_df: pd.DataFrame):
         if rule_cat:
             suggestions.append({
                 "suggested_category": rule_cat,
+                "suggested_subcategory": "",
                 "match_type": rule_match_type,
                 "matched_reference": normalized,
                 "confidence": rule_conf,
@@ -184,6 +185,7 @@ def classify_transactions(df: pd.DataFrame, memory_df: pd.DataFrame):
         if exact and exact["category"] in categories:
             suggestions.append({
                 "suggested_category": exact["category"],
+                "suggested_subcategory": "",
                 "match_type": "exact",
                 "matched_reference": exact["normalized_description"],
                 "confidence": 1.0,
@@ -194,6 +196,7 @@ def classify_transactions(df: pd.DataFrame, memory_df: pd.DataFrame):
         if similar and similar["category"] in categories:
             suggestions.append({
                 "suggested_category": similar["category"],
+                "suggested_subcategory": "",
                 "match_type": "similar",
                 "matched_reference": similar["normalized_description"],
                 "confidence": round(float(similar.get("score", 0.85)), 2),
@@ -208,6 +211,7 @@ def classify_transactions(df: pd.DataFrame, memory_df: pd.DataFrame):
         )
         suggestions.append({
             "suggested_category": ai_cat,
+            "suggested_subcategory": "",
             "match_type": ai_type,
             "matched_reference": "",
             "confidence": ai_conf,

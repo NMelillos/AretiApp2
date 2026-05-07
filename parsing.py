@@ -30,6 +30,7 @@ except Exception:
 
 
 DATE_AT_START_PATTERN = re.compile(r"^(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+")
+REVOLUT_DATE_PATTERN = re.compile(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}$")
 AMOUNT_TOKEN_PATTERN = re.compile(r"-?\d[\d,]*\.\d{2}")
 PDF_NOISE_MARKERS = [
     "bank of cyprus",
@@ -52,6 +53,205 @@ PDF_BALANCE_SUFFIX_MARKERS = [
     "balance carried forward",
     "balance brought forward",
 ]
+REVOLUT_NOISE_MARKERS = [
+    "revolut",
+    "eur statement",
+    "generated on",
+    "revolut bank uab",
+    "balance summary",
+    "opening balance",
+    "closing balance",
+    "account transactions from",
+    "report lost or stolen card",
+    "get help directly in-app",
+    "scan the qr code",
+    "authorization code",
+    "deposit protection",
+    "www.lietuvosbankas.lt",
+    "page ",
+]
+
+
+def build_parsed_transaction_df(df: pd.DataFrame, currency: str = "EUR"):
+    work = df.copy()
+    work["Amount"] = pd.to_numeric(work["Amount"], errors="coerce").fillna(0)
+    work["Date"] = pd.to_datetime(work["Date"], errors="coerce", dayfirst=True)
+    work = work.dropna(subset=["Date"]).copy()
+    work["Date"] = work["Date"].dt.strftime("%Y-%m-%d")
+    work["Description"] = work["Description"].fillna("").astype(str).str.strip()
+
+    work["normalized_description"] = work["Description"].apply(normalize_description)
+    work["normalized_description"] = work["normalized_description"].apply(simplify_merchant)
+    work["beneficiary"] = work["Description"].apply(extract_beneficiary)
+    work["transaction_type"] = work.apply(
+        lambda r: infer_transaction_type(r["Description"], r["Amount"]),
+        axis=1
+    )
+    work["currency"] = currency
+    work["usd_amount"] = work["Amount"]
+    return work
+
+
+def group_pdf_words_by_line(words, tolerance: float = 3.0):
+    grouped_lines = []
+
+    for word in sorted(words, key=lambda item: (item["top"], item["x0"])):
+        if not grouped_lines or abs(word["top"] - grouped_lines[-1]["top"]) > tolerance:
+            grouped_lines.append({"top": word["top"], "words": [word]})
+        else:
+            grouped_lines[-1]["words"].append(word)
+
+    for line in grouped_lines:
+        line["words"] = sorted(line["words"], key=lambda item: item["x0"])
+
+    return grouped_lines
+
+
+def is_revolut_pdf_noise_line(text: str):
+    normalized_text = re.sub(r"\s+", " ", str(text)).strip().lower()
+    if not normalized_text:
+        return True
+
+    return any(marker in normalized_text for marker in REVOLUT_NOISE_MARKERS)
+
+
+def detect_revolut_header_positions(line_words):
+    positions = {}
+
+    for word in line_words:
+        text = str(word["text"]).strip().lower()
+        if text == "date" and "date" not in positions:
+            positions["date"] = word["x0"]
+        elif text == "description":
+            positions["description"] = word["x0"]
+        elif text == "money":
+            positions.setdefault("money", []).append(word["x0"])
+        elif text == "balance":
+            positions["balance"] = word["x0"]
+
+    if "description" not in positions or "balance" not in positions or len(positions.get("money", [])) < 2:
+        return None
+
+    money_positions = sorted(positions["money"])
+    return {
+        "date": positions.get("date", 0),
+        "description": positions["description"],
+        "money_out": money_positions[0],
+        "money_in": money_positions[1],
+        "balance": positions["balance"],
+    }
+
+
+def parse_revolut_amount(text: str):
+    cleaned = str(text).replace(",", "").replace("€", "").strip()
+    match = re.search(r"-?\d[\d,]*\.\d{2}", cleaned)
+    if not match:
+        return None
+    return float(match.group(0).replace(",", ""))
+
+
+def parse_revolut_transaction_line(line_words, header_positions):
+    date_boundary = header_positions["description"] - 8
+    description_boundary = header_positions["money_out"] - 8
+    money_in_boundary = header_positions["balance"] - 8
+
+    date_parts = [word["text"] for word in line_words if word["x0"] < date_boundary]
+    description_parts = [
+        word["text"] for word in line_words
+        if header_positions["description"] - 8 <= word["x0"] < description_boundary
+    ]
+    money_out_parts = [
+        word["text"] for word in line_words
+        if header_positions["money_out"] - 8 <= word["x0"] < header_positions["money_in"] - 8
+    ]
+    money_in_parts = [
+        word["text"] for word in line_words
+        if header_positions["money_in"] - 8 <= word["x0"] < money_in_boundary
+    ]
+
+    date_text = " ".join(date_parts).strip()
+    description_text = " ".join(description_parts).strip()
+    money_out_text = " ".join(money_out_parts).strip()
+    money_in_text = " ".join(money_in_parts).strip()
+
+    if not REVOLUT_DATE_PATTERN.match(date_text):
+        return None
+
+    money_out_amount = parse_revolut_amount(money_out_text)
+    money_in_amount = parse_revolut_amount(money_in_text)
+
+    if money_out_amount is None and money_in_amount is None:
+        return None
+
+    amount = money_in_amount if money_in_amount is not None else -money_out_amount
+    return {
+        "Date": date_text,
+        "Description": description_text,
+        "Amount": amount,
+    }
+
+
+def parse_revolut_pdf(uploaded_file):
+    if pdfplumber is None:
+        return None
+
+    uploaded_file.seek(0)
+    transactions = []
+
+    with pdfplumber.open(uploaded_file) as pdf:
+        first_page_text = (pdf.pages[0].extract_text() or "").lower() if pdf.pages else ""
+        if "revolut" not in first_page_text:
+            return None
+
+        for page in pdf.pages:
+            words = page.extract_words(x_tolerance=1, y_tolerance=3, keep_blank_chars=False)
+            if not words:
+                continue
+
+            lines = group_pdf_words_by_line(words)
+            header_positions = None
+            current_transaction = None
+
+            for line in lines:
+                line_text = " ".join(word["text"] for word in line["words"]).strip()
+                if not line_text:
+                    continue
+
+                if header_positions is None:
+                    header_positions = detect_revolut_header_positions(line["words"])
+                    continue
+
+                if is_revolut_pdf_noise_line(line_text):
+                    continue
+
+                transaction = parse_revolut_transaction_line(line["words"], header_positions)
+                if transaction is not None:
+                    if current_transaction is not None:
+                        transactions.append(current_transaction)
+                    current_transaction = transaction
+                    continue
+
+                if current_transaction is None:
+                    continue
+
+                description_only_parts = [
+                    word["text"]
+                    for word in line["words"]
+                    if header_positions["description"] - 8 <= word["x0"] < header_positions["money_out"] - 8
+                ]
+                continuation_text = " ".join(description_only_parts).strip()
+                if continuation_text and not is_revolut_pdf_noise_line(continuation_text):
+                    current_transaction["Description"] = (
+                        f"{current_transaction['Description']} {continuation_text}"
+                    ).strip()
+
+            if current_transaction is not None:
+                transactions.append(current_transaction)
+
+    if not transactions:
+        return None
+
+    return build_parsed_transaction_df(pd.DataFrame(transactions), currency="EUR")
 
 
 def extract_pdf_transaction_parts(line: str):
@@ -257,6 +457,10 @@ def parse_excel(uploaded_file):
 
 
 def parse_pdf(uploaded_file):
+    revolut_df = parse_revolut_pdf(uploaded_file)
+    if revolut_df is not None and not revolut_df.empty:
+        return revolut_df
+
     if pdfplumber is not None:
         try:
             uploaded_file.seek(0)
@@ -297,17 +501,7 @@ def parse_pdf(uploaded_file):
 
             if data:
                 df = pd.DataFrame(data, columns=["Date", "Description", "Amount"])
-                df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0)
-                df["Date"] = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True).dt.strftime("%Y-%m-%d")
-
-                df["normalized_description"] = df["Description"].apply(normalize_description)
-                df["normalized_description"] = df["normalized_description"].apply(simplify_merchant)
-                df["beneficiary"] = df["Description"].apply(extract_beneficiary)
-                df["transaction_type"] = df.apply(
-                    lambda r: infer_transaction_type(r["Description"], r["Amount"]),
-                    axis=1
-                )
-                return df
+                return build_parsed_transaction_df(df, currency="EUR")
         except Exception:
             pass
 

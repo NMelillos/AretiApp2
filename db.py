@@ -53,6 +53,7 @@ def init_db():
             beneficiary TEXT,
             transaction_type TEXT,
             category TEXT,
+            subcategory TEXT,
             match_type TEXT,
             confidence REAL,
             reviewed INTEGER DEFAULT 0,
@@ -109,6 +110,8 @@ def init_db():
         cur.execute("ALTER TABLE classified_transactions ADD COLUMN bank TEXT")
     if "source_occurrence" not in existing_columns:
         cur.execute("ALTER TABLE classified_transactions ADD COLUMN source_occurrence INTEGER DEFAULT 0")
+    if "subcategory" not in existing_columns:
+        cur.execute("ALTER TABLE classified_transactions ADD COLUMN subcategory TEXT")
 
     account_registry_columns = {
         row[1] for row in cur.execute("PRAGMA table_info(account_registry)").fetchall()
@@ -342,6 +345,7 @@ def save_classified_transactions(df):
             str(row.get("beneficiary", "")),
             str(row.get("transaction_type", "")),
             str(row.get("final_category", row.get("category", ""))),
+            str(row.get("final_subcategory", row.get("subcategory", ""))),
             str(row.get("match_type", "")),
             float(row.get("confidence", 0)),
             int(row.get("reviewed", 0)),
@@ -365,6 +369,7 @@ def save_classified_transactions(df):
                     beneficiary = ?,
                     transaction_type = ?,
                     category = ?,
+                    subcategory = ?,
                     match_type = ?,
                     confidence = ?,
                     reviewed = ?,
@@ -384,10 +389,10 @@ def save_classified_transactions(df):
                 """
                 INSERT INTO classified_transactions
                 (txn_date, original_description, normalized_description, amount,
-                 beneficiary, transaction_type, category, match_type, confidence,
+                 beneficiary, transaction_type, category, subcategory, match_type, confidence,
                  reviewed, created_at, currency, usd_amount, account_name,
                  account_number, bank, source_occurrence)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 row_values,
             )
@@ -518,6 +523,7 @@ def replace_saved_transaction_records(df):
             "beneficiary",
             "transaction_type",
             "category",
+            "subcategory",
             "match_type",
             "confidence",
             "reviewed",

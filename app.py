@@ -44,6 +44,8 @@ from reporting import (
     build_access_backup_excel,
     build_csv_report,
     build_excel_report,
+    build_memory_backup_csv,
+    build_memory_backup_excel,
     build_pdf_report,
 )
 from utils import (
@@ -321,6 +323,40 @@ def parse_category_excel(uploaded_file):
     return records_df
 
 
+def get_subcategory_options_map():
+    category_records = get_category_records()
+    options_map = {}
+
+    if category_records.empty:
+        return options_map
+
+    for category, group in category_records.groupby("category", dropna=False):
+        cleaned_category = str(category).strip()
+        if not cleaned_category:
+            continue
+
+        subcategories = group["subcategory"].fillna("").astype(str).str.strip().tolist()
+        unique_subcategories = []
+        for subcategory in subcategories:
+            if subcategory not in unique_subcategories:
+                unique_subcategories.append(subcategory)
+
+        non_empty_subcategories = [subcategory for subcategory in unique_subcategories if subcategory]
+        options_map[cleaned_category] = [""] + non_empty_subcategories if non_empty_subcategories else [""]
+
+    return options_map
+
+
+def get_subcategory_options_for_category(category, subcategory_options_map=None):
+    if subcategory_options_map is None:
+        subcategory_options_map = get_subcategory_options_map()
+    return subcategory_options_map.get(str(category).strip(), [""])
+
+
+def format_subcategory_option(value):
+    return "No subcategory" if str(value).strip() == "" else str(value)
+
+
 def build_account_option_label(row):
     bank = str(row.get("bank", "")).strip()
     account_number = str(row.get("account_number", "")).strip()
@@ -409,6 +445,8 @@ def merge_saved_review_state(classified_df, saved_df):
     if saved_df is None or saved_df.empty:
         if "category" not in work.columns:
             work["category"] = ""
+        if "subcategory" not in work.columns:
+            work["subcategory"] = ""
         return work
 
     saved_work = saved_df.copy()
@@ -423,6 +461,8 @@ def merge_saved_review_state(classified_df, saved_df):
     saved_work["original_description"] = saved_work["original_description"].astype(str).fillna("")
     saved_work["amount"] = pd.to_numeric(saved_work["amount"], errors="coerce").fillna(0.0).round(2)
     saved_work["account_number"] = saved_work.get("account_number", "").astype(str).fillna("")
+    if "subcategory" not in saved_work.columns:
+        saved_work["subcategory"] = ""
 
     saved_state = saved_work[[
         "txn_date",
@@ -432,6 +472,7 @@ def merge_saved_review_state(classified_df, saved_df):
         "source_occurrence",
         "reviewed",
         "category",
+        "subcategory",
     ]].copy()
     saved_state = saved_state.sort_values(["reviewed"]).drop_duplicates(
         subset=["txn_date", "original_description", "amount", "account_number", "source_occurrence"],
@@ -445,17 +486,33 @@ def merge_saved_review_state(classified_df, saved_df):
         how="left",
         suffixes=("", "_saved"),
     )
-    merged["reviewed"] = pd.to_numeric(merged["reviewed_saved"], errors="coerce").fillna(
-        pd.to_numeric(merged.get("reviewed", 0), errors="coerce").fillna(0)
+    merged["exists_in_saved"] = merged["txn_date"].notna()
+    saved_review_col = "reviewed_saved" if "reviewed_saved" in merged.columns else "reviewed"
+    current_review = (
+        merged["reviewed"]
+        if "reviewed" in merged.columns and saved_review_col != "reviewed"
+        else pd.Series(0, index=merged.index)
+    )
+    merged["reviewed"] = pd.to_numeric(merged.get(saved_review_col, 0), errors="coerce").fillna(
+        pd.to_numeric(current_review, errors="coerce").fillna(0)
     ).astype(int)
-    merged["final_category"] = merged["category"].fillna(merged.get("suggested_category", ""))
+
+    saved_category_col = "category_saved" if "category_saved" in merged.columns else "category"
+    merged["final_category"] = merged.get(saved_category_col, "").fillna(merged.get("suggested_category", ""))
+    saved_subcategory_col = "subcategory_saved" if "subcategory_saved" in merged.columns else "subcategory"
+    merged["final_subcategory"] = merged.get(saved_subcategory_col, "").fillna(
+        merged.get("suggested_subcategory", "")
+    )
     merged = merged.drop(
         columns=[
             "txn_date",
             "original_description",
             "amount",
             "reviewed_saved",
+            "category_saved",
+            "subcategory_saved",
             "category",
+            "subcategory",
         ],
         errors="ignore",
     )
@@ -477,8 +534,12 @@ def prepare_saved_transactions_for_review(saved_df):
         "original_description": "Description",
         "amount": "Amount",
         "category": "final_category",
+        "subcategory": "final_subcategory",
     })
+    if "final_subcategory" not in pending_df.columns:
+        pending_df["final_subcategory"] = ""
     pending_df["suggested_category"] = pending_df["final_category"].fillna("")
+    pending_df["suggested_subcategory"] = pending_df["final_subcategory"].fillna("")
     pending_df["matched_reference"] = (
         pending_df["matched_reference"] if "matched_reference" in pending_df.columns else ""
     )
@@ -515,6 +576,8 @@ def render_review_queue(review_df, categories, section_key, action_container=Non
         st.error("No categories are configured. Upload your categories Excel first.")
         return
 
+    subcategory_options_map = get_subcategory_options_map()
+
     working_df = review_df.copy()
     if "reviewed" not in working_df.columns:
         working_df["reviewed"] = 0
@@ -527,6 +590,17 @@ def render_review_queue(review_df, categories, section_key, action_container=Non
     reviewed_rows = []
 
     for i, row in working_df.iterrows():
+        row_identity = "|".join([
+            str(row.get("Date", "")).strip(),
+            str(row.get("Description", "")).strip(),
+            f"{pd.to_numeric(row.get('Amount', 0), errors='coerce'):.2f}",
+            str(row.get("account_number", "")).strip(),
+            str(int(pd.to_numeric(row.get("source_occurrence", 0), errors="coerce") or 0)),
+        ])
+        category_key = f"cat_{section_key}_{row_identity}"
+        subcategory_key = f"subcat_{section_key}_{row_identity}"
+        reviewed_key = f"reviewed_{section_key}_{row_identity}"
+
         with st.container(border=True):
             col1, col2, col3, col4 = st.columns([2, 4, 2, 3])
 
@@ -576,22 +650,49 @@ def render_review_queue(review_df, categories, section_key, action_container=Non
             elif row.get("suggested_category") in categories:
                 default_category = row["suggested_category"]
 
+            current_category_value = st.session_state.get(category_key)
+            if current_category_value not in categories:
+                st.session_state[category_key] = default_category if default_category in categories else None
+
             selected_category = st.selectbox(
                 f"Category for row {i + 1}",
                 categories,
                 index=categories.index(default_category) if default_category in categories else None,
                 placeholder="Select a category",
-                key=f"cat_{section_key}_{i}",
+                key=category_key,
+            )
+
+            default_subcategory = ""
+            if row.get("final_subcategory") and row.get("final_category") == selected_category:
+                default_subcategory = str(row.get("final_subcategory", "")).strip()
+            elif row.get("suggested_subcategory") and row.get("suggested_category") == selected_category:
+                default_subcategory = str(row.get("suggested_subcategory", "")).strip()
+
+            subcategory_options = get_subcategory_options_for_category(selected_category, subcategory_options_map)
+            if default_subcategory not in subcategory_options:
+                default_subcategory = ""
+
+            current_subcategory_value = st.session_state.get(subcategory_key)
+            if current_subcategory_value not in subcategory_options:
+                st.session_state[subcategory_key] = default_subcategory
+
+            selected_subcategory = st.selectbox(
+                f"Subcategory for row {i + 1}",
+                subcategory_options,
+                index=subcategory_options.index(default_subcategory),
+                format_func=format_subcategory_option,
+                key=subcategory_key,
             )
 
             reviewed = st.checkbox(
                 f"Mark row {i + 1} as reviewed",
                 value=bool(row.get("reviewed", 0)),
-                key=f"reviewed_{section_key}_{i}",
+                key=reviewed_key,
             )
 
             final_row = row.to_dict()
             final_row["final_category"] = selected_category
+            final_row["final_subcategory"] = selected_subcategory
             final_row["reviewed"] = 1 if reviewed else 0
             reviewed_rows.append(final_row)
 
@@ -663,7 +764,9 @@ def render_review_queue(review_df, categories, section_key, action_container=Non
         "usd_amount",
         "match_type",
         "suggested_category",
+        "suggested_subcategory",
         "final_category",
+        "final_subcategory",
         "reviewed",
         "dup_flag",
     ]]
@@ -909,11 +1012,19 @@ with tab1:
         m_amount = st.number_input("Amount", format="%.2f")
         m_currency = st.selectbox("Currency", available_currencies, key="manual_currency")
         manual_categories = get_categories()
+        manual_subcategory_options_map = get_subcategory_options_map()
         if manual_categories:
             m_category = st.selectbox("Category", manual_categories, key="manual_category")
+            m_subcategory = st.selectbox(
+                "Subcategory",
+                get_subcategory_options_for_category(m_category, manual_subcategory_options_map),
+                format_func=format_subcategory_option,
+                key="manual_subcategory",
+            )
         else:
             st.warning("Upload your categories Excel before adding manual transactions.")
             m_category = None
+            m_subcategory = ""
 
         if st.button("Add Manual Transaction", disabled=not manual_categories):
             norm_desc = simplify_merchant(normalize_description(m_desc))
@@ -931,6 +1042,7 @@ with tab1:
                 "beneficiary": beneficiary,
                 "transaction_type": txn_type,
                 "final_category": m_category,
+                "final_subcategory": m_subcategory,
                 "match_type": "manual",
                 "confidence": 1.0,
                 "reviewed": 1,
@@ -1032,7 +1144,21 @@ with tab1:
             classified_df["bank"] = account_bank
             classified_df = merge_saved_review_state(classified_df, get_saved_transactions())
 
-            st.success(f"Loaded {len(classified_df)} transactions")
+            existing_rows = int(classified_df.get("exists_in_saved", pd.Series(False, index=classified_df.index)).fillna(False).sum())
+            pending_review_count = int((classified_df["reviewed"] == 0).sum())
+            new_rows_count = len(classified_df) - existing_rows
+
+            if len(classified_df) > 0 and existing_rows == len(classified_df) and pending_review_count == 0:
+                st.info("This statement was previously already uploaded.")
+                st.stop()
+
+            if existing_rows > 0:
+                st.success(
+                    f"Loaded {max(new_rows_count, 0)} new transactions. "
+                    f"{existing_rows} transactions from this statement were already uploaded."
+                )
+            else:
+                st.success(f"Loaded {len(classified_df)} transactions")
 
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Exact matches", int((classified_df["match_type"] == "exact").sum()))
@@ -1063,6 +1189,26 @@ with tab2:
     if memory_df.empty:
         st.info("No learned transactions yet.")
     else:
+        memory_export_col1, memory_export_col2 = st.columns(2)
+
+        with memory_export_col1:
+            memory_backup_csv = build_memory_backup_csv(memory_df)
+            st.download_button(
+                label="Download Memory Backup CSV",
+                data=memory_backup_csv,
+                file_name="areti_memory_backup.csv",
+                mime="text/csv",
+            )
+
+        with memory_export_col2:
+            memory_backup_excel = build_memory_backup_excel(memory_df)
+            st.download_button(
+                label="Download Memory Backup Excel",
+                data=memory_backup_excel,
+                file_name="areti_memory_backup.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
         st.dataframe(memory_df, use_container_width=True)
 
         search_term = st.text_input("Search memory")
@@ -1158,6 +1304,8 @@ with tab3:
             "anomaly",
             "dup_flag",
         ]
+        if "subcategory" in report_df.columns:
+            display_cols.append("subcategory")
         if "currency" in report_df.columns:
             display_cols.append("currency")
         if "usd_amount" in report_df.columns:
@@ -1190,6 +1338,8 @@ with tab3:
                 "category",
                 "match_type",
             ]
+            if "subcategory" in duplicates_only.columns:
+                dup_cols.append("subcategory")
             if "currency" in duplicates_only.columns:
                 dup_cols.append("currency")
             if "usd_amount" in duplicates_only.columns:
@@ -1212,6 +1362,8 @@ with tab3:
                 "category",
                 "match_type",
             ]
+            if "subcategory" in anomalies_only.columns:
+                an_cols.append("subcategory")
             if "currency" in anomalies_only.columns:
                 an_cols.append("currency")
             if "usd_amount" in anomalies_only.columns:
@@ -1246,6 +1398,8 @@ with tab3:
                 "amount",
                 "category",
             ]
+            if "subcategory" in saved_df.columns:
+                subs_cols.append("subcategory")
             if "currency" in saved_df.columns:
                 subs_cols.append("currency")
             if "usd_amount" in saved_df.columns:
@@ -1360,7 +1514,7 @@ with tab3:
             )
 
         with export_col2:
-            excel_bytes = build_excel_report(context)
+            excel_bytes = build_excel_report(context, saved_df=saved_df)
             st.download_button(
                 label="Download Excel Report",
                 data=excel_bytes,
@@ -1496,12 +1650,26 @@ with tab4:
         column_config = None
         if view_option == "Transactions":
             category_options = get_categories()
+            subcategory_options = sorted(
+                {
+                    subcategory
+                    for options in get_subcategory_options_map().values()
+                    for subcategory in options
+                    if subcategory
+                },
+                key=str.lower,
+            )
             column_config = {
                 "category": st.column_config.SelectboxColumn(
                     "category",
                     options=category_options,
                     required=False,
-                )
+                ),
+                "subcategory": st.column_config.SelectboxColumn(
+                    "subcategory",
+                    options=subcategory_options,
+                    required=False,
+                ),
             } if category_options else None
 
         edited_audit_df = st.data_editor(

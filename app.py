@@ -56,6 +56,8 @@ from utils import (
     infer_transaction_type,
 )
 
+REVIEWS_PER_PAGE = 25
+
 CURRENCY_NAME_TO_CODE = {
     "DOLLAR": "USD",
     "USD": "USD",
@@ -442,6 +444,7 @@ def add_source_occurrence(df, date_col, description_col, amount_col, account_num
 
 def merge_saved_review_state(classified_df, saved_df):
     work = add_source_occurrence(classified_df, "Date", "Description", "Amount")
+    work["Amount"] = pd.to_numeric(work["Amount"], errors="coerce").fillna(0.0).round(2)
     if saved_df is None or saved_df.empty:
         if "category" not in work.columns:
             work["category"] = ""
@@ -498,11 +501,21 @@ def merge_saved_review_state(classified_df, saved_df):
     ).astype(int)
 
     saved_category_col = "category_saved" if "category_saved" in merged.columns else "category"
-    merged["final_category"] = merged.get(saved_category_col, "").fillna(merged.get("suggested_category", ""))
     saved_subcategory_col = "subcategory_saved" if "subcategory_saved" in merged.columns else "subcategory"
-    merged["final_subcategory"] = merged.get(saved_subcategory_col, "").fillna(
-        merged.get("suggested_subcategory", "")
-    )
+
+    saved_cat = merged.get(saved_category_col, "").fillna("").astype(str).str.strip()
+    saved_subcat = merged.get(saved_subcategory_col, "").fillna("").astype(str).str.strip()
+    suggested_cat = merged.get("suggested_category", "").fillna("").astype(str).str.strip()
+    suggested_subcat = merged.get("suggested_subcategory", "").fillna("").astype(str).str.strip()
+
+    # Only keep the saved category when the user explicitly confirmed it (reviewed=1).
+    # Unreviewed saves are overridden by the current classification suggestion.
+    saved_reviewed_col = "reviewed_saved" if "reviewed_saved" in merged.columns else "reviewed"
+    was_reviewed = pd.to_numeric(merged.get(saved_reviewed_col, 0), errors="coerce").fillna(0) == 1
+    use_saved = was_reviewed & (saved_cat != "")
+
+    merged["final_category"] = saved_cat.where(use_saved, suggested_cat)
+    merged["final_subcategory"] = saved_subcat.where(use_saved, suggested_subcat)
     merged = merged.drop(
         columns=[
             "txn_date",
@@ -587,9 +600,35 @@ def render_review_queue(review_df, categories, section_key, action_container=Non
         st.success("No pending transactions to review.")
         return
 
+    page_key = f"review_page_{section_key}"
+    page = st.session_state.get(page_key, 0)
+    total_pending = len(working_df)
+    total_pages = max(1, (total_pending + REVIEWS_PER_PAGE - 1) // REVIEWS_PER_PAGE)
+    page = min(page, total_pages - 1)
+
+    if total_pages > 1:
+        pcol1, pcol2, pcol3 = st.columns([1, 4, 1])
+        with pcol2:
+            st.info(
+                f"Page {page + 1} of {total_pages} — "
+                f"{page * REVIEWS_PER_PAGE + 1}–"
+                f"{min((page + 1) * REVIEWS_PER_PAGE, total_pending)} "
+                f"of {total_pending} pending transactions"
+            )
+        with pcol1:
+            if page > 0 and st.button("Previous", key=f"prev_page_{section_key}"):
+                st.session_state[page_key] = page - 1
+                st.rerun()
+        with pcol3:
+            if page < total_pages - 1 and st.button("Next", key=f"next_page_{section_key}"):
+                st.session_state[page_key] = page + 1
+                st.rerun()
+
+    paged_df = working_df.iloc[page * REVIEWS_PER_PAGE : (page + 1) * REVIEWS_PER_PAGE]
+
     reviewed_rows = []
 
-    for i, row in working_df.iterrows():
+    for i, row in paged_df.iterrows():
         row_identity = "|".join([
             str(row.get("Date", "")).strip(),
             str(row.get("Description", "")).strip(),
@@ -742,12 +781,14 @@ def render_review_queue(review_df, categories, section_key, action_container=Non
                     row["beneficiary"],
                     row["transaction_type"],
                     row["final_category"],
+                    original_description=str(row.get("Description", "")),
                 )
 
             final_df.at[idx, "normalized_description"] = clean_desc
 
         save_classified_transactions(final_df)
         update_access_backup_state(get_saved_transactions())
+        st.session_state.pop(page_key, None)
         st.success(
             f"Saved {int((final_df['reviewed'] == 1).sum())} reviewed transactions. "
             f"{int((final_df['reviewed'] == 0).sum())} transactions remain pending."
@@ -770,6 +811,9 @@ def render_review_queue(review_df, categories, section_key, action_container=Non
         "reviewed",
         "dup_flag",
     ]]
+    for col in ("final_category", "final_subcategory", "suggested_category", "suggested_subcategory"):
+        if col in preview_df.columns:
+            preview_df[col] = preview_df[col].fillna("").astype(str).replace("None", "")
     st.dataframe(preview_df, use_container_width=True)
 
 
@@ -1062,6 +1106,7 @@ with tab1:
                 beneficiary,
                 txn_type,
                 m_category,
+                original_description=m_desc,
             )
             update_access_backup_state(get_saved_transactions())
             st.success("Manual transaction saved successfully.")
@@ -1074,9 +1119,9 @@ with tab1:
     pending_review_df = prepare_saved_transactions_for_review(get_saved_transactions())
 
     if uploaded_file is None and not pending_review_df.empty:
-        pending_action_container = st.container()
         st.markdown("### Pending transactions")
         st.caption("Previously saved pending transactions remain here until you review them.")
+        pending_action_container = st.container()
         render_review_queue(
             pending_review_df,
             get_categories(),
@@ -1171,8 +1216,9 @@ with tab1:
             )
 
             st.markdown("### Review transactions")
+            uploaded_action_container = st.container()
 
-            render_review_queue(classified_df, categories, "uploaded")
+            render_review_queue(classified_df, categories, "uploaded", action_container=uploaded_action_container)
 
         except Exception as e:
             st.error(str(e))
@@ -1252,6 +1298,10 @@ with tab3:
             saved_df["usd_amount"] = saved_df["amount"]
         else:
             saved_df["usd_amount"] = saved_df["usd_amount"].fillna(saved_df["amount"])
+
+        saved_df["category"] = saved_df["category"].fillna("").astype(str).str.strip().replace("nan", "")
+        if "subcategory" in saved_df.columns:
+            saved_df["subcategory"] = saved_df["subcategory"].fillna("").astype(str).str.strip().replace("nan", "")
 
         saved_df = detect_saved_duplicates(saved_df)
 
@@ -1429,7 +1479,7 @@ with tab3:
 
             st.dataframe(
                 monthly_total[["month", "amount", "diff", "change_%", "trend"]]
-                .style.applymap(highlight_diff, subset=["diff"]),
+                .style.map(highlight_diff, subset=["diff"]),
                 use_container_width=True,
             )
         else:

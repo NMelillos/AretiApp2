@@ -31,6 +31,17 @@ except Exception:
 
 DATE_AT_START_PATTERN = re.compile(r"^(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+")
 REVOLUT_DATE_PATTERN = re.compile(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}$")
+BOC_DATE_PATTERN = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+BOC_CHANNEL_PREFIX = re.compile(
+    r"^1Bank\s*-\s*(?:Transfer-Internet-(?:Debit|Credit)|Sepa-(?:Debit|Credit))\s*",
+    re.IGNORECASE,
+)
+BOC_NOISE_MARKERS = [
+    "bank of cyprus", "statement of account", "statement period",
+    "balance brought forward", "balancebroughtforward",
+    "transaction value transaction", "date date",
+    "page ", "swift", "p.o.box", "www.", "http",
+]
 AMOUNT_TOKEN_PATTERN = re.compile(r"-?\d[\d,]*\.\d{2}")
 PDF_NOISE_MARKERS = [
     "bank of cyprus",
@@ -382,6 +393,13 @@ def merge_multiline_transactions(df: pd.DataFrame):
 
 
 def prepare_dataframe_from_tabular(df: pd.DataFrame):
+    # Filter Revolut CSV to completed transactions only
+    state_col = next((c for c in df.columns if str(c).lower().strip() == "state"), None)
+    if state_col is not None:
+        df = df[df[state_col].astype(str).str.upper().str.strip() == "COMPLETED"].copy()
+        if df.empty:
+            raise ValueError("No completed transactions found in the uploaded Revolut file.")
+
     date_col, desc_col, amount_col, debit_col, credit_col = detect_columns(df)
 
     # 🔥 FIX DATE COLUMN (using detected column)
@@ -444,6 +462,147 @@ def prepare_dataframe_from_tabular(df: pd.DataFrame):
     return out
 
 
+def _is_boc_date(text):
+    return bool(BOC_DATE_PATTERN.match(str(text).strip()))
+
+
+def _is_boc_noise(text):
+    t = str(text).lower().strip()
+    return not t or any(m in t for m in BOC_NOISE_MARKERS)
+
+
+def _detect_boc_columns(line_words):
+    pos = {}
+    for w in line_words:
+        t = str(w["text"]).strip()
+        if t == "Debit":
+            pos["debit"] = w["x0"]
+        elif t == "Credit":
+            pos["credit"] = w["x0"]
+        elif t == "Balance":
+            pos["balance"] = w["x0"]
+    return pos if len(pos) == 3 else None
+
+
+def _parse_boc_amount(text):
+    try:
+        return float(str(text).replace(",", "").replace("€", "").strip())
+    except ValueError:
+        return None
+
+
+def parse_bank_of_cyprus_pdf(uploaded_file):
+    if pdfplumber is None:
+        return None
+
+    uploaded_file.seek(0)
+    transactions = []
+
+    with pdfplumber.open(uploaded_file) as pdf:
+        # Detect BoC format by presence of Debit/Credit/Balance column headers
+        first_page_words = pdf.pages[0].extract_words(x_tolerance=2, y_tolerance=3) if pdf.pages else []
+        first_page_lines = group_pdf_words_by_line(first_page_words)
+        if not any(_detect_boc_columns(line["words"]) for line in first_page_lines):
+            return None
+
+        for page in pdf.pages:
+            words = page.extract_words(x_tolerance=2, y_tolerance=3)
+            if not words:
+                continue
+
+            lines = group_pdf_words_by_line(words)
+            col_pos = None
+            current_txn = None
+
+            for line in lines:
+                if not line["words"]:
+                    continue
+
+                line_text = " ".join(w["text"] for w in line["words"])
+
+                if col_pos is None:
+                    col_pos = _detect_boc_columns(line["words"])
+                    continue
+
+                if _is_boc_noise(line_text):
+                    continue
+
+                first_word = line["words"][0]["text"]
+
+                if _is_boc_date(first_word):
+                    if current_txn is not None:
+                        transactions.append(current_txn)
+
+                    debit_start = col_pos["debit"] - 20
+                    credit_start = col_pos["credit"] - 15
+                    balance_start = col_pos["balance"] - 10
+
+                    desc_parts = []
+                    debit_val = None
+                    credit_val = None
+                    date_count = 0
+
+                    for w in line["words"]:
+                        x = w["x0"]
+                        text = w["text"]
+
+                        if _is_boc_date(text) and date_count < 2:
+                            date_count += 1
+                            continue
+
+                        if x >= balance_start:
+                            continue
+
+                        if x >= credit_start:
+                            v = _parse_boc_amount(text)
+                            if v is not None:
+                                credit_val = v
+                            continue
+
+                        if x >= debit_start:
+                            v = _parse_boc_amount(text)
+                            if v is not None:
+                                debit_val = v
+                            continue
+
+                        desc_parts.append(text)
+
+                    if debit_val is None and credit_val is None:
+                        current_txn = None
+                        continue
+
+                    amount = credit_val if credit_val is not None else -debit_val
+                    current_txn = {
+                        "Date": first_word,
+                        "Description": " ".join(desc_parts).strip(),
+                        "Amount": amount,
+                    }
+
+                else:
+                    if current_txn is not None and not _is_boc_noise(line_text):
+                        continuation = [
+                            w["text"] for w in line["words"]
+                            if w["x0"] < col_pos["debit"] - 20
+                        ]
+                        if continuation:
+                            current_txn["Description"] = (
+                                f"{current_txn['Description']} {' '.join(continuation)}"
+                            ).strip()
+
+            if current_txn is not None:
+                transactions.append(current_txn)
+
+    if not transactions:
+        return None
+
+    for txn in transactions:
+        cleaned = BOC_CHANNEL_PREFIX.sub("", txn["Description"]).strip()
+        if cleaned:
+            txn["Description"] = cleaned
+
+    return build_parsed_transaction_df(pd.DataFrame(transactions))
+
+
 def parse_csv(uploaded_file):
     uploaded_file.seek(0)
     df = pd.read_csv(uploaded_file)
@@ -460,6 +619,10 @@ def parse_pdf(uploaded_file):
     revolut_df = parse_revolut_pdf(uploaded_file)
     if revolut_df is not None and not revolut_df.empty:
         return revolut_df
+
+    boc_df = parse_bank_of_cyprus_pdf(uploaded_file)
+    if boc_df is not None and not boc_df.empty:
+        return boc_df
 
     if pdfplumber is not None:
         try:

@@ -41,17 +41,7 @@ def similar_match(memory_df: pd.DataFrame, normalized_description: str, threshol
     )
 
     if not candidates:
-        scored = []
-        for mem_desc in memory_descriptions:
-            score = similarity(normalized_description, mem_desc)
-            if score >= threshold:
-                scored.append((mem_desc, score))
-
-        if not scored:
-            return None
-
-        scored.sort(key=lambda x: x[1], reverse=True)
-        candidates = [scored[0][0]]
+        return None
 
     candidate_rows = memory_df[
         memory_df["normalized_description"].isin(candidates)
@@ -87,6 +77,7 @@ def auto_rule_category(normalized_description: str, beneficiary: str, transactio
     bank_fees_category = find_existing_category(categories, "Bank Fees")
     own_funds_category = find_existing_category(categories, "Own Funds")
     subscriptions_category = find_existing_category(categories, "Subscriptions")
+    salary_category = find_existing_category(categories, "Salary", "Income", "Salary & Benefits")
 
     if bank_fees_category and any(x in text for x in ["BANK FEE", "ACCOUNT FEE", "CHARGE", "COMMISSION"]):
         return bank_fees_category, "rule", 1.0
@@ -96,6 +87,9 @@ def auto_rule_category(normalized_description: str, beneficiary: str, transactio
 
     if bank_fees_category and transaction_type == "bank_fee":
         return bank_fees_category, "rule", 1.0
+
+    if salary_category and any(x in text for x in ["SALARY", "PAYROLL", "CREDIT ADVICE PMT"]):
+        return salary_category, "rule", 0.95
 
     if subscriptions_category and merchant in ["NETFLIX", "SPOTIFY"]:
         return subscriptions_category, "rule", 0.95
@@ -111,9 +105,150 @@ def tokenize_label(text: str):
     }
 
 
+MERCHANT_KEYWORD_HINTS = {
+    # Coffee & Cafes
+    "STARBUCKS": ["food", "coffee", "cafe", "dining"],
+    "COSTA": ["food", "coffee", "cafe", "dining"],
+    "CAFFE NERO": ["food", "coffee", "cafe", "dining"],
+    "COFFEE": ["food", "coffee", "cafe", "dining"],
+    "CAFE": ["food", "coffee", "dining"],
+    "ESPRESSO": ["food", "coffee", "cafe", "dining"],
+    # Restaurants & Fast Food
+    "RESTAURANT": ["food", "dining", "restaurant"],
+    "MCDONALDS": ["food", "dining", "restaurant"],
+    "MCDONALD": ["food", "dining", "restaurant"],
+    "KFC": ["food", "dining", "restaurant"],
+    "BURGER": ["food", "dining", "restaurant"],
+    "PIZZA": ["food", "dining", "restaurant"],
+    "SUSHI": ["food", "dining", "restaurant"],
+    "NANDO": ["food", "dining", "restaurant"],
+    "SUBWAY": ["food", "dining", "restaurant"],
+    "GREGGS": ["food", "dining", "bakery"],
+    "BAR ": ["food", "dining", "entertainment"],
+    "PUB": ["food", "dining", "entertainment"],
+    "BAKERY": ["food", "dining"],
+    # Food Delivery
+    "DELIVEROO": ["food", "dining", "delivery"],
+    "UBER EATS": ["food", "dining", "delivery"],
+    "JUST EAT": ["food", "dining", "delivery"],
+    "WOLT": ["food", "dining", "delivery"],
+    # Groceries & Supermarkets
+    "TESCO": ["groceries", "food", "supermarket", "shopping"],
+    "SAINSBURY": ["groceries", "food", "supermarket", "shopping"],
+    "ASDA": ["groceries", "food", "supermarket", "shopping"],
+    "LIDL": ["groceries", "food", "supermarket", "shopping"],
+    "ALDI": ["groceries", "food", "supermarket", "shopping"],
+    "WAITROSE": ["groceries", "food", "supermarket", "shopping"],
+    "MORRISONS": ["groceries", "food", "supermarket", "shopping"],
+    "COSTCO": ["groceries", "food", "shopping"],
+    "SUPERMARKET": ["groceries", "food", "shopping"],
+    "GROCERY": ["groceries", "food", "shopping"],
+    # Transport
+    "UBER": ["transport", "transportation", "taxi", "travel"],
+    "BOLT": ["transport", "transportation", "taxi", "travel"],
+    "LYFT": ["transport", "transportation", "taxi", "travel"],
+    "TAXI": ["transport", "transportation", "taxi", "travel"],
+    "TFL": ["transport", "transportation", "travel"],
+    "TRAIN": ["transport", "transportation", "travel"],
+    "METRO": ["transport", "transportation", "travel"],
+    "BUS": ["transport", "transportation", "travel"],
+    "PARKING": ["transport", "transportation", "parking"],
+    "PETROL": ["transport", "transportation", "fuel", "vehicle"],
+    "FUEL": ["transport", "transportation", "fuel", "vehicle"],
+    "SHELL": ["transport", "transportation", "fuel", "vehicle"],
+    "ESSO": ["transport", "transportation", "fuel", "vehicle"],
+    "BP ": ["transport", "transportation", "fuel", "vehicle"],
+    "GARAGE": ["transport", "transportation", "vehicle", "maintenance"],
+    # Airlines & Travel
+    "FLIGHT": ["transport", "transportation", "travel", "trips", "airline"],
+    "AIRLINE": ["transport", "transportation", "travel", "trips", "airline"],
+    "RYANAIR": ["transport", "transportation", "travel", "trips", "airline"],
+    "EASYJET": ["transport", "transportation", "travel", "trips", "airline"],
+    "WIZZAIR": ["transport", "transportation", "travel", "trips", "airline"],
+    "WIZZ": ["transport", "transportation", "travel", "trips", "airline"],
+    "LUFTHANSA": ["transport", "transportation", "travel", "trips", "airline"],
+    "BRITISH AIRWAYS": ["transport", "transportation", "travel", "trips", "airline"],
+    "EMIRATES": ["transport", "transportation", "travel", "trips", "airline"],
+    "AIRPORT": ["transport", "transportation", "travel", "trips", "airline"],
+    # Accommodation
+    "HOTEL": ["accommodation", "travel", "trips", "hotel"],
+    "AIRBNB": ["accommodation", "travel", "trips"],
+    "BOOKING": ["accommodation", "travel", "trips"],
+    "HOSTEL": ["accommodation", "travel", "trips"],
+    # Shopping & Online
+    "AMAZON": ["shopping", "online"],
+    "EBAY": ["shopping", "online"],
+    "ASOS": ["shopping", "clothing"],
+    "ZARA": ["shopping", "clothing"],
+    "PRIMARK": ["shopping", "clothing"],
+    "IKEA": ["shopping", "furniture", "home"],
+    "APPLE STORE": ["shopping", "technology"],
+    # Health & Pharmacy
+    "PHARMACY": ["health", "medical", "pharmacy"],
+    "BOOTS": ["health", "pharmacy", "shopping"],
+    "CHEMIST": ["health", "medical", "pharmacy"],
+    "DOCTOR": ["health", "medical"],
+    "DENTIST": ["health", "dental", "medical"],
+    "HOSPITAL": ["health", "medical"],
+    "GYM": ["health", "fitness", "sport"],
+    "FITNESS": ["health", "fitness", "sport"],
+    # Entertainment & Subscriptions
+    "NETFLIX": ["entertainment", "subscription", "subscriptions", "streaming"],
+    "SPOTIFY": ["entertainment", "subscription", "subscriptions", "music"],
+    "DISNEY": ["entertainment", "subscription", "subscriptions", "streaming"],
+    "HBO": ["entertainment", "subscription", "subscriptions", "streaming"],
+    "YOUTUBE": ["entertainment", "subscription", "subscriptions", "streaming"],
+    "APPLE": ["entertainment", "subscription", "subscriptions", "technology"],
+    "AMAZON PRIME": ["entertainment", "subscription", "subscriptions"],
+    "CINEMA": ["entertainment", "leisure", "lifestyle"],
+    "THEATRE": ["entertainment", "leisure", "lifestyle"],
+    "CONCERT": ["entertainment", "leisure", "lifestyle"],
+    # Utilities & Telecom
+    "ELECTRIC": ["utilities", "bills", "energy"],
+    "ELECTRICITY": ["utilities", "bills", "energy"],
+    "INTERNET": ["utilities", "bills", "telecom", "telephony"],
+    "MOBILE": ["utilities", "bills", "telecom", "telephony", "phone"],
+    "VODAFONE": ["utilities", "bills", "telecom", "telephony"],
+    "GOOGLE": ["technology", "subscription", "subscriptions", "advertising"],
+    # Office & Business
+    "OFFICE": ["office", "supplies", "business"],
+    "STATIONERY": ["office", "supplies", "business"],
+    "PRINTING": ["office", "supplies", "business"],
+    "POSTAGE": ["office", "postage", "shipping", "business"],
+    "COURIER": ["shipping", "logistics", "business"],
+    # Medical & Health
+    "MEDICAL": ["medical", "healthcare", "health", "insurance"],
+    "CLINIC": ["medical", "healthcare", "health"],
+    "SPORT": ["sport", "fitness", "lifestyle", "health"],
+    # Lifestyle & Clothing
+    "CLOTHING": ["clothing", "lifestyle"],
+    "FASHION": ["clothing", "lifestyle"],
+    # Income & Salary
+    "SALARY": ["salary", "income", "payroll"],
+    "PAYROLL": ["salary", "income", "payroll"],
+    "CREDIT ADVICE": ["salary", "income"],
+    "WAGES": ["salary", "income", "payroll"],
+    "DIVIDEND": ["income", "dividend", "investment"],
+    "INTEREST RECEIVED": ["income", "interest", "savings"],
+}
+
+
+SCORING_STOP_TOKENS = {
+    "BANK", "CREDIT", "DEBIT", "CARD", "AND", "THE", "FOR", "FROM",
+    "WITH", "PAY", "ADVICE", "TRANSFER", "FEES", "FEE",
+}
+
+
 def ai_category_guess(normalized_description: str, beneficiary: str, transaction_type: str, category_records):
     text = f"{normalized_description} {beneficiary}".upper()
     text_tokens = tokenize_label(text)
+
+    for keyword, hints in MERCHANT_KEYWORD_HINTS.items():
+        kw = keyword.upper().strip()
+        pattern = r"\b" + re.escape(kw) + r"\b"
+        if re.search(pattern, text):
+            text_tokens |= {h.upper() for h in hints if len(h) >= 3}
+
     scores = {}
 
     for _, row in category_records.iterrows():
@@ -133,7 +268,8 @@ def ai_category_guess(normalized_description: str, beneficiary: str, transaction
                 score += 3
 
             label_tokens = tokenize_label(label_text)
-            score += len(text_tokens & label_tokens)
+            meaningful_overlap = (text_tokens & label_tokens) - SCORING_STOP_TOKENS
+            score += len(meaningful_overlap)
 
         if transaction_type == "bank_fee" and category.casefold() == "bank fees":
             score += 2

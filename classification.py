@@ -9,6 +9,26 @@ import pandas as pd
 from db import get_categories, get_category_records
 
 
+def normalize_subcategory_for_category(category_records: pd.DataFrame, category: str, subcategory: str) -> str:
+    category = str(category).strip()
+    subcategory = str(subcategory).strip()
+    if not category or not subcategory or category_records.empty:
+        return ""
+
+    matching_rows = category_records[
+        category_records["category"].fillna("").astype(str).str.strip() == category
+    ]
+    if matching_rows.empty:
+        return ""
+
+    valid_subcategories = {
+        str(value).strip()
+        for value in matching_rows["subcategory"].fillna("").astype(str)
+        if str(value).strip()
+    }
+    return subcategory if subcategory in valid_subcategories else ""
+
+
 def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
@@ -321,7 +341,11 @@ def classify_transactions(df: pd.DataFrame, memory_df: pd.DataFrame):
         if exact and exact["category"] in categories:
             suggestions.append({
                 "suggested_category": exact["category"],
-                "suggested_subcategory": "",
+                "suggested_subcategory": normalize_subcategory_for_category(
+                    category_records,
+                    exact["category"],
+                    exact.get("subcategory", ""),
+                ),
                 "match_type": "exact",
                 "matched_reference": exact["normalized_description"],
                 "confidence": 1.0,
@@ -332,7 +356,11 @@ def classify_transactions(df: pd.DataFrame, memory_df: pd.DataFrame):
         if similar and similar["category"] in categories:
             suggestions.append({
                 "suggested_category": similar["category"],
-                "suggested_subcategory": "",
+                "suggested_subcategory": normalize_subcategory_for_category(
+                    category_records,
+                    similar["category"],
+                    similar.get("subcategory", ""),
+                ),
                 "match_type": "similar",
                 "matched_reference": similar["normalized_description"],
                 "confidence": round(float(similar.get("score", 0.85)), 2),

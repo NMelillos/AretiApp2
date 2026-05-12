@@ -38,10 +38,11 @@ def init_db():
             beneficiary TEXT,
             transaction_type TEXT,
             category TEXT NOT NULL,
+            subcategory TEXT,
             first_seen TEXT,
             last_seen TEXT,
             times_seen INTEGER DEFAULT 1,
-            UNIQUE(normalized_description, category)
+            UNIQUE(normalized_description, category, subcategory)
         )
     """)
 
@@ -147,8 +148,71 @@ def init_db():
     memory_columns = {
         row[1] for row in cur.execute("PRAGMA table_info(transaction_memory)").fetchall()
     }
-    if "original_description" not in memory_columns:
-        cur.execute("ALTER TABLE transaction_memory ADD COLUMN original_description TEXT")
+    if "subcategory" not in memory_columns:
+        legacy_memory_rows = cur.execute(
+            """
+            SELECT id, normalized_description, beneficiary, transaction_type, category,
+                   first_seen, last_seen, times_seen,
+                   COALESCE(original_description, '') AS original_description
+            FROM transaction_memory
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        cur.execute("ALTER TABLE transaction_memory RENAME TO transaction_memory_legacy")
+        cur.execute("""
+            CREATE TABLE transaction_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                normalized_description TEXT NOT NULL,
+                original_description TEXT,
+                beneficiary TEXT,
+                transaction_type TEXT,
+                category TEXT NOT NULL,
+                subcategory TEXT,
+                first_seen TEXT,
+                last_seen TEXT,
+                times_seen INTEGER DEFAULT 1,
+                UNIQUE(normalized_description, category, subcategory)
+            )
+        """)
+        if legacy_memory_rows:
+            cur.executemany(
+                """
+                INSERT INTO transaction_memory (
+                    id, normalized_description, original_description, beneficiary,
+                    transaction_type, category, subcategory, first_seen, last_seen, times_seen
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row_id,
+                        normalized_description,
+                        original_description,
+                        beneficiary,
+                        transaction_type,
+                        category,
+                        "",
+                        first_seen,
+                        last_seen,
+                        times_seen,
+                    )
+                    for (
+                        row_id,
+                        normalized_description,
+                        beneficiary,
+                        transaction_type,
+                        category,
+                        first_seen,
+                        last_seen,
+                        times_seen,
+                        original_description,
+                    ) in legacy_memory_rows
+                ],
+            )
+        cur.execute("DROP TABLE transaction_memory_legacy")
+    else:
+        if "original_description" not in memory_columns:
+            cur.execute("ALTER TABLE transaction_memory ADD COLUMN original_description TEXT")
 
     # Performance indexes
     cur.execute("""
@@ -289,16 +353,17 @@ def replace_categories(categories):
     get_category_records.clear()
 
 
-def remember_transaction(normalized_description, beneficiary, transaction_type, category, original_description=""):
+def remember_transaction(normalized_description, beneficiary, transaction_type, category, subcategory="", original_description=""):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_connection()
     cur = conn.cursor()
+    subcategory = str(subcategory).strip()
 
     cur.execute("""
         SELECT id, times_seen
         FROM transaction_memory
-        WHERE normalized_description = ? AND category = ?
-    """, (normalized_description, category))
+        WHERE normalized_description = ? AND category = ? AND COALESCE(subcategory, '') = ?
+    """, (normalized_description, category, subcategory))
     row = cur.fetchone()
 
     if row:
@@ -311,14 +376,15 @@ def remember_transaction(normalized_description, beneficiary, transaction_type, 
     else:
         cur.execute("""
             INSERT INTO transaction_memory
-            (normalized_description, original_description, beneficiary, transaction_type, category, first_seen, last_seen, times_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (normalized_description, original_description, beneficiary, transaction_type, category, subcategory, first_seen, last_seen, times_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             normalized_description,
             original_description,
             beneficiary,
             transaction_type,
             category,
+            subcategory,
             now,
             now,
             1,
@@ -560,6 +626,7 @@ def replace_memory_records(df):
             "beneficiary",
             "transaction_type",
             "category",
+            "subcategory",
             "first_seen",
             "last_seen",
             "times_seen",

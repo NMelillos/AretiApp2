@@ -354,9 +354,11 @@ def build_memory_backup_frame(memory_df: pd.DataFrame) -> pd.DataFrame:
             columns=[
                 "id",
                 "normalized_description",
+                "original_description",
                 "beneficiary",
                 "transaction_type",
                 "category",
+                "subcategory",
                 "first_seen",
                 "last_seen",
                 "times_seen",

@@ -781,6 +781,7 @@ def render_review_queue(review_df, categories, section_key, action_container=Non
                     row["beneficiary"],
                     row["transaction_type"],
                     row["final_category"],
+                    row.get("final_subcategory", ""),
                     original_description=str(row.get("Description", "")),
                 )
 
@@ -1106,6 +1107,7 @@ with tab1:
                 beneficiary,
                 txn_type,
                 m_category,
+                m_subcategory,
                 original_description=m_desc,
             )
             update_access_backup_state(get_saved_transactions())
@@ -1771,7 +1773,14 @@ with tab4:
 
     st.markdown("### Upload Categories from Excel")
 
-    cat_file = st.file_uploader("Upload categories file", type=["xlsx", "xls"])
+    if "cat_upload_key" not in st.session_state:
+        st.session_state["cat_upload_key"] = 0
+
+    cat_file = st.file_uploader(
+        "Upload categories file",
+        type=["xlsx", "xls"],
+        key=f"cat_upload_{st.session_state['cat_upload_key']}",
+    )
 
     if cat_file is not None:
         try:
@@ -1791,6 +1800,7 @@ with tab4:
                 )
 
             replace_categories(imported_categories_df.to_dict("records"))
+            st.session_state["cat_upload_key"] += 1
             st.success("Categories updated from Excel.")
             st.rerun()
 

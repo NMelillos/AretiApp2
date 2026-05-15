@@ -586,7 +586,7 @@ def render_app_header():
                     <div class="app-subtitle">Transaction review, account balances, reporting, and setup in one workspace.</div>
                 </div>
             </div>
-            <div class="updated-pill"><span class="status-dot"></span>Updated {updated_at}</div>
+            <div class="updated-pill"><span class="status-dot"></span>{updated_at}</div>
         </div>
         """,
         unsafe_allow_html=True,

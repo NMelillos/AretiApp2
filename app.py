@@ -274,39 +274,45 @@ st.markdown(
         min-height: calc(100vh - 5rem);
         display: grid;
         place-items: center;
+        padding-top: 1.5rem;
     }
     .login-card {
-        width: min(460px, 100%);
+        width: min(360px, 100%);
         background: var(--panel);
         border: 1px solid var(--border);
-        border-left: 4px solid var(--accent);
         border-radius: 8px;
-        box-shadow: var(--shadow);
-        padding: 28px;
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+        padding: 20px 22px 18px;
     }
     .login-brand {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-bottom: 18px;
+        display: grid;
+        justify-items: center;
+        gap: 8px;
+        margin-bottom: 14px;
+        text-align: center;
+    }
+    .login-brand .app-brand-mark {
+        width: 38px;
+        height: 38px;
     }
     .login-title {
         margin: 0;
         color: var(--text-main);
-        font-size: 24px;
-        line-height: 1.12;
+        font-size: 18px;
+        line-height: 1.15;
         font-weight: 780;
     }
     .login-subtitle {
         margin-top: 4px;
         color: var(--text-muted);
-        font-size: 13px;
+        font-size: 12px;
     }
     .login-note {
-        margin-top: 14px;
+        margin-top: 10px;
         color: var(--text-muted);
         font-size: 12px;
         line-height: 1.45;
+        text-align: center;
     }
     .session-line {
         color: var(--text-muted);
@@ -381,7 +387,7 @@ def require_login():
               <div class="app-brand-mark">SM</div>
               <div>
                 <h1 class="login-title">Statement Management</h1>
-                <div class="login-subtitle">Secure access for expense review and reporting.</div>
+                <div class="login-subtitle">Secure access</div>
               </div>
             </div>
         """,
@@ -402,7 +408,7 @@ def require_login():
 
     st.markdown(
         """
-            <div class="login-note">Access is restricted to authorized users.</div>
+            <div class="login-note">Authorized users only.</div>
           </div>
         </div>
         """,

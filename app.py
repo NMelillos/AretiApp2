@@ -628,6 +628,79 @@ def load_shared_setup_files():
     return category_count, account_count, rate_count
 
 
+def missing_setup_items(categories=None, accounts=None, rates=None):
+    categories = get_categories() if categories is None else categories
+    accounts = get_accounts() if accounts is None else accounts
+    rates = get_rates() if rates is None else rates
+
+    missing = []
+    if not categories:
+        missing.append("expense categories")
+    if accounts.empty:
+        missing.append("account details")
+    if rates.empty:
+        missing.append("monthly rates")
+    return missing
+
+
+def render_setup_loader(key_prefix):
+    st.info(
+        "First-time setup is required before importing statements. "
+        "Upload the three control workbooks; after they are loaded, the statement uploader will unlock."
+    )
+
+    missing_shared = [
+        label for label, path in SHARED_SETUP_FILES.items()
+        if not path.exists()
+    ]
+    if not missing_shared:
+        if st.button("Load setup from shared folder", type="primary", key=f"{key_prefix}_shared_setup"):
+            category_count, account_count, rate_count = load_shared_setup_files()
+            st.success(
+                f"Loaded {category_count} category rows, "
+                f"{account_count} accounts, and {rate_count} monthly rates."
+            )
+            st.cache_data.clear()
+            st.rerun()
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        category_file = st.file_uploader(
+            "Expense categories",
+            type=["xlsx", "xls"],
+            key=f"{key_prefix}_category_file",
+        )
+        if category_file and st.button("Replace categories", type="primary", key=f"{key_prefix}_replace_categories"):
+            count = replace_categories_from_excel(category_file)
+            st.success(f"Loaded {count} category rows.")
+            st.cache_data.clear()
+            st.rerun()
+
+    with c2:
+        account_file = st.file_uploader(
+            "Who made the expense",
+            type=["xlsx", "xls"],
+            key=f"{key_prefix}_account_file",
+        )
+        if account_file and st.button("Replace accounts", type="primary", key=f"{key_prefix}_replace_accounts"):
+            count = replace_accounts_from_excel(account_file)
+            st.success(f"Loaded {count} account rows.")
+            st.cache_data.clear()
+            st.rerun()
+
+    with c3:
+        rates_file = st.file_uploader(
+            "Monthly rates",
+            type=["xlsx", "xls"],
+            key=f"{key_prefix}_rates_file",
+        )
+        if rates_file and st.button("Replace rates", type="primary", key=f"{key_prefix}_replace_rates"):
+            count = replace_rates_from_excel(rates_file)
+            st.success(f"Loaded {count} monthly rates.")
+            st.cache_data.clear()
+            st.rerun()
+
+
 render_app_header()
 render_status_bar()
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -657,13 +730,12 @@ if page == "Import":
     categories = get_categories()
     accounts = get_accounts()
     rates = get_rates()
+    missing_setup = missing_setup_items(categories, accounts, rates)
 
-    if not categories:
-        st.warning("Upload the expense categories workbook in Setup before importing statements.")
-    if accounts.empty:
-        st.warning("Upload the account workbook in Setup before importing statements.")
-    if rates.empty:
-        st.warning("Upload the monthly rates workbook in Setup before importing statements.")
+    if missing_setup:
+        st.warning("Import is locked until setup is complete: " + ", ".join(missing_setup) + ".")
+        render_setup_loader("import")
+        st.stop()
 
     uploaded_statement = st.file_uploader(
         "Statement file",
@@ -671,7 +743,7 @@ if page == "Import":
         key="statement_upload",
     )
 
-    if uploaded_statement and categories and not accounts.empty:
+    if uploaded_statement:
         file_bytes = uploaded_statement.getvalue()
         statement_hash = build_statement_hash(file_bytes)
         if statement_already_imported(statement_hash):

@@ -36,3 +36,7 @@ Expected workbook names:
 - `Expenses categories.xlsx`
 - `Who made the expense.xlsx`
 - `Rates.xlsx`
+
+## Render Persistence
+
+SQLite data is saved to `transactions.db`. On Render, attach a persistent disk at `/var/data` for production use; the app will then save the database as `/var/data/transactions.db`.

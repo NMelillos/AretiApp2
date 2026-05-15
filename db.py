@@ -11,9 +11,12 @@ from utils import extract_beneficiary, infer_transaction_type, normalize_descrip
 
 
 DEFAULT_SHARED_DIR = Path(os.getenv("ARETI_SHARED_FOLDER", r"C:\Users\Student\Dropbox\ARETI FILES ONE DRIVE"))
+RENDER_DISK_DB_PATH = Path("/var/data/transactions.db")
 DEFAULT_DB_PATH = (
     DEFAULT_SHARED_DIR / "transactions.db"
     if DEFAULT_SHARED_DIR.exists()
+    else RENDER_DISK_DB_PATH
+    if RENDER_DISK_DB_PATH.parent.exists()
     else Path(__file__).with_name("transactions.db")
 )
 DB_PATH = os.getenv("ARETI_DB_PATH") or str(DEFAULT_DB_PATH)

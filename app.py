@@ -376,6 +376,19 @@ def balance_has_values(balance):
     return any(balance.get(key) not in ("", None) for key in keys)
 
 
+def render_unsafe_storage_notice():
+    render_env = any(
+        os.getenv(name)
+        for name in ["RENDER", "RENDER_SERVICE_NAME", "RENDER_EXTERNAL_URL", "RENDER_INSTANCE_ID"]
+    )
+    normalized_db_path = str(DB_PATH).replace("\\", "/")
+    if render_env and not normalized_db_path.startswith("/var/data/"):
+        st.warning(
+            "Storage is temporary on this deployment. Data can reset after a server restart or redeploy. "
+            "Enable persistent storage before using live data."
+        )
+
+
 def render_summary_strip(items):
     cards = []
     for icon, label, value in items:
@@ -703,6 +716,7 @@ def render_setup_loader(key_prefix):
 
 render_app_header()
 render_status_bar()
+render_unsafe_storage_notice()
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
 PAGES = [
@@ -718,10 +732,20 @@ PAGES = [
 page = st.segmented_control(
     "Section",
     PAGES,
-    default="Import",
+    default=(
+        "Setup"
+        if missing_setup_items()
+        else (
+            st.query_params.get("page")
+            if st.query_params.get("page") in PAGES
+            else "Import"
+        )
+    ),
     key="main_navigation",
     label_visibility="collapsed",
 ) or "Import"
+if st.query_params.get("page") != page:
+    st.query_params["page"] = page
 
 
 if page == "Import":

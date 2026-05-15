@@ -143,7 +143,6 @@ st.markdown(
     .updated-pill {
         display: inline-flex;
         align-items: center;
-        gap: 9px;
         background: #f0fdfa;
         color: var(--accent-dark);
         border: 1px solid #99f6e4;
@@ -152,13 +151,6 @@ st.markdown(
         font-size: 13px;
         font-weight: 700;
         white-space: nowrap;
-    }
-    .status-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--accent);
-        display: inline-block;
     }
     .metric-grid {
         display: grid;
@@ -178,28 +170,12 @@ st.markdown(
     .metric-row {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 8px;
     }
     .metric-label {
         color: var(--text-muted);
         font-size: 12px;
         font-weight: 700;
         text-transform: uppercase;
-    }
-    .metric-icon {
-        min-width: 32px;
-        height: 24px;
-        padding: 0 7px;
-        display: grid;
-        place-items: center;
-        border-radius: 999px;
-        background: #eef6f6;
-        border: 1px solid #cce3e0;
-        color: var(--navy);
-        font-size: 10px;
-        font-weight: 800;
-        letter-spacing: 0.02em;
     }
     .metric-value {
         margin-top: 10px;
@@ -391,12 +367,11 @@ def render_unsafe_storage_notice():
 
 def render_summary_strip(items):
     cards = []
-    for icon, label, value in items:
+    for label, value in items:
         cards.append(
             f"<div class=\"summary-item\">"
             f"<div class=\"metric-row\">"
             f"<div class=\"summary-label\">{label}</div>"
-            f"<div class=\"metric-icon\">{icon}</div>"
             f"</div>"
             f"<div class=\"summary-value\">{value}</div>"
             f"</div>"
@@ -599,7 +574,7 @@ def render_app_header():
                     <div class="app-subtitle">Transaction review, account balances, reporting, and setup in one workspace.</div>
                 </div>
             </div>
-            <div class="updated-pill"><span class="status-dot"></span>{updated_at}</div>
+            <div class="updated-pill">{updated_at}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -609,21 +584,20 @@ def render_app_header():
 def render_status_bar():
     counts = get_dashboard_counts()
     cards = [
-        ("CAT", "Categories", counts["categories"]),
-        ("ACC", "Accounts", counts["accounts"]),
-        ("FX", "Rates", counts["rates"]),
-        ("PEN", "Pending", counts["pending"]),
-        ("REV", "Reviewed", counts["reviewed"]),
-        ("MEM", "Memory", counts["memory"]),
-        ("IMP", "Statements", counts["statements"]),
+        ("Categories", counts["categories"]),
+        ("Accounts", counts["accounts"]),
+        ("Rates", counts["rates"]),
+        ("Pending", counts["pending"]),
+        ("Reviewed", counts["reviewed"]),
+        ("Memory", counts["memory"]),
+        ("Statements", counts["statements"]),
     ]
     html = []
-    for icon, label, value in cards:
+    for label, value in cards:
         html.append(
             f"<div class=\"metric-card\">"
             f"<div class=\"metric-row\">"
             f"<div class=\"metric-label\">{label}</div>"
-            f"<div class=\"metric-icon\">{icon}</div>"
             f"</div>"
             f"<div class=\"metric-value\">{value}</div>"
             f"</div>"
@@ -810,10 +784,10 @@ if page == "Import":
             if balance_has_values(balance_info):
                 currency = balance_info.get("currency") or selected_account.get("currency", "")
                 render_summary_strip([
-                    ("OB", "Opening balance", display_money(balance_info.get("opening_balance"), currency)),
-                    ("IN", "Money in", display_money(balance_info.get("money_in"), currency)),
-                    ("OUT", "Money out", display_money(balance_info.get("money_out"), currency)),
-                    ("CB", "Closing balance", display_money(balance_info.get("closing_balance"), currency)),
+                    ("Opening balance", display_money(balance_info.get("opening_balance"), currency)),
+                    ("Money in", display_money(balance_info.get("money_in"), currency)),
+                    ("Money out", display_money(balance_info.get("money_out"), currency)),
+                    ("Closing balance", display_money(balance_info.get("closing_balance"), currency)),
                 ])
                 balance_preview = pd.DataFrame([{
                     "Bank": balance_info.get("bank") or selected_account.get("bank", ""),
@@ -876,10 +850,10 @@ elif page == "Import History":
         missing_balances = int((history["balance_status"] == "Missing data").sum()) if "balance_status" in history else 0
         needs_review = int((history.get("reconciliation_status", pd.Series(dtype=str)) == "Needs review").sum())
         render_summary_strip([
-            ("IMP", "Imported statements", len(history)),
-            ("DUP", "Duplicate attempts", duplicate_attempts),
-            ("CHK", "Balance warnings", needs_review),
-            ("BAL", "Missing balances", missing_balances),
+            ("Imported statements", len(history)),
+            ("Duplicate attempts", duplicate_attempts),
+            ("Balance warnings", needs_review),
+            ("Missing balances", missing_balances),
         ])
 
         h1, h2, h3 = st.columns(3)
@@ -988,10 +962,10 @@ elif page == "Database":
 
         st.caption(f"Database path: {DB_PATH}")
         render_summary_strip([
-            ("ROWS", "Visible rows", len(db_view)),
-            ("ACC", "Accounts", db_view["account_name"].replace("", pd.NA).dropna().nunique()),
-            ("PEN", "Pending", int((db_view["status"].fillna("pending") == "pending").sum()) if "status" in db_view else 0),
-            ("REV", "Reviewed", int((db_view["status"].fillna("") == "reviewed").sum()) if "status" in db_view else 0),
+            ("Visible rows", len(db_view)),
+            ("Accounts", db_view["account_name"].replace("", pd.NA).dropna().nunique()),
+            ("Pending", int((db_view["status"].fillna("pending") == "pending").sum()) if "status" in db_view else 0),
+            ("Reviewed", int((db_view["status"].fillna("") == "reviewed").sum()) if "status" in db_view else 0),
         ])
         editable_cols = [
             "id",
@@ -1047,10 +1021,10 @@ elif page == "Balances":
         numeric_closing = pd.to_numeric(balances["closing_balance"], errors="coerce")
         needs_review_count = int((balances["reconciliation_status"] == "Needs review").sum())
         render_summary_strip([
-            ("STMT", "Statements", len(balances)),
-            ("CLS", "With closing", int(numeric_closing.notna().sum())),
-            ("OK", "Reconciled", int((balances["reconciliation_status"] == "OK").sum())),
-            ("FLAG", "Needs review", needs_review_count),
+            ("Statements", len(balances)),
+            ("With closing", int(numeric_closing.notna().sum())),
+            ("Reconciled", int((balances["reconciliation_status"] == "OK").sum())),
+            ("Needs review", needs_review_count),
         ])
         if needs_review_count:
             st.warning(f"{needs_review_count} statement balance summaries do not reconcile. Review the difference column.")

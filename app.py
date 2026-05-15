@@ -1,4 +1,6 @@
 from datetime import datetime
+import hashlib
+import hmac
 from io import BytesIO
 import os
 from pathlib import Path
@@ -268,6 +270,49 @@ st.markdown(
         border-radius: 8px;
         padding: 10px;
     }
+    .login-shell {
+        min-height: calc(100vh - 5rem);
+        display: grid;
+        place-items: center;
+    }
+    .login-card {
+        width: min(460px, 100%);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--accent);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+        padding: 28px;
+    }
+    .login-brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 18px;
+    }
+    .login-title {
+        margin: 0;
+        color: var(--text-main);
+        font-size: 24px;
+        line-height: 1.12;
+        font-weight: 780;
+    }
+    .login-subtitle {
+        margin-top: 4px;
+        color: var(--text-muted);
+        font-size: 13px;
+    }
+    .login-note {
+        margin-top: 14px;
+        color: var(--text-muted);
+        font-size: 12px;
+        line-height: 1.45;
+    }
+    .session-line {
+        color: var(--text-muted);
+        font-size: 12px;
+        margin: -4px 0 10px;
+    }
     @media (max-width: 1120px) {
         .metric-grid {
             grid-template-columns: repeat(4, minmax(120px, 1fr));
@@ -297,6 +342,88 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+DEFAULT_LOGIN_SALT = "aretiapp-login-v1"
+DEFAULT_LOGIN_PASSWORD_HASH = "99cd9990ece838f798db50d75308cc7f75c4309be343063329772bc8998aad16"
+
+
+def _hash_password(password, salt):
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        str(password).encode("utf-8"),
+        str(salt).encode("utf-8"),
+        120000,
+    ).hex()
+
+
+def _login_is_valid(username, password):
+    expected_username = os.getenv("LOGIN_USERNAME", "Areti")
+    configured_password = os.getenv("LOGIN_PASSWORD", "")
+    configured_hash = os.getenv("LOGIN_PASSWORD_HASH", DEFAULT_LOGIN_PASSWORD_HASH)
+    salt = os.getenv("LOGIN_PASSWORD_SALT", DEFAULT_LOGIN_SALT)
+
+    username_ok = hmac.compare_digest(str(username).strip(), expected_username)
+    if configured_password:
+        password_ok = hmac.compare_digest(str(password), configured_password)
+    else:
+        password_ok = hmac.compare_digest(_hash_password(password, salt), configured_hash)
+    return username_ok and password_ok
+
+
+def require_login():
+    if st.session_state.get("authenticated"):
+        return
+
+    st.markdown(
+        """
+        <div class="login-shell">
+          <div class="login-card">
+            <div class="login-brand">
+              <div class="app-brand-mark">SM</div>
+              <div>
+                <h1 class="login-title">Statement Management</h1>
+                <div class="login-subtitle">Secure access for expense review and reporting.</div>
+              </div>
+            </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
+
+    if submitted:
+        if _login_is_valid(username, password):
+            st.session_state["authenticated"] = True
+            st.session_state["login_user"] = str(username).strip()
+            st.rerun()
+        else:
+            st.error("Invalid username or password.")
+
+    st.markdown(
+        """
+            <div class="login-note">Access is restricted to authorized users.</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
+
+
+def render_session_line():
+    left, right = st.columns([8, 1])
+    left.markdown(
+        f"<div class=\"session-line\">Signed in as {st.session_state.get('login_user', 'Areti')}</div>",
+        unsafe_allow_html=True,
+    )
+    if right.button("Sign out"):
+        st.session_state.pop("authenticated", None)
+        st.session_state.pop("login_user", None)
+        st.rerun()
+
+
+require_login()
 init_db()
 
 SHARED_DIR = Path(os.getenv("ARETI_SHARED_FOLDER", r"C:\Users\Student\Dropbox\ARETI FILES ONE DRIVE"))
@@ -692,6 +819,7 @@ def render_setup_loader(key_prefix):
 
 
 render_app_header()
+render_session_line()
 render_status_bar()
 render_unsafe_storage_notice()
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)

@@ -1,7 +1,13 @@
 __pycache__/
-*.pyc
-.venv/
-.env
+*.py[cod]
+*.pyo
+.pytest_cache/
 .streamlit/secrets.toml
 transactions.db
-statment/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.log
+*.tmp
+*.bak

@@ -1,16 +1,7 @@
-# =========================
-# FILE: requirements.txt
-# =========================
 streamlit
 pandas
-numpy
 openpyxl
 pdfplumber
-pdf2image
 pytesseract
+pdf2image
 Pillow
-reportlab
-matplotlib
-altair
-requests
-cryptography

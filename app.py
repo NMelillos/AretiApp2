@@ -1,1824 +1,1194 @@
-# =========================
-# FILE: app.py
-# =========================
+from datetime import datetime
+from io import BytesIO
+import os
+from pathlib import Path
+import re
+
 import pandas as pd
 import streamlit as st
 
-from analytics import (
-    build_report_context,
-    detect_anomalies,
-    detect_duplicates,
-    detect_saved_duplicates,
-)
 from classification import classify_transactions
 from db import (
     DB_PATH,
     add_category,
+    apply_account_and_rates,
+    build_statement_hash,
+    dataframe_to_excel_bytes,
     full_reset_database,
-    get_account_registry,
-    get_category_records,
+    get_accounts,
+    get_all_transactions,
     get_categories,
+    get_dashboard_counts,
+    get_import_history,
     get_memory,
-    get_monthly_rates,
+    get_pending_transactions,
+    get_rates,
     get_saved_transactions,
+    get_statement_account,
+    get_statement_balances,
+    get_subcategories,
     init_db,
-    remember_transaction,
-    replace_account_registry_records,
-    replace_category_records,
-    replace_memory_records,
-    replace_monthly_rate_records,
-    replace_saved_transaction_records,
+    insert_manual_transaction,
+    replace_accounts_from_excel,
+    replace_categories_from_excel,
+    replace_rates_from_excel,
     reset_runtime_data,
-    save_classified_transactions,
+    record_duplicate_statement_attempt,
+    save_pending_transactions,
+    save_statement_balance,
+    save_reviewed_rows,
+    statement_balance_exists,
+    statement_already_imported,
+    update_database_rows,
+    update_statement_balance_rows,
 )
-from mailer import (
-    build_email_html,
-    get_secrets_config,
-    maybe_auto_send_monthly_email,
-    send_email_report,
-)
-from parsing import parse_csv, parse_excel, parse_pdf
-from reporting import (
-    REPORTLAB_AVAILABLE,
-    build_access_backup_csv,
-    build_access_backup_excel,
-    build_csv_report,
-    build_excel_report,
-    build_memory_backup_csv,
-    build_memory_backup_excel,
-    build_pdf_report,
-)
-from utils import (
-    format_currency,
-    normalize_description,
-    simplify_merchant,
-    extract_beneficiary,
-    infer_transaction_type,
+from parsing import extract_statement_balance, parse_csv, parse_excel, parse_pdf
+from reporting import build_sample_expenses_report
+from utils import format_currency
+
+
+st.set_page_config(page_title="Statement Management", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    :root {
+        --page-bg: #edf2f7;
+        --panel: #ffffff;
+        --panel-muted: #f8fafc;
+        --text-main: #172033;
+        --text-muted: #64748b;
+        --border: #d6dee8;
+        --accent: #0f766e;
+        --accent-dark: #0b5f59;
+        --navy: #111c3d;
+        --gold: #9a6a14;
+        --blue: #1d4ed8;
+        --danger: #b42318;
+        --shadow: 0 8px 22px rgba(15, 23, 42, 0.07);
+    }
+    .stApp {
+        background: var(--page-bg);
+        color: var(--text-main);
+    }
+    #MainMenu, footer, header, .stDeployButton,
+    [data-testid="stToolbar"], [data-testid="stDecoration"],
+    [data-testid="stStatusWidget"], [data-testid="manage-app-button"] {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+    }
+    .block-container {
+        padding-top: 0.85rem;
+        padding-bottom: 2rem;
+        max-width: 1520px;
+    }
+    h1, h2, h3 {
+        letter-spacing: 0;
+    }
+    h2, h3 {
+        color: var(--text-main);
+    }
+    .app-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--accent);
+        border-radius: 8px;
+        padding: 16px 18px;
+        box-shadow: var(--shadow);
+        margin-bottom: 14px;
+    }
+    .app-title-wrap {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+    }
+    .app-brand-mark {
+        width: 42px;
+        height: 42px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        background: var(--navy);
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0;
+        flex: 0 0 auto;
+    }
+    .app-title {
+        margin: 0 !important;
+        padding: 0 !important;
+        font-size: 24px;
+        line-height: 1.1;
+        font-weight: 780;
+        color: var(--text-main);
+    }
+    .app-header h1 {
+        margin: 0 !important;
+        padding: 0 !important;
+        font-size: 24px !important;
+        line-height: 1.1 !important;
+    }
+    .app-subtitle {
+        margin-top: 3px;
+        color: var(--text-muted);
+        font-size: 13px;
+    }
+    .updated-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        background: #f0fdfa;
+        color: var(--accent-dark);
+        border: 1px solid #99f6e4;
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-size: 13px;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+        display: inline-block;
+    }
+    .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(120px, 1fr));
+        gap: 10px;
+        margin: 4px 0 14px;
+    }
+    .metric-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 13px;
+        background: var(--panel);
+        box-shadow: 0 2px 8px rgba(16, 32, 51, 0.05);
+        min-height: 86px;
+        border-top: 3px solid #e2e8f0;
+    }
+    .metric-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+    }
+    .metric-label {
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+    }
+    .metric-icon {
+        min-width: 32px;
+        height: 24px;
+        padding: 0 7px;
+        display: grid;
+        place-items: center;
+        border-radius: 999px;
+        background: #eef6f6;
+        border: 1px solid #cce3e0;
+        color: var(--navy);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+    }
+    .metric-value {
+        margin-top: 10px;
+        color: var(--text-main);
+        font-size: 27px;
+        font-weight: 800;
+        line-height: 1;
+    }
+    .summary-strip {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin: 10px 0 16px;
+    }
+    .summary-item {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+    }
+    .summary-label {
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+    }
+    .summary-value {
+        margin-top: 6px;
+        color: var(--text-main);
+        font-size: 20px;
+        font-weight: 800;
+    }
+    .soft-panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px;
+        margin-bottom: 12px;
+    }
+    div[data-testid="stRadio"] [role="radiogroup"] {
+        gap: 8px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 7px;
+        box-shadow: 0 2px 8px rgba(16, 32, 51, 0.05);
+    }
+    div[data-testid="stRadio"] label {
+        border-radius: 6px;
+        padding: 7px 11px;
+        color: var(--text-main);
+    }
+    div[data-testid="stSegmentedControl"] {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 6px;
+        box-shadow: 0 2px 8px rgba(16, 32, 51, 0.05);
+    }
+    .stButton button, .stDownloadButton button {
+        border-radius: 6px;
+        font-weight: 600;
+        border-color: var(--border);
+    }
+    .stButton button[kind="primary"], .stDownloadButton button[kind="primary"] {
+        background: var(--accent);
+        border-color: var(--accent);
+    }
+    .stButton button[kind="primary"]:hover, .stDownloadButton button[kind="primary"]:hover {
+        background: var(--accent-dark);
+        border-color: var(--accent-dark);
+    }
+    div[data-testid="stAlert"] {
+        border-radius: 6px;
+    }
+    div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        overflow: hidden;
+    }
+    .section-divider {
+        height: 1px;
+        background: var(--border);
+        margin: 0.75rem 0 1rem;
+    }
+    [data-testid="stFileUploader"] {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px;
+    }
+    @media (max-width: 1120px) {
+        .metric-grid {
+            grid-template-columns: repeat(4, minmax(120px, 1fr));
+        }
+        .summary-strip {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+    @media (max-width: 760px) {
+        .app-header {
+            align-items: flex-start;
+            flex-direction: column;
+        }
+        .metric-grid,
+        .summary-strip {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .app-title {
+            font-size: 21px !important;
+        }
+        .app-header h1 {
+            font-size: 21px !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-REVIEWS_PER_PAGE = 25
+init_db()
 
-CURRENCY_NAME_TO_CODE = {
-    "DOLLAR": "USD",
-    "USD": "USD",
-    "US DOLLAR": "USD",
-    "EURO": "EUR",
-    "EUR": "EUR",
-    "POUND": "GBP",
-    "GBP": "GBP",
-    "SHEKEL": "ILS",
-    "ILS": "ILS",
-    "KZT": "KZT",
-    "RUB": "RUB",
+SHARED_DIR = Path(os.getenv("ARETI_SHARED_FOLDER", r"C:\Users\Student\Dropbox\ARETI FILES ONE DRIVE"))
+SHARED_SETUP_FILES = {
+    "categories": SHARED_DIR / "Expenses categories.xlsx",
+    "accounts": SHARED_DIR / "Who made the expense.xlsx",
+    "rates": SHARED_DIR / "Rates.xlsx",
 }
 
 
-def normalize_currency_code(value):
-    text = str(value).strip().upper().replace("_", " ")
-    text = text.replace("  ", " ")
-    return CURRENCY_NAME_TO_CODE.get(text, text if len(text) == 3 else "")
-
-
-def parse_rate_month(value):
-    if pd.isna(value):
-        return None
-
-    text = str(value).strip()
-    if not text:
-        return None
-
-    parsed = pd.to_datetime(text, errors="coerce")
-    if pd.isna(parsed):
-        for fmt in ["%b-%y", "%b-%Y", "%B-%y", "%B-%Y", "%m-%Y", "%m/%Y"]:
-            try:
-                parsed = pd.to_datetime(text, format=fmt)
-                break
-            except Exception:
-                parsed = pd.NaT
-
-    if pd.isna(parsed):
-        return None
-
-    return parsed.to_period("M").strftime("%Y-%m")
-
-
-def extract_currency_from_rate_label(label):
-    text = str(label).strip().replace("–", "-").replace("—", "-")
-    for separator in ["/", "-"]:
-        if separator not in text:
-            continue
-
-        left_part, right_part = text.split(separator, 1)
-        left_currency = normalize_currency_code(left_part)
-        right_currency = normalize_currency_code(right_part)
-
-        if left_currency == "USD" and right_currency:
-            return right_currency
-        if right_currency == "USD" and left_currency:
-            return left_currency
-        if left_currency == right_currency and left_currency:
-            return left_currency
-        if left_currency:
-            return left_currency
-        if right_currency:
-            return right_currency
-
-    return ""
-
-
-def convert_uploaded_rate_to_usd(label, raw_rate):
-    text = str(label).strip().replace("–", "-").replace("—", "-")
-    rate_value = float(raw_rate)
-
-    for separator in ["/", "-"]:
-        if separator not in text:
-            continue
-
-        left_part, right_part = text.split(separator, 1)
-        left_currency = normalize_currency_code(left_part)
-        right_currency = normalize_currency_code(right_part)
-
-        if left_currency == right_currency == "USD":
-            return 1.0
-        if right_currency == "USD":
-            return rate_value
-        if left_currency == "USD" and rate_value > 0:
-            return round(1 / rate_value, 8)
-
-    return rate_value
-
-
-def parse_latest_monthly_rates_excel(uploaded_file):
-    uploaded_file.seek(0)
-    raw_df = pd.read_excel(uploaded_file, header=None)
-    report_month = pd.Timestamp.today().to_period("M").strftime("%Y-%m")
-    records = []
-
-    for row_index in range(len(raw_df)):
-        label = raw_df.iat[row_index, 0]
-        source_currency = extract_currency_from_rate_label(label)
-        if not source_currency:
-            continue
-
-        rate_value = None
-        for column_index in range(1, raw_df.shape[1]):
-            raw_rate = raw_df.iat[row_index, column_index]
-            numeric_rate = pd.to_numeric(pd.Series([raw_rate]), errors="coerce").iloc[0]
-            if pd.notna(numeric_rate) and float(numeric_rate) > 0:
-                rate_value = float(numeric_rate)
-                break
-
-        if rate_value is None:
-            continue
-
-        records.append({
-            "report_month": report_month,
-            "source_currency": source_currency,
-            "rate_to_usd": 1.0 if source_currency == "USD" else convert_uploaded_rate_to_usd(label, rate_value),
-        })
-
-    if not records:
-        raise ValueError("Could not extract any FX rates from the uploaded Excel file.")
-
-    rates_df = pd.DataFrame(records)
-    rates_df = rates_df.drop_duplicates(
-        subset=["report_month", "source_currency"],
-        keep="last",
-    ).sort_values(["report_month", "source_currency"])
-    return rates_df
-
-
-def parse_monthly_rates_excel(uploaded_file):
-    uploaded_file.seek(0)
-    raw_df = pd.read_excel(uploaded_file, header=None)
-
-    header_row_index = None
-    month_columns = {}
-
-    for row_index, row in raw_df.iterrows():
-        parsed_months = {}
-        for column_index, value in row.items():
-            report_month = parse_rate_month(value)
-            if report_month:
-                parsed_months[column_index] = report_month
-
-        if len(parsed_months) > len(month_columns):
-            header_row_index = row_index
-            month_columns = parsed_months
-
-    if not month_columns:
-        return parse_latest_monthly_rates_excel(uploaded_file)
-
-    records = []
-
-    for row_index in range((header_row_index or 0) + 1, len(raw_df)):
-        label = raw_df.iat[row_index, 0]
-        source_currency = extract_currency_from_rate_label(label)
-        if not source_currency:
-            continue
-
-        for column_index, report_month in month_columns.items():
-            raw_rate = raw_df.iat[row_index, column_index]
-            rate_value = pd.to_numeric(pd.Series([raw_rate]), errors="coerce").iloc[0]
-
-            if pd.isna(rate_value) or float(rate_value) <= 0:
-                continue
-
-            if source_currency == "USD":
-                rate_to_usd = 1.0
-            else:
-                rate_to_usd = convert_uploaded_rate_to_usd(label, rate_value)
-
-            records.append({
-                "report_month": report_month,
-                "source_currency": source_currency,
-                "rate_to_usd": rate_to_usd,
-            })
-
-    if not records:
-        raise ValueError("Could not extract any monthly FX rates from the uploaded Excel file.")
-
-    rates_df = pd.DataFrame(records)
-    rates_df = rates_df.drop_duplicates(
-        subset=["report_month", "source_currency"],
-        keep="last",
-    ).sort_values(["report_month", "source_currency"])
-    return rates_df
-
-
-def get_statement_currencies(rates_df):
-    currencies = ["USD"]
-    if rates_df is not None and not rates_df.empty:
-        currencies.extend(sorted(rates_df["source_currency"].dropna().unique().tolist()))
-    return list(dict.fromkeys(currencies))
-
-
-def parse_account_registry_excel(uploaded_file):
-    uploaded_file.seek(0)
-    df = pd.read_excel(uploaded_file)
-    normalized_columns = {str(column).strip().lower(): column for column in df.columns}
-
-    required_mapping = {
-        "account name": "account_name",
-        "bank": "bank",
-        "account number": "account_number",
-        "currency": "currency",
-        "rate type": "rate_type",
-    }
-
-    missing_columns = [source for source in required_mapping if source not in normalized_columns]
-    if missing_columns:
-        raise ValueError(
-            "Account registry Excel must include columns: Account Name, Bank, Account number, Currency, Rate Type."
-        )
-
-    records_df = pd.DataFrame({
-        target: df[normalized_columns[source]]
-        for source, target in required_mapping.items()
-    })
-
-    records_df["account_name"] = records_df["account_name"].astype(str).str.strip()
-    records_df["bank"] = records_df["bank"].fillna("").astype(str).str.strip()
-    records_df["account_number"] = records_df["account_number"].astype(str).str.strip()
-    records_df["currency"] = records_df["currency"].apply(normalize_currency_code)
-    records_df["rate_type"] = records_df["rate_type"].fillna("").astype(str).str.strip()
-    records_df = records_df[
-        (records_df["account_name"] != "")
-        & (records_df["account_number"] != "")
-        & (records_df["currency"] != "")
-        & (records_df["rate_type"] != "")
-    ]
-    records_df = records_df.drop_duplicates(
-        subset=["account_name", "account_number"],
-        keep="last",
-    ).sort_values(["account_name", "bank", "account_number"])
-
-    if records_df.empty:
-        raise ValueError("No valid account registry rows found in the uploaded Excel file.")
-
-    return records_df
-
-
-def parse_category_excel(uploaded_file):
-    uploaded_file.seek(0)
-    df = pd.read_excel(uploaded_file)
-    normalized_columns = {str(column).strip().lower(): column for column in df.columns}
-
-    if "category" not in normalized_columns:
-        raise ValueError("Excel must have a column named 'category'.")
-
-    subcategory_column = normalized_columns.get("subcategory")
-    records_df = pd.DataFrame({
-        "category": df[normalized_columns["category"]],
-        "subcategory": df[subcategory_column] if subcategory_column else "",
-    })
-
-    records_df["category"] = records_df["category"].fillna("").astype(str).str.strip()
-    records_df["subcategory"] = records_df["subcategory"].fillna("").astype(str).str.strip()
-    records_df = records_df[records_df["category"] != ""]
-    records_df = records_df.drop_duplicates(subset=["category", "subcategory"], keep="last")
-    records_df = records_df.sort_values(["category", "subcategory"]).reset_index(drop=True)
-
-    if records_df.empty:
-        raise ValueError("No valid category rows found in the uploaded Excel file.")
-
-    return records_df
-
-
-def get_subcategory_options_map():
-    category_records = get_category_records()
-    options_map = {}
-
-    if category_records.empty:
-        return options_map
-
-    for category, group in category_records.groupby("category", dropna=False):
-        cleaned_category = str(category).strip()
-        if not cleaned_category:
-            continue
-
-        subcategories = group["subcategory"].fillna("").astype(str).str.strip().tolist()
-        unique_subcategories = []
-        for subcategory in subcategories:
-            if subcategory not in unique_subcategories:
-                unique_subcategories.append(subcategory)
-
-        non_empty_subcategories = [subcategory for subcategory in unique_subcategories if subcategory]
-        options_map[cleaned_category] = [""] + non_empty_subcategories if non_empty_subcategories else [""]
-
-    return options_map
-
-
-def get_subcategory_options_for_category(category, subcategory_options_map=None):
-    if subcategory_options_map is None:
-        subcategory_options_map = get_subcategory_options_map()
-    return subcategory_options_map.get(str(category).strip(), [""])
-
-
-def format_subcategory_option(value):
-    return "No subcategory" if str(value).strip() == "" else str(value)
-
-
-def build_account_option_label(row):
-    bank = str(row.get("bank", "")).strip()
-    account_number = str(row.get("account_number", "")).strip()
-    currency = str(row.get("currency", "")).strip()
-    rate_type = str(row.get("rate_type", "")).strip()
-    parts = [str(row.get("account_name", "")).strip()]
-    if bank:
-        parts.append(bank)
-    if account_number:
-        parts.append(account_number)
-    if currency:
-        parts.append(currency)
-    if rate_type:
-        parts.append(rate_type)
-    return " | ".join(parts)
-
-
-def get_uploaded_file_token(uploaded_file):
-    if uploaded_file is None:
-        return None
-    return (getattr(uploaded_file, "name", ""), getattr(uploaded_file, "size", 0))
-
-
-def build_rates_lookup(rates_df):
-    if rates_df is None or rates_df.empty:
+@st.cache_data(show_spinner=False)
+def parse_statement(file_bytes, file_name):
+    handle = BytesIO(file_bytes)
+    lower_name = file_name.lower()
+    if lower_name.endswith(".pdf"):
+        return parse_pdf(handle)
+    if lower_name.endswith(".xlsx") or lower_name.endswith(".xls"):
+        return parse_excel(handle)
+    return parse_csv(handle)
+
+
+@st.cache_data(show_spinner=False)
+def parse_statement_balance(file_bytes, file_name):
+    handle = BytesIO(file_bytes)
+    try:
+        return extract_statement_balance(handle, file_name)
+    except Exception:
         return {}
 
-    lookup = {}
 
-    for _, row in rates_df.iterrows():
-        currency = str(row["source_currency"])
-        month = parse_rate_month(row["report_month"])
-        if not month:
-            continue
-        lookup.setdefault(currency, {})[month] = float(row["rate_to_usd"])
-
-    return lookup
-
-
-def get_current_rate(rates_lookup, statement_currency):
-    currency_rates = rates_lookup.get(statement_currency, {})
-    if not currency_rates:
-        return None
-
-    latest_month = max(currency_rates)
-    return currency_rates[latest_month]
+def display_money(value, currency=""):
+    if value is None or pd.isna(value):
+        return "-"
+    prefix = f"{currency} " if currency else ""
+    try:
+        return f"{prefix}{float(value):,.2f}"
+    except Exception:
+        return "-"
 
 
-def attach_statement_currency(df, statement_currency, rates_df):
-    work = df.copy()
-    work["Amount"] = pd.to_numeric(work["Amount"], errors="coerce").fillna(0.0)
-    work["currency"] = statement_currency
-
-    if statement_currency == "USD":
-        work["usd_amount"] = work["Amount"]
-        return work
-
-    rates_lookup = build_rates_lookup(rates_df)
-    current_rate = get_current_rate(rates_lookup, statement_currency)
-    if current_rate is None:
-        raise ValueError(
-            f"Missing current USD rate for {statement_currency}. Upload a newer monthly rates Excel file or use the latest saved rates upload."
-        )
-
-    work["usd_amount"] = work["Amount"] * float(current_rate)
-    return work
-
-
-def add_source_occurrence(df, date_col, description_col, amount_col, account_number_col="account_number"):
-    work = df.copy()
-    occurrence_key = pd.DataFrame({
-        "txn_date": work[date_col].astype(str).fillna(""),
-        "original_description": work[description_col].astype(str).fillna(""),
-        "amount": pd.to_numeric(work[amount_col], errors="coerce").fillna(0.0).round(2),
-        "account_number": work.get(account_number_col, "").astype(str).fillna(""),
-    })
-    work["source_occurrence"] = occurrence_key.groupby(
-        ["txn_date", "original_description", "amount", "account_number"],
-        dropna=False,
-    ).cumcount()
-    return work
-
-
-def merge_saved_review_state(classified_df, saved_df):
-    work = add_source_occurrence(classified_df, "Date", "Description", "Amount")
-    work["Amount"] = pd.to_numeric(work["Amount"], errors="coerce").fillna(0.0).round(2)
-    if saved_df is None or saved_df.empty:
-        if "category" not in work.columns:
-            work["category"] = ""
-        if "subcategory" not in work.columns:
-            work["subcategory"] = ""
-        return work
-
-    saved_work = saved_df.copy()
-    if "source_occurrence" not in saved_work.columns:
-        saved_work = add_source_occurrence(saved_work, "txn_date", "original_description", "amount")
-    else:
-        saved_work["source_occurrence"] = pd.to_numeric(
-            saved_work["source_occurrence"], errors="coerce"
-        ).fillna(0).astype(int)
-
-    saved_work["txn_date"] = saved_work["txn_date"].astype(str).fillna("")
-    saved_work["original_description"] = saved_work["original_description"].astype(str).fillna("")
-    saved_work["amount"] = pd.to_numeric(saved_work["amount"], errors="coerce").fillna(0.0).round(2)
-    saved_work["account_number"] = saved_work.get("account_number", "").astype(str).fillna("")
-    if "subcategory" not in saved_work.columns:
-        saved_work["subcategory"] = ""
-
-    saved_state = saved_work[[
-        "txn_date",
-        "original_description",
-        "amount",
+def balance_has_values(balance):
+    if not balance:
+        return False
+    keys = [
+        "period_start",
+        "period_end",
+        "opening_balance",
+        "money_out",
+        "money_in",
+        "closing_balance",
+        "bank",
         "account_number",
-        "source_occurrence",
+    ]
+    return any(balance.get(key) not in ("", None) for key in keys)
+
+
+def render_summary_strip(items):
+    cards = []
+    for icon, label, value in items:
+        cards.append(
+            f"<div class=\"summary-item\">"
+            f"<div class=\"metric-row\">"
+            f"<div class=\"summary-label\">{label}</div>"
+            f"<div class=\"metric-icon\">{icon}</div>"
+            f"</div>"
+            f"<div class=\"summary-value\">{value}</div>"
+            f"</div>"
+        )
+    st.markdown(f"<div class=\"summary-strip\">{''.join(cards)}</div>", unsafe_allow_html=True)
+
+
+def transaction_filter_controls(df, key_prefix):
+    filtered = df.copy()
+    if filtered.empty:
+        return filtered
+
+    dates = pd.to_datetime(filtered.get("txn_date"), errors="coerce")
+    month_values = sorted(dates.dt.to_period("M").dropna().astype(str).unique(), reverse=True)
+    account_values = sorted(
+        value for value in filtered.get("account_name", pd.Series(dtype=str)).fillna("").astype(str).unique()
+        if value
+    )
+
+    f1, f2 = st.columns(2)
+    selected_month = f1.selectbox(
+        "Month",
+        ["All months"] + month_values,
+        key=f"{key_prefix}_month_filter",
+    )
+    selected_account = f2.selectbox(
+        "Account",
+        ["All accounts"] + account_values,
+        key=f"{key_prefix}_account_filter",
+    )
+
+    if selected_month != "All months":
+        filtered = filtered[dates.dt.to_period("M").astype(str) == selected_month].copy()
+    if selected_account != "All accounts":
+        filtered = filtered[filtered["account_name"].fillna("").astype(str) == selected_account].copy()
+    return filtered
+
+
+def flag_duplicates(df):
+    out = df.copy()
+    subset = [col for col in ["Date", "Amount", "normalized_description"] if col in out.columns]
+    out["dup_flag"] = out.duplicated(subset=subset, keep=False) if subset else False
+    return out
+
+
+def account_options(accounts):
+    labels = []
+    lookup = {}
+    for _, row in accounts.iterrows():
+        label = " | ".join([
+            str(row.get("account_name", "")),
+            str(row.get("bank", "")),
+            str(row.get("account_number", "")),
+            str(row.get("currency", "")),
+        ])
+        labels.append(label)
+        lookup[label] = row.to_dict()
+    return labels, lookup
+
+
+def guess_account_index(file_bytes, file_name, accounts, labels):
+    if accounts.empty or not labels:
+        return 0
+    sample = file_bytes[:250000].decode("latin-1", errors="ignore")
+    if file_name.lower().endswith(".pdf"):
+        try:
+            import pdfplumber
+
+            with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+                sample = "\n".join(page.extract_text() or "" for page in pdf.pages[:2]) + "\n" + sample
+        except Exception:
+            pass
+    searchable = f"{file_name} {sample}".upper()
+    digits = re.sub(r"\D", "", searchable)
+
+    best_index = 0
+    best_score = -1
+    for idx, (_, row) in enumerate(accounts.iterrows()):
+        score = 0
+        account_number = re.sub(r"\D", "", str(row.get("account_number", "")))
+        if account_number and account_number in digits:
+            score += 10
+        elif account_number and len(account_number) >= 4 and account_number[-4:] in digits:
+            score += 4
+        for field in ["account_name", "bank", "currency"]:
+            value = str(row.get(field, "")).strip().upper()
+            if value and value in searchable:
+                score += 2
+        if score > best_score:
+            best_index = idx
+            best_score = score
+    return best_index
+
+
+def editable_pending_table(df, categories, subcategories, key):
+    table = df.copy()
+    table["reviewed"] = False
+    valid_categories = set(categories)
+
+    def selected_category(row):
+        category = row.get("category", "")
+        suggested = row.get("suggested_category", "")
+        if category in valid_categories:
+            return category
+        if suggested in valid_categories:
+            return suggested
+        return ""
+
+    table["category"] = table.apply(selected_category, axis=1)
+    table["subcategory"] = table["subcategory"].fillna(table["suggested_subcategory"]).fillna("")
+
+    visible_cols = [
+        "id",
         "reviewed",
+        "txn_date",
+        "account_name",
+        "bank",
+        "currency",
+        "amount",
+        "amount_usd",
+        "original_description",
+        "match_type",
+        "confidence",
         "category",
         "subcategory",
-    ]].copy()
-    saved_state = saved_state.sort_values(["reviewed"]).drop_duplicates(
-        subset=["txn_date", "original_description", "amount", "account_number", "source_occurrence"],
-        keep="last",
+    ]
+    table = table[[col for col in visible_cols if col in table.columns]]
+
+    return st.data_editor(
+        table,
+        key=key,
+        use_container_width=True,
+        hide_index=True,
+        height=min(680, 105 + max(len(table), 4) * 36),
+        column_config={
+            "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+            "reviewed": st.column_config.CheckboxColumn("Reviewed", help="Tick only rows that are ready to save."),
+            "txn_date": st.column_config.TextColumn("Date", disabled=True),
+            "account_name": st.column_config.TextColumn("Account", disabled=True),
+            "bank": st.column_config.TextColumn("Bank", disabled=True),
+            "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
+            "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
+            "amount_usd": st.column_config.NumberColumn("USD amount", format="%.2f", disabled=True),
+            "original_description": st.column_config.TextColumn("Full statement description", disabled=True, width="large"),
+            "match_type": st.column_config.TextColumn("Match", disabled=True, width="small"),
+            "confidence": st.column_config.NumberColumn("Confidence", format="%.2f", disabled=True, width="small"),
+            "category": st.column_config.SelectboxColumn("Category", options=[""] + categories, required=False),
+            "subcategory": st.column_config.SelectboxColumn(
+                "Subcategory",
+                options=[""] + subcategories,
+                required=False,
+            ),
+        },
     )
 
-    merged = work.merge(
-        saved_state,
-        left_on=["Date", "Description", "Amount", "account_number", "source_occurrence"],
-        right_on=["txn_date", "original_description", "amount", "account_number", "source_occurrence"],
-        how="left",
-        suffixes=("", "_saved"),
+
+def render_manual_transaction_form(categories, subcategories):
+    with st.expander("Add manual transaction"):
+        if not categories:
+            st.info("Load expense categories in Setup before adding manual transactions.")
+            return
+        manual_accounts = get_accounts()
+        manual_labels, manual_lookup = (
+            account_options(manual_accounts) if not manual_accounts.empty else ([""], {"": {}})
+        )
+        with st.form("manual_transaction_form", clear_on_submit=True):
+            mc1, mc2, mc3 = st.columns(3)
+            manual_date = mc1.date_input("Date")
+            manual_account_label = mc2.selectbox("Account", manual_labels)
+            manual_amount = mc3.number_input("Amount", value=0.0, step=1.0, format="%.2f")
+            manual_description = st.text_input("Full statement description")
+            manual_category = st.selectbox("Category", categories)
+            manual_subcategory = st.selectbox("Subcategory", [""] + subcategories)
+            submitted = st.form_submit_button("Save manual transaction", type="primary")
+        if submitted:
+            inserted = insert_manual_transaction(
+                manual_date,
+                manual_description,
+                manual_amount,
+                manual_category,
+                manual_subcategory,
+                manual_lookup.get(manual_account_label, {}),
+            )
+            if inserted:
+                st.success("Manual transaction saved.")
+                st.rerun()
+            else:
+                st.warning("This manual transaction already exists.")
+
+
+def render_app_header():
+    updated_at = datetime.now().strftime("%d %b %Y, %H:%M")
+    st.markdown(
+        f"""
+        <div class="app-header">
+            <div class="app-title-wrap">
+                <div class="app-brand-mark">SM</div>
+                <div>
+                    <h1 class="app-title">Statement Management</h1>
+                    <div class="app-subtitle">Transaction review, account balances, reporting, and setup in one workspace.</div>
+                </div>
+            </div>
+            <div class="updated-pill"><span class="status-dot"></span>Updated {updated_at}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    merged["exists_in_saved"] = merged["txn_date"].notna()
-    saved_review_col = "reviewed_saved" if "reviewed_saved" in merged.columns else "reviewed"
-    current_review = (
-        merged["reviewed"]
-        if "reviewed" in merged.columns and saved_review_col != "reviewed"
-        else pd.Series(0, index=merged.index)
-    )
-    merged["reviewed"] = pd.to_numeric(merged.get(saved_review_col, 0), errors="coerce").fillna(
-        pd.to_numeric(current_review, errors="coerce").fillna(0)
-    ).astype(int)
-
-    saved_category_col = "category_saved" if "category_saved" in merged.columns else "category"
-    saved_subcategory_col = "subcategory_saved" if "subcategory_saved" in merged.columns else "subcategory"
-
-    saved_cat = merged.get(saved_category_col, "").fillna("").astype(str).str.strip()
-    saved_subcat = merged.get(saved_subcategory_col, "").fillna("").astype(str).str.strip()
-    suggested_cat = merged.get("suggested_category", "").fillna("").astype(str).str.strip()
-    suggested_subcat = merged.get("suggested_subcategory", "").fillna("").astype(str).str.strip()
-
-    # Only keep the saved category when the user explicitly confirmed it (reviewed=1).
-    # Unreviewed saves are overridden by the current classification suggestion.
-    saved_reviewed_col = "reviewed_saved" if "reviewed_saved" in merged.columns else "reviewed"
-    was_reviewed = pd.to_numeric(merged.get(saved_reviewed_col, 0), errors="coerce").fillna(0) == 1
-    use_saved = was_reviewed & (saved_cat != "")
-
-    merged["final_category"] = saved_cat.where(use_saved, suggested_cat)
-    merged["final_subcategory"] = saved_subcat.where(use_saved, suggested_subcat)
-    merged = merged.drop(
-        columns=[
-            "txn_date",
-            "original_description",
-            "amount",
-            "reviewed_saved",
-            "category_saved",
-            "subcategory_saved",
-            "category",
-            "subcategory",
-        ],
-        errors="ignore",
-    )
-    return merged
 
 
-def prepare_saved_transactions_for_review(saved_df):
-    if saved_df is None or saved_df.empty:
-        return pd.DataFrame()
-
-    pending_df = saved_df.copy()
-    pending_df["reviewed"] = pd.to_numeric(pending_df.get("reviewed", 0), errors="coerce").fillna(0).astype(int)
-    pending_df = pending_df[pending_df["reviewed"] == 0].copy()
-    if pending_df.empty:
-        return pending_df
-
-    pending_df = pending_df.rename(columns={
-        "txn_date": "Date",
-        "original_description": "Description",
-        "amount": "Amount",
-        "category": "final_category",
-        "subcategory": "final_subcategory",
-    })
-    if "final_subcategory" not in pending_df.columns:
-        pending_df["final_subcategory"] = ""
-    pending_df["suggested_category"] = pending_df["final_category"].fillna("")
-    pending_df["suggested_subcategory"] = pending_df["final_subcategory"].fillna("")
-    pending_df["matched_reference"] = (
-        pending_df["matched_reference"] if "matched_reference" in pending_df.columns else ""
-    )
-    pending_df["dup_flag"] = pending_df["dup_flag"] if "dup_flag" in pending_df.columns else False
-    pending_df["normalized_description"] = (
-        pending_df["normalized_description"].fillna("")
-        if "normalized_description" in pending_df.columns
-        else ""
-    )
-    pending_df["currency"] = (
-        pending_df["currency"].fillna("USD")
-        if "currency" in pending_df.columns
-        else "USD"
-    )
-    usd_amount_series = (
-        pending_df["usd_amount"]
-        if "usd_amount" in pending_df.columns
-        else pending_df["Amount"]
-    )
-    pending_df["usd_amount"] = pd.to_numeric(usd_amount_series, errors="coerce").fillna(
-        pd.to_numeric(pending_df["Amount"], errors="coerce").fillna(0.0)
-    )
-    pending_df["source_occurrence"] = pd.to_numeric(
-        pending_df.get("source_occurrence", 0), errors="coerce"
-    ).fillna(0).astype(int)
-    return pending_df
+def render_status_bar():
+    counts = get_dashboard_counts()
+    cards = [
+        ("CAT", "Categories", counts["categories"]),
+        ("ACC", "Accounts", counts["accounts"]),
+        ("FX", "Rates", counts["rates"]),
+        ("PEN", "Pending", counts["pending"]),
+        ("REV", "Reviewed", counts["reviewed"]),
+        ("MEM", "Memory", counts["memory"]),
+        ("IMP", "Statements", counts["statements"]),
+    ]
+    html = []
+    for icon, label, value in cards:
+        html.append(
+            f"<div class=\"metric-card\">"
+            f"<div class=\"metric-row\">"
+            f"<div class=\"metric-label\">{label}</div>"
+            f"<div class=\"metric-icon\">{icon}</div>"
+            f"</div>"
+            f"<div class=\"metric-value\">{value}</div>"
+            f"</div>"
+        )
+    st.markdown(f"<div class=\"metric-grid\">{''.join(html)}</div>", unsafe_allow_html=True)
 
 
-def render_review_queue(review_df, categories, section_key, action_container=None):
-    if review_df is None or review_df.empty:
-        return
+def load_shared_setup_files():
+    with SHARED_SETUP_FILES["categories"].open("rb") as handle:
+        category_count = replace_categories_from_excel(handle)
+    with SHARED_SETUP_FILES["accounts"].open("rb") as handle:
+        account_count = replace_accounts_from_excel(handle)
+    with SHARED_SETUP_FILES["rates"].open("rb") as handle:
+        rate_count = replace_rates_from_excel(handle)
+    return category_count, account_count, rate_count
+
+
+render_app_header()
+render_status_bar()
+st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+PAGES = [
+    "Import",
+    "Import History",
+    "Pending Review",
+    "Database",
+    "Balances",
+    "Memory",
+    "Reports",
+    "Setup",
+]
+page = st.segmented_control(
+    "Section",
+    PAGES,
+    default="Import",
+    key="main_navigation",
+    label_visibility="collapsed",
+) or "Import"
+
+
+if page == "Import":
+    st.subheader("Import Statement")
+
+    categories = get_categories()
+    accounts = get_accounts()
+    rates = get_rates()
 
     if not categories:
-        st.error("No categories are configured. Upload your categories Excel first.")
-        return
+        st.warning("Upload the expense categories workbook in Setup before importing statements.")
+    if accounts.empty:
+        st.warning("Upload the account workbook in Setup before importing statements.")
+    if rates.empty:
+        st.warning("Upload the monthly rates workbook in Setup before importing statements.")
 
-    subcategory_options_map = get_subcategory_options_map()
+    uploaded_statement = st.file_uploader(
+        "Statement file",
+        type=["csv", "xlsx", "xls", "pdf"],
+        key="statement_upload",
+    )
 
-    working_df = review_df.copy()
-    if "reviewed" not in working_df.columns:
-        working_df["reviewed"] = 0
+    if uploaded_statement and categories and not accounts.empty:
+        file_bytes = uploaded_statement.getvalue()
+        statement_hash = build_statement_hash(file_bytes)
+        if statement_already_imported(statement_hash):
+            record_duplicate_statement_attempt(statement_hash)
+            st.warning("This statement already exists. It was not imported again.")
+            if not statement_balance_exists(statement_hash):
+                existing_account = get_statement_account(statement_hash)
+                duplicate_balance = parse_statement_balance(file_bytes, uploaded_statement.name)
+                if balance_has_values(duplicate_balance):
+                    save_statement_balance(
+                        statement_hash,
+                        uploaded_statement.name,
+                        duplicate_balance,
+                        existing_account,
+                    )
+                    st.info("The missing balance summary was added to the Balances page.")
+                    st.cache_data.clear()
+            st.stop()
 
-    working_df = working_df[working_df["reviewed"] == 0].copy()
-    if working_df.empty:
-        st.success("No pending transactions to review.")
-        return
+        labels, lookup = account_options(accounts)
+        default_account_index = guess_account_index(file_bytes, uploaded_statement.name, accounts, labels)
+        selected_label = st.selectbox("Account", labels, index=default_account_index)
+        selected_account = lookup[selected_label]
+        balance_info = parse_statement_balance(file_bytes, uploaded_statement.name)
 
-    page_key = f"review_page_{section_key}"
-    page = st.session_state.get(page_key, 0)
-    total_pending = len(working_df)
-    total_pages = max(1, (total_pending + REVIEWS_PER_PAGE - 1) // REVIEWS_PER_PAGE)
-    page = min(page, total_pages - 1)
+        try:
+            parsed = parse_statement(file_bytes, uploaded_statement.name)
+            parsed = flag_duplicates(parsed)
+            parsed = apply_account_and_rates(parsed, selected_account)
+            classified = classify_transactions(parsed, get_memory())
 
-    if total_pages > 1:
-        pcol1, pcol2, pcol3 = st.columns([1, 4, 1])
-        with pcol2:
-            st.info(
-                f"Page {page + 1} of {total_pages} — "
-                f"{page * REVIEWS_PER_PAGE + 1}–"
-                f"{min((page + 1) * REVIEWS_PER_PAGE, total_pending)} "
-                f"of {total_pending} pending transactions"
-            )
-        with pcol1:
-            if page > 0 and st.button("Previous", key=f"prev_page_{section_key}"):
-                st.session_state[page_key] = page - 1
-                st.rerun()
-        with pcol3:
-            if page < total_pages - 1 and st.button("Next", key=f"next_page_{section_key}"):
-                st.session_state[page_key] = page + 1
-                st.rerun()
+            st.success(f"Prepared {len(classified)} transactions for review.")
 
-    paged_df = working_df.iloc[page * REVIEWS_PER_PAGE : (page + 1) * REVIEWS_PER_PAGE]
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Rows", len(classified))
+            c2.metric("Exact matches", int((classified["match_type"] == "exact").sum()))
+            c3.metric("Similar matches", int((classified["match_type"] == "similar").sum()))
+            c4.metric("Needs review", int((classified["match_type"].isin(["new", "suggestion", "rule"])).sum()))
 
-    reviewed_rows = []
+            if balance_has_values(balance_info):
+                currency = balance_info.get("currency") or selected_account.get("currency", "")
+                render_summary_strip([
+                    ("OB", "Opening balance", display_money(balance_info.get("opening_balance"), currency)),
+                    ("IN", "Money in", display_money(balance_info.get("money_in"), currency)),
+                    ("OUT", "Money out", display_money(balance_info.get("money_out"), currency)),
+                    ("CB", "Closing balance", display_money(balance_info.get("closing_balance"), currency)),
+                ])
+                balance_preview = pd.DataFrame([{
+                    "Bank": balance_info.get("bank") or selected_account.get("bank", ""),
+                    "Account": selected_account.get("account_name", ""),
+                    "Account number": balance_info.get("account_number") or selected_account.get("account_number", ""),
+                    "Currency": currency,
+                    "Period start": balance_info.get("period_start", ""),
+                    "Period end": balance_info.get("period_end", ""),
+                    "Source": balance_info.get("source", ""),
+                }])
+                st.dataframe(balance_preview, use_container_width=True, hide_index=True)
 
-    for i, row in paged_df.iterrows():
-        row_identity = "|".join([
-            str(row.get("Date", "")).strip(),
-            str(row.get("Description", "")).strip(),
-            f"{pd.to_numeric(row.get('Amount', 0), errors='coerce'):.2f}",
-            str(row.get("account_number", "")).strip(),
-            str(int(pd.to_numeric(row.get("source_occurrence", 0), errors="coerce") or 0)),
-        ])
-        category_key = f"cat_{section_key}_{row_identity}"
-        subcategory_key = f"subcat_{section_key}_{row_identity}"
-        reviewed_key = f"reviewed_{section_key}_{row_identity}"
-
-        with st.container(border=True):
-            col1, col2, col3, col4 = st.columns([2, 4, 2, 3])
-
-            with col1:
-                st.write(f"**Date:** {row['Date']}")
-            with col2:
-                st.write(f"**Description:** {row['Description']}")
-                st.caption(f"Normalized: {row['normalized_description']}")
-            with col3:
-                st.write(f"**Amount:** {row['Amount']:.2f} {row['currency']}")
-                st.caption(f"USD: {row['usd_amount']:.2f}")
-            with col4:
-                st.write(f"**Match type:** {row['match_type']}")
-                st.caption(f"Currency: {row['currency']}")
-
-            if row.get("dup_flag", False):
-                st.error("⚠️ Potential duplicate transaction detected")
-
-            if row["match_type"] == "exact":
-                st.info(
-                    f"Identical to past transaction: `{row['matched_reference']}` "
-                    f"→ suggested category: **{row['suggested_category']}**"
-                )
-            elif row["match_type"] == "similar":
-                st.warning(
-                    f"Similar to past transaction: `{row['matched_reference']}` "
-                    f"→ suggested category: **{row['suggested_category']}** "
-                    f"(confidence {row['confidence']})"
-                )
-            elif row["match_type"] == "rule":
-                st.info(
-                    "Rule-based classification "
-                    f"→ suggested category: **{row['suggested_category']}**"
-                )
-            elif row["match_type"] == "ai":
-                st.info(
-                    "AI fallback suggestion "
-                    f"→ suggested category: **{row['suggested_category']}** "
-                    f"(confidence {row['confidence']})"
-                )
-            else:
-                st.error("New or unusual transaction. Review required.")
-
-            default_category = ""
-            if row.get("final_category") in categories:
-                default_category = row["final_category"]
-            elif row.get("suggested_category") in categories:
-                default_category = row["suggested_category"]
-
-            current_category_value = st.session_state.get(category_key)
-            if current_category_value not in categories:
-                st.session_state[category_key] = default_category if default_category in categories else None
-
-            selected_category = st.selectbox(
-                f"Category for row {i + 1}",
-                categories,
-                index=categories.index(default_category) if default_category in categories else None,
-                placeholder="Select a category",
-                key=category_key,
-            )
-
-            default_subcategory = ""
-            if row.get("final_subcategory") and row.get("final_category") == selected_category:
-                default_subcategory = str(row.get("final_subcategory", "")).strip()
-            elif row.get("suggested_subcategory") and row.get("suggested_category") == selected_category:
-                default_subcategory = str(row.get("suggested_subcategory", "")).strip()
-
-            subcategory_options = get_subcategory_options_for_category(selected_category, subcategory_options_map)
-            if default_subcategory not in subcategory_options:
-                default_subcategory = ""
-
-            current_subcategory_value = st.session_state.get(subcategory_key)
-            if current_subcategory_value not in subcategory_options:
-                st.session_state[subcategory_key] = default_subcategory
-
-            selected_subcategory = st.selectbox(
-                f"Subcategory for row {i + 1}",
-                subcategory_options,
-                index=subcategory_options.index(default_subcategory),
-                format_func=format_subcategory_option,
-                key=subcategory_key,
-            )
-
-            reviewed = st.checkbox(
-                f"Mark row {i + 1} as reviewed",
-                value=bool(row.get("reviewed", 0)),
-                key=reviewed_key,
-            )
-
-            final_row = row.to_dict()
-            final_row["final_category"] = selected_category
-            final_row["final_subcategory"] = selected_subcategory
-            final_row["reviewed"] = 1 if reviewed else 0
-            reviewed_rows.append(final_row)
-
-    button_host = action_container if action_container is not None else st
-
-    if button_host.button("Save reviewed classifications", type="primary", key=f"save_{section_key}"):
-        final_df = pd.DataFrame(reviewed_rows)
-        if final_df.empty:
-            st.info("No transactions available to save.")
-            return
-
-        missing_review_categories = final_df[
-            (final_df["reviewed"] == 1)
-            & final_df["final_category"].fillna("").astype(str).str.strip().eq("")
-        ]
-        if not missing_review_categories.empty:
-            st.error("Select a category for every reviewed transaction before saving.")
-            return
-
-        final_df["normalized_description"] = final_df["Description"].apply(
-            lambda x: simplify_merchant(normalize_description(x))
-        )
-
-        final_df["normalized_description"] = final_df.apply(
-            lambda r: r["normalized_description"]
-            if str(r["normalized_description"]).strip()
-            else str(r["Description"]).upper().strip(),
-            axis=1,
-        )
-
-        final_df = final_df.drop_duplicates(
-            subset=["Date", "Description", "Amount", "account_number", "source_occurrence"]
-        )
-
-        for idx, row in final_df.iterrows():
-            clean_desc = row.get("normalized_description", "")
-
-            if not str(clean_desc).strip():
-                clean_desc = simplify_merchant(normalize_description(row["Description"]))
-
-            if not str(clean_desc).strip():
-                clean_desc = str(row["Description"]).upper().strip()
-
-            if int(row.get("reviewed", 0)) == 1 and str(row.get("final_category", "")).strip():
-                remember_transaction(
-                    clean_desc,
-                    row["beneficiary"],
-                    row["transaction_type"],
-                    row["final_category"],
-                    row.get("final_subcategory", ""),
-                    original_description=str(row.get("Description", "")),
-                )
-
-            final_df.at[idx, "normalized_description"] = clean_desc
-
-        save_classified_transactions(final_df)
-        update_access_backup_state(get_saved_transactions())
-        st.session_state.pop(page_key, None)
-        st.success(
-            f"Saved {int((final_df['reviewed'] == 1).sum())} reviewed transactions. "
-            f"{int((final_df['reviewed'] == 0).sum())} transactions remain pending."
-        )
-        st.rerun()
-
-    st.markdown("### Preview")
-    preview_df = pd.DataFrame(reviewed_rows)[[
-        "Date",
-        "Description",
-        "normalized_description",
-        "Amount",
-        "currency",
-        "usd_amount",
-        "match_type",
-        "suggested_category",
-        "suggested_subcategory",
-        "final_category",
-        "final_subcategory",
-        "reviewed",
-        "dup_flag",
-    ]]
-    for col in ("final_category", "final_subcategory", "suggested_category", "suggested_subcategory"):
-        if col in preview_df.columns:
-            preview_df[col] = preview_df[col].fillna("").astype(str).replace("None", "")
-    st.dataframe(preview_df, use_container_width=True)
-
-
-def apply_audit_filters(df, key_prefix):
-    if df is None or df.empty:
-        return df
-
-    st.caption("Use the filter controls above each column to narrow the editable rows.")
-    filter_columns = st.columns(len(df.columns))
-    filtered_df = df.copy()
-
-    for idx, column in enumerate(df.columns):
-        column_values = df[column].dropna().astype(str).str.strip()
-        column_values = [value for value in column_values.unique().tolist() if value]
-        column_values.sort(key=str.lower)
-
-        with filter_columns[idx]:
-            st.markdown(
-                (
-                    "<div style='font-size:0.8rem; color: rgba(250, 250, 250, 0.6); "
-                    "margin-bottom: 0.25rem; white-space: nowrap; overflow: hidden; "
-                    f"text-overflow: ellipsis;' title='{column}'>{column}</div>"
-                ),
-                unsafe_allow_html=True,
-            )
-
-            selected_values = st.session_state.get(f"{key_prefix}_{column}", [])
-            if selected_values:
-                filter_summary = f"{len(selected_values)} selected"
-            else:
-                filter_summary = "All"
-
-            with st.popover(filter_summary):
-                selected_values = st.multiselect(
-                    f"Filter {column}",
-                    options=column_values,
-                    default=selected_values,
-                    key=f"{key_prefix}_{column}",
-                    label_visibility="collapsed",
-                    placeholder="All",
-                )
-
-                if st.button("Clear", key=f"clear_{key_prefix}_{column}"):
-                    st.session_state[f"{key_prefix}_{column}"] = []
-                    st.rerun()
-
-        if selected_values:
-            filtered_df = filtered_df[
-                filtered_df[column].astype(str).isin(selected_values)
+            preview_cols = [
+                "Date",
+                "Description",
+                "Amount",
+                "currency",
+                "amount_usd",
+                "suggested_category",
+                "suggested_subcategory",
+                "match_type",
+                "confidence",
+                "dup_flag",
             ]
+            st.dataframe(
+                classified[[col for col in preview_cols if col in classified.columns]],
+                use_container_width=True,
+                height=360,
+            )
 
-    return filtered_df
-
-
-def merge_filtered_audit_edits(original_df, filtered_original_df, edited_filtered_df):
-    if "id" not in original_df.columns:
-        return edited_filtered_df.copy()
-
-    full_df = original_df.copy()
-    visible_ids = set(
-        pd.to_numeric(filtered_original_df["id"], errors="coerce").dropna().astype(int)
-    )
-
-    edited_df = edited_filtered_df.copy()
-    edited_df["id"] = pd.to_numeric(edited_df["id"], errors="coerce")
-
-    full_df = full_df[
-        ~pd.to_numeric(full_df["id"], errors="coerce").isin(visible_ids)
-    ]
-
-    edited_existing_rows = edited_df[edited_df["id"].notna()].copy()
-    new_rows = edited_df[edited_df["id"].isna()].copy()
-
-    updated_df = pd.concat(
-        [full_df, edited_existing_rows, new_rows],
-        ignore_index=True,
-    )
-
-    return updated_df.reindex(columns=original_df.columns)
+            if st.button("Import to pending review", type="primary"):
+                inserted, duplicate_statement = save_pending_transactions(
+                    classified,
+                    uploaded_statement.name,
+                    statement_hash,
+                )
+                if duplicate_statement:
+                    st.warning("This statement already exists. It was not imported again.")
+                else:
+                    save_statement_balance(
+                        statement_hash,
+                        uploaded_statement.name,
+                        balance_info,
+                        selected_account,
+                    )
+                    st.success(f"Imported {inserted} transactions to pending review.")
+                    st.cache_data.clear()
+        except Exception as exc:
+            st.error(str(exc))
 
 
-def update_access_backup_state(saved_df=None):
-    backup_df = get_saved_transactions() if saved_df is None else saved_df.copy()
-    if backup_df is None or backup_df.empty:
-        st.session_state.pop("access_backup_csv", None)
-        st.session_state.pop("access_backup_excel", None)
-        st.session_state.pop("access_backup_file_stub", None)
-        return
+elif page == "Import History":
+    st.subheader("Import History")
+    history = get_import_history()
 
-    file_stub = f"areti_access_backup_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}"
-    st.session_state["access_backup_csv"] = build_access_backup_csv(backup_df)
-    st.session_state["access_backup_excel"] = build_access_backup_excel(backup_df)
-    st.session_state["access_backup_file_stub"] = file_stub
+    if history.empty:
+        st.info("No statements have been imported yet.")
+    else:
+        duplicate_attempts = int(pd.to_numeric(history["duplicate_attempts"], errors="coerce").fillna(0).sum())
+        missing_balances = int((history["balance_status"] == "Missing data").sum()) if "balance_status" in history else 0
+        needs_review = int((history.get("reconciliation_status", pd.Series(dtype=str)) == "Needs review").sum())
+        render_summary_strip([
+            ("IMP", "Imported statements", len(history)),
+            ("DUP", "Duplicate attempts", duplicate_attempts),
+            ("CHK", "Balance warnings", needs_review),
+            ("BAL", "Missing balances", missing_balances),
+        ])
 
-
-def render_access_backup_panel():
-    backup_csv = st.session_state.get("access_backup_csv")
-    backup_excel = st.session_state.get("access_backup_excel")
-    file_stub = st.session_state.get("access_backup_file_stub", "areti_access_backup")
-
-    if not backup_csv or not backup_excel:
-        return
-
-    st.warning(
-        "Hosted app storage can reset. Download this backup after each save so you can import it into Access."
-    )
-    backup_col1, backup_col2 = st.columns(2)
-
-    with backup_col1:
-        st.download_button(
-            label="Download Latest Access Backup CSV",
-            data=backup_csv,
-            file_name=f"{file_stub}.csv",
-            mime="text/csv",
+        h1, h2, h3 = st.columns(3)
+        month_values = sorted(
+            pd.to_datetime(history["imported_at"], errors="coerce").dt.to_period("M").dropna().astype(str).unique(),
+            reverse=True,
         )
+        account_values = sorted(value for value in history["account_name"].fillna("").astype(str).unique() if value)
+        status_values = sorted(value for value in history["duplicate_status"].fillna("").astype(str).unique() if value)
+        selected_month = h1.selectbox("Imported month", ["All months"] + month_values, key="history_month")
+        selected_account = h2.selectbox("Account", ["All accounts"] + account_values, key="history_account")
+        selected_status = h3.selectbox("Status", ["All statuses"] + status_values, key="history_status")
 
-    with backup_col2:
+        history_view = history.copy()
+        if selected_month != "All months":
+            imported_month = pd.to_datetime(history_view["imported_at"], errors="coerce").dt.to_period("M").astype(str)
+            history_view = history_view[imported_month == selected_month].copy()
+        if selected_account != "All accounts":
+            history_view = history_view[history_view["account_name"].fillna("").astype(str) == selected_account].copy()
+        if selected_status != "All statuses":
+            history_view = history_view[history_view["duplicate_status"].fillna("").astype(str) == selected_status].copy()
+
+        search = st.text_input("Search import history")
+        if search:
+            mask = history_view.astype(str).apply(
+                lambda col: col.str.contains(search, case=False, na=False)
+            ).any(axis=1)
+            history_view = history_view[mask].copy()
+
+        history_cols = [
+            "statement_name",
+            "imported_at",
+            "transaction_count",
+            "account_name",
+            "bank",
+            "currency",
+            "period_start",
+            "period_end",
+            "closing_balance",
+            "duplicate_status",
+            "last_duplicate_at",
+            "balance_status",
+            "reconciliation_difference",
+        ]
+        st.dataframe(
+            history_view[[col for col in history_cols if col in history_view.columns]],
+            use_container_width=True,
+            hide_index=True,
+            height=520,
+        )
         st.download_button(
-            label="Download Latest Access Backup Excel",
-            data=backup_excel,
-            file_name=f"{file_stub}.xlsx",
+            "Download import history Excel",
+            data=dataframe_to_excel_bytes({"Import history": history_view}),
+            file_name="import_history.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-st.set_page_config(page_title="CFO Financial Dashboard", layout="wide")
-init_db()
 
-st.title("CFO Financial Dashboard")
-st.caption(
-    "Controlled logic, memory, executive reporting, KPI dashboard, exports, "
-    "PDF, email reporting, duplicates, and reset tools"
-)
+elif page == "Pending Review":
+    st.subheader("Pending Review")
+    pending = get_pending_transactions()
+    categories = get_categories()
+    subcategories = get_subcategories()
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "1. Upload & Classify",
-    "2. Memory",
-    "3. Reports & CFO Dashboard",
-    "4. Categories & System"
-])
-
-# -------------------------
-# TAB 1
-# -------------------------
-with tab1:
-    st.subheader("Upload CSV, Excel, or PDF statement")
-    render_access_backup_panel()
-
-    rates_df = get_monthly_rates()
-    account_registry_df = get_account_registry()
-
-    st.markdown("### Monthly FX Rates")
-    rates_file = st.file_uploader(
-        "Upload monthly rates Excel (optional)",
-        type=["xlsx", "xls"],
-        key="monthly_rates_upload",
-    )
-
-    if rates_file is not None:
-        try:
-            rates_file_token = get_uploaded_file_token(rates_file)
-            if st.session_state.get("processed_rates_file") != rates_file_token:
-                imported_rates_df = parse_monthly_rates_excel(rates_file)
-                replace_monthly_rate_records(imported_rates_df)
-                rates_df = get_monthly_rates()
-                st.session_state["processed_rates_file"] = rates_file_token
-                st.success(f"Imported {len(imported_rates_df)} monthly FX rate rows.")
-        except Exception as e:
-            st.error(str(e))
-
-    if rates_df.empty:
-        st.warning("No monthly FX rates imported yet. Non-USD statements will require the rates Excel first.")
+    if pending.empty:
+        st.info("No pending transactions.")
+    elif not categories:
+        st.warning("No categories are loaded. Upload categories in Setup first.")
     else:
-        rates_table = (
-            rates_df
-            .pivot(index="source_currency", columns="report_month", values="rate_to_usd")
-            .sort_index()
-        )
-        st.dataframe(rates_table, use_container_width=True)
-        st.caption("Rates are stored as USD equivalent per 1 unit of source currency and reused until you upload a newer rates file.")
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("Pending rows", len(pending))
+        p2.metric("Exact", int((pending["match_type"] == "exact").sum()))
+        p3.metric("Similar", int((pending["match_type"] == "similar").sum()))
+        p4.metric("New", int((pending["match_type"] == "new").sum()))
 
-    available_currencies = get_statement_currencies(rates_df)
+        top_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_top")
+        edited_pending = editable_pending_table(pending, categories, subcategories, "pending_editor")
+        bottom_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_bottom")
 
-    st.markdown("### Account Registry")
-    account_registry_file = st.file_uploader(
-        "Upload 'Who made the expense' Excel",
-        type=["xlsx", "xls"],
-        key="account_registry_upload",
-    )
-
-    if account_registry_file is None:
-        st.session_state["processed_account_registry_file"] = None
-
-    if account_registry_file is not None:
-        try:
-            account_registry_file_token = get_uploaded_file_token(account_registry_file)
-            if st.session_state.get("processed_account_registry_file") != account_registry_file_token:
-                imported_accounts_df = parse_account_registry_excel(account_registry_file)
-                replace_account_registry_records(imported_accounts_df)
-                account_registry_df = get_account_registry()
-                st.session_state["processed_account_registry_file"] = account_registry_file_token
-                st.success(f"Imported {len(imported_accounts_df)} account registry rows.")
-        except Exception as e:
-            st.error(str(e))
-
-    if account_registry_df.empty:
-        st.warning("Upload the 'Who made the expense' Excel to populate account name, bank, account number, currency, and rate type.")
-        account_options = []
-        selected_account = None
-    else:
-        account_options = account_registry_df.to_dict("records")
-        selected_account_df = pd.DataFrame(account_options)
-        st.dataframe(selected_account_df, use_container_width=True, height=220)
-
-    st.markdown("### Account Information")
-    if account_options:
-        selected_account = st.selectbox(
-            "Select account",
-            account_options,
-            format_func=build_account_option_label,
-            key="selected_account_registry",
-        )
-
-    account_name = selected_account["account_name"] if selected_account else ""
-    account_number = selected_account["account_number"] if selected_account else ""
-    account_bank = selected_account["bank"] if selected_account else ""
-    statement_currency = selected_account["currency"] if selected_account else "USD"
-    rate_type = selected_account["rate_type"] if selected_account else ""
-
-    st.text_input("Account name", value=account_name, disabled=True)
-    st.text_input("Bank", value=account_bank, disabled=True)
-    st.text_input("Account number / IBAN", value=account_number, disabled=True)
-    st.text_input("Statement currency", value=statement_currency, disabled=True)
-    st.text_input("Rate type", value=rate_type, disabled=True)
-
-    st.markdown("### Manual Transaction Entry")
-
-    with st.expander("Add transaction manually", expanded=False):
-        m_date = st.date_input("Date")
-        m_desc = st.text_input("Description")
-        m_amount = st.number_input("Amount", format="%.2f")
-        m_currency = st.selectbox("Currency", available_currencies, key="manual_currency")
-        manual_categories = get_categories()
-        manual_subcategory_options_map = get_subcategory_options_map()
-        if manual_categories:
-            m_category = st.selectbox("Category", manual_categories, key="manual_category")
-            m_subcategory = st.selectbox(
-                "Subcategory",
-                get_subcategory_options_for_category(m_category, manual_subcategory_options_map),
-                format_func=format_subcategory_option,
-                key="manual_subcategory",
-            )
-        else:
-            st.warning("Upload your categories Excel before adding manual transactions.")
-            m_category = None
-            m_subcategory = ""
-
-        if st.button("Add Manual Transaction", disabled=not manual_categories):
-            norm_desc = simplify_merchant(normalize_description(m_desc))
-            beneficiary = extract_beneficiary(m_desc)
-            txn_type = infer_transaction_type(m_desc, m_amount)
-
-            if not norm_desc:
-                norm_desc = str(m_desc).upper().strip()
-
-            manual_row = {
-                "Date": str(m_date),
-                "Description": m_desc,
-                "normalized_description": norm_desc,
-                "Amount": m_amount,
-                "beneficiary": beneficiary,
-                "transaction_type": txn_type,
-                "final_category": m_category,
-                "final_subcategory": m_subcategory,
-                "match_type": "manual",
-                "confidence": 1.0,
-                "reviewed": 1,
-                "account_name": selected_account["account_name"] if selected_account else "",
-                "account_number": selected_account["account_number"] if selected_account else "",
-                "bank": selected_account["bank"] if selected_account else "",
-            }
-
-            df_manual = attach_statement_currency(
-                pd.DataFrame([manual_row]),
-                selected_account["currency"] if selected_account else m_currency,
-                rates_df,
-            )
-            save_classified_transactions(df_manual)
-            remember_transaction(
-                norm_desc,
-                beneficiary,
-                txn_type,
-                m_category,
-                m_subcategory,
-                original_description=m_desc,
-            )
-            update_access_backup_state(get_saved_transactions())
-            st.success("Manual transaction saved successfully.")
-            st.rerun()
-
-    uploaded_file = st.file_uploader(
-        "Choose a file", type=["csv", "xlsx", "xls", "pdf"]
-    )
-
-    pending_review_df = prepare_saved_transactions_for_review(get_saved_transactions())
-
-    if uploaded_file is None and not pending_review_df.empty:
-        st.markdown("### Pending transactions")
-        st.caption("Previously saved pending transactions remain here until you review them.")
-        pending_action_container = st.container()
-        render_review_queue(
-            pending_review_df,
-            get_categories(),
-            "pending_db",
-            action_container=pending_action_container,
-        )
-
-    if uploaded_file is not None:
-        try:
-            lower_name = uploaded_file.name.lower()
-
-            if lower_name.endswith(".pdf"):
-                df = parse_pdf(uploaded_file)
-            elif lower_name.endswith(".xlsx") or lower_name.endswith(".xls"):
-                df = parse_excel(uploaded_file)
+        if top_save or bottom_save:
+            saved = save_reviewed_rows(edited_pending)
+            if saved:
+                st.success(f"Saved {saved} reviewed transactions.")
+                st.rerun()
             else:
-                df = parse_csv(uploaded_file)
-
-            # account info for all file types
-            df["account_name"] = account_name
-            df["account_number"] = account_number
-            df["bank"] = account_bank
-
-            # normalization
-            df["normalized_description"] = df["Description"].apply(normalize_description)
-            df["normalized_description"] = df["normalized_description"].apply(simplify_merchant)
-            df["normalized_description"] = df.apply(
-                lambda r: r["normalized_description"]
-                if str(r["normalized_description"]).strip()
-                else str(r["Description"]).upper().strip(),
-                axis=1,
-            )
-
-            # beneficiary / transaction type
-            df["beneficiary"] = df["Description"].apply(extract_beneficiary)
-            df["transaction_type"] = df.apply(
-                lambda r: infer_transaction_type(r["Description"], r["Amount"]),
-                axis=1,
-            )
-
-            # duplicates
-            df = detect_duplicates(df)
-
-            # classify
-            categories = get_categories()
-            if not categories:
-                st.error("Upload your categories Excel before classifying transactions.")
-                st.stop()
-
-            memory_df = get_memory()
-            classified_df = classify_transactions(df, memory_df)
-            if "reviewed" not in classified_df.columns:
-                classified_df["reviewed"] = 0
-
-            if "dup_flag" in df.columns:
-                classified_df["dup_flag"] = df["dup_flag"].values
-
-            classified_df = attach_statement_currency(
-                classified_df,
-                statement_currency,
-                rates_df,
-            )
-            classified_df["account_name"] = account_name
-            classified_df["account_number"] = account_number
-            classified_df["bank"] = account_bank
-            classified_df = merge_saved_review_state(classified_df, get_saved_transactions())
-
-            existing_rows = int(classified_df.get("exists_in_saved", pd.Series(False, index=classified_df.index)).fillna(False).sum())
-            pending_review_count = int((classified_df["reviewed"] == 0).sum())
-            new_rows_count = len(classified_df) - existing_rows
-
-            if len(classified_df) > 0 and existing_rows == len(classified_df) and pending_review_count == 0:
-                st.info("This statement was previously already uploaded.")
-                st.stop()
-
-            if existing_rows > 0:
-                st.success(
-                    f"Loaded {max(new_rows_count, 0)} new transactions. "
-                    f"{existing_rows} transactions from this statement were already uploaded."
-                )
-            else:
-                st.success(f"Loaded {len(classified_df)} transactions")
-
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Exact matches", int((classified_df["match_type"] == "exact").sum()))
-            c2.metric("Similar matches", int((classified_df["match_type"] == "similar").sum()))
-            c3.metric("Rule-based", int((classified_df["match_type"] == "rule").sum()))
-            c4.metric("AI fallback", int((classified_df["match_type"] == "ai").sum()))
-            c5.metric(
-                "Potential duplicates",
-                int(classified_df["dup_flag"].sum()) if "dup_flag" in classified_df.columns else 0,
-            )
-
-            st.markdown("### Review transactions")
-            uploaded_action_container = st.container()
-
-            render_review_queue(classified_df, categories, "uploaded", action_container=uploaded_action_container)
-
-        except Exception as e:
-            st.error(str(e))
+                st.warning("No rows were ticked as reviewed.")
 
 
-# -------------------------
-# TAB 2
-# -------------------------
-with tab2:
-    st.subheader("Transaction memory")
+elif page == "Database":
+    st.subheader("Database")
+    all_tx = get_all_transactions()
+    categories = get_categories()
+    subcategories = get_subcategories()
 
-    memory_df = get_memory()
-
-    if memory_df.empty:
-        st.info("No learned transactions yet.")
+    if all_tx.empty:
+        st.info("No transactions imported yet.")
     else:
-        memory_export_col1, memory_export_col2 = st.columns(2)
+        db_filtered = transaction_filter_controls(all_tx, "database")
+        search = st.text_input("Search database")
+        db_view = db_filtered.copy()
+        if search:
+            mask = db_view.astype(str).apply(
+                lambda col: col.str.contains(search, case=False, na=False)
+            ).any(axis=1)
+            db_view = db_view[mask].copy()
 
-        with memory_export_col1:
-            memory_backup_csv = build_memory_backup_csv(memory_df)
-            st.download_button(
-                label="Download Memory Backup CSV",
-                data=memory_backup_csv,
-                file_name="areti_memory_backup.csv",
-                mime="text/csv",
-            )
-
-        with memory_export_col2:
-            memory_backup_excel = build_memory_backup_excel(memory_df)
-            st.download_button(
-                label="Download Memory Backup Excel",
-                data=memory_backup_excel,
-                file_name="areti_memory_backup.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
-        st.dataframe(memory_df, use_container_width=True)
-
-        search_term = st.text_input("Search memory")
-        if search_term:
-            filtered = memory_df[
-                memory_df["normalized_description"].str.contains(
-                    search_term.upper(),
-                    na=False,
-                )
-            ]
-            st.dataframe(filtered, use_container_width=True)
-
-
-# -------------------------
-# TAB 3
-# -------------------------
-with tab3:
-    st.subheader("Reports & CFO Dashboard")
-
-    saved_df = get_saved_transactions()
-
-    auto_status = None
-    if not saved_df.empty:
-        saved_df["txn_date"] = pd.to_datetime(saved_df["txn_date"], errors="coerce")
-        auto_status = maybe_auto_send_monthly_email(saved_df.copy())
-
-    if auto_status:
-        st.info(auto_status)
-
-    if saved_df.empty:
-        st.info("No classified transactions saved yet.")
-    else:
-        saved_df["txn_date"] = pd.to_datetime(saved_df["txn_date"], errors="coerce")
-        saved_df["amount"] = pd.to_numeric(saved_df["amount"], errors="coerce").fillna(0)
-        if "usd_amount" in saved_df.columns:
-            saved_df["usd_amount"] = pd.to_numeric(saved_df["usd_amount"], errors="coerce")
-
-        if "currency" not in saved_df.columns:
-            saved_df["currency"] = "USD"
-        if "usd_amount" not in saved_df.columns:
-            saved_df["usd_amount"] = saved_df["amount"]
-        else:
-            saved_df["usd_amount"] = saved_df["usd_amount"].fillna(saved_df["amount"])
-
-        saved_df["category"] = saved_df["category"].fillna("").astype(str).str.strip().replace("nan", "")
-        if "subcategory" in saved_df.columns:
-            saved_df["subcategory"] = saved_df["subcategory"].fillna("").astype(str).str.strip().replace("nan", "")
-
-        saved_df = detect_saved_duplicates(saved_df)
-
-        r1, r2 = st.columns(2)
-
-        with r1:
-            months = st.selectbox("Period", [1, 3, 6, 12], index=2)
-
-        with r2:
-            report_categories = ["All"] + get_categories()
-            selected_category = st.selectbox("Category", report_categories)
-
-        cutoff = pd.Timestamp.now() - pd.DateOffset(months=months)
-        report_df = saved_df[saved_df["txn_date"] >= cutoff].copy()
-
-        report_df = report_df.drop_duplicates(
-            subset=["txn_date", "original_description", "amount"]
-        )
-        report_df = report_df.sort_values("txn_date", ascending=False)
-
-        if selected_category != "All":
-            report_df = report_df[report_df["category"] == selected_category]
-
-        report_df = detect_anomalies(report_df)
-        report_df["month"] = report_df["txn_date"].dt.to_period("M").astype(str)
-
-        context = build_report_context(report_df, months, selected_category)
-        kpis = context["kpis"]
-        monthly_total = context["monthly_total"]
-        monthly_income_expense = context["monthly_income_expense"]
-        recurring_df = context["recurring_df"]
-        seasonal_df = context["seasonal_df"]
-        prediction = context["prediction"]
-        prediction_source = context["prediction_source"]
-        summary = context["summary"]
-        category_expenses = context["category_expenses"]
-
-        st.markdown(f"### Transactions for the last {months} month(s)")
-        st.caption("All KPIs, summaries, charts, and exports use USD equivalent amounts when available.")
-
-        display_cols = [
-            "txn_date",
-            "month",
-            "original_description",
-            "normalized_description",
-            "amount",
-            "category",
-            "match_type",
+        st.caption(f"Database path: {DB_PATH}")
+        render_summary_strip([
+            ("ROWS", "Visible rows", len(db_view)),
+            ("ACC", "Accounts", db_view["account_name"].replace("", pd.NA).dropna().nunique()),
+            ("PEN", "Pending", int((db_view["status"].fillna("pending") == "pending").sum()) if "status" in db_view else 0),
+            ("REV", "Reviewed", int((db_view["status"].fillna("") == "reviewed").sum()) if "status" in db_view else 0),
+        ])
+        editable_cols = [
+            "id",
+            "status",
             "reviewed",
-            "anomaly",
-            "dup_flag",
+            "txn_date",
+            "account_name",
+            "bank",
+            "account_number",
+            "currency",
+            "amount",
+            "amount_usd",
+            "original_description",
+            "category",
+            "subcategory",
+            "match_type",
         ]
-        if "subcategory" in report_df.columns:
-            display_cols.append("subcategory")
-        if "currency" in report_df.columns:
-            display_cols.append("currency")
-        if "usd_amount" in report_df.columns:
-            display_cols.append("usd_amount")
-
-        display_df = report_df[display_cols].sort_values("txn_date", ascending=False)
-
-        def highlight_flags(row):
-            styles = [""] * len(row)
-            if row["dup_flag"]:
-                styles = ["background-color: #fff4cc"] * len(row)
-            if row["anomaly"]:
-                styles = ["background-color: #ffcccc"] * len(row)
-            return styles
-
-        st.dataframe(
-            display_df.style.apply(highlight_flags, axis=1),
-            use_container_width=True,
-        )
-
-        duplicates_only = report_df[report_df["dup_flag"]].copy()
-        if not duplicates_only.empty:
-            st.markdown("### Potential duplicate transactions")
-            dup_cols = [
-                "txn_date",
-                "month",
-                "original_description",
-                "normalized_description",
-                "amount",
-                "category",
-                "match_type",
-            ]
-            if "subcategory" in duplicates_only.columns:
-                dup_cols.append("subcategory")
-            if "currency" in duplicates_only.columns:
-                dup_cols.append("currency")
-            if "usd_amount" in duplicates_only.columns:
-                dup_cols.append("usd_amount")
-
-            st.dataframe(
-                duplicates_only[dup_cols].sort_values("txn_date", ascending=False),
-                use_container_width=True,
-            )
-
-        anomalies_only = report_df[report_df["anomaly"]].copy()
-        if not anomalies_only.empty:
-            st.markdown("### Suspicious expenses detected")
-            an_cols = [
-                "txn_date",
-                "month",
-                "original_description",
-                "normalized_description",
-                "amount",
-                "category",
-                "match_type",
-            ]
-            if "subcategory" in anomalies_only.columns:
-                an_cols.append("subcategory")
-            if "currency" in anomalies_only.columns:
-                an_cols.append("currency")
-            if "usd_amount" in anomalies_only.columns:
-                an_cols.append("usd_amount")
-
-            st.dataframe(
-                anomalies_only[an_cols].sort_values("txn_date", ascending=False),
-                use_container_width=True,
-            )
-
-        st.markdown("### Executive KPI Dashboard")
-        d1, d2, d3, d4, d5 = st.columns(5)
-        d1.metric("Total Income", format_currency(kpis["total_income"]))
-        d2.metric("Total Expenses", format_currency(kpis["total_expenses"]))
-        d3.metric("Net Result", format_currency(kpis["net_result"]))
-        d4.metric("Burn Rate", format_currency(kpis["burn_rate"]))
-        d5.metric("Savings Rate", f"{kpis['savings_rate']:.2f}%")
-
-        d6, d7, d8 = st.columns(3)
-        d6.metric("Avg Monthly Income", format_currency(kpis["avg_monthly_income"]))
-        d7.metric("Avg Monthly Expenses", format_currency(kpis["avg_monthly_expenses"]))
-        d8.metric("Months Covered", str(kpis["months_covered"]))
-
-        st.markdown("### Summary by category")
-        st.dataframe(summary, use_container_width=True)
-
-        if st.button("Show 'Subscriptions' paid in the last 6 months"):
-            subs_cols = [
-                "txn_date",
-                "original_description",
-                "normalized_description",
-                "amount",
-                "category",
-            ]
-            if "subcategory" in saved_df.columns:
-                subs_cols.append("subcategory")
-            if "currency" in saved_df.columns:
-                subs_cols.append("currency")
-            if "usd_amount" in saved_df.columns:
-                subs_cols.append("usd_amount")
-
-            subs_df = saved_df[
-                (saved_df["txn_date"] >= pd.Timestamp.now() - pd.DateOffset(months=6))
-                & (saved_df["category"] == "Subscriptions")
-            ][subs_cols].sort_values("txn_date", ascending=False)
-
-            st.dataframe(subs_df, use_container_width=True)
-
-        st.markdown("### Monthly totals")
-        st.dataframe(context["monthly_summary"], use_container_width=True)
-
-        st.markdown("### Monthly Expense Difference")
-
-        if not monthly_total.empty:
-            def highlight_diff(val):
-                if pd.isna(val):
-                    return ""
-                if val > 0:
-                    return "color: red; font-weight: bold; background-color: #ffe6e6;"
-                if val < 0:
-                    return "color: green; font-weight: bold; background-color: #e6ffe6;"
-                return "color: gray;"
-
-            st.dataframe(
-                monthly_total[["month", "amount", "diff", "change_%", "trend"]]
-                .style.map(highlight_diff, subset=["diff"]),
-                use_container_width=True,
-            )
-        else:
-            st.info("No monthly expense difference available.")
-
-        st.markdown("### Dashboard with charts")
-
-        if not monthly_income_expense.empty:
-            st.markdown("#### Income vs Expenses")
-            st.line_chart(monthly_income_expense.set_index("month")[["income", "expense", "net"]])
-
-        if not category_expenses.empty:
-            st.markdown("#### Expenses by category")
-            st.bar_chart(category_expenses.set_index("category"))
-
-        if not monthly_total.empty:
-            st.markdown("#### Monthly expense trend")
-            st.bar_chart(monthly_total.set_index("month")[["amount"]])
-
-        st.markdown("### Recurring expenses detection")
-        if recurring_df.empty:
-            st.info("No recurring expenses detected yet.")
-        else:
-            recurring_display = recurring_df[[
-                "sample_description",
-                "category",
-                "occurrences",
-                "months_active",
-                "avg_amount",
-                "min_amount",
-                "max_amount",
-                "variation_pct",
-                "last_seen",
-            ]].copy()
-            recurring_display["period"] = context["period_label"]
-            recurring_display["month"] = "ALL"
-            st.dataframe(recurring_display, use_container_width=True)
-
-        st.markdown("### Seasonal expense patterns")
-        if seasonal_df.empty:
-            st.info("Not enough data for seasonality detection.")
-        else:
-            seasonal_display = seasonal_df.copy()
-            seasonal_display["period"] = context["period_label"]
-            seasonal_display["month"] = seasonal_display["month_name"]
-            st.dataframe(seasonal_display, use_container_width=True)
-            st.bar_chart(seasonal_df.set_index("month_name")[["expense_total"]])
-
-        st.markdown("### Prediction for next month expenses")
-        if prediction is None:
-            st.info("Not enough expense history for prediction.")
-        else:
-            p1, p2 = st.columns(2)
-            p1.metric("Predicted next month expenses", format_currency(prediction))
-
-            if not prediction_source.empty:
-                last_month_value = float(prediction_source["expense_total"].iloc[-1])
-                p2.metric("Difference vs last month", format_currency(prediction - last_month_value))
-
-                prediction_chart = prediction_source[["month", "expense_total"]].copy()
-                next_period = pd.Period(prediction_chart["month"].iloc[-1], freq="M") + 1
-                prediction_chart = pd.concat([
-                    prediction_chart,
-                    pd.DataFrame({
-                        "month": [str(next_period)],
-                        "expense_total": [prediction],
-                    }),
-                ], ignore_index=True)
-
-                st.line_chart(prediction_chart.set_index("month"))
-
-        st.markdown("### Export Reports")
-        export_col1, export_col2, export_col3 = st.columns(3)
-
-        with export_col1:
-            csv_bytes = build_csv_report(context)
-            st.download_button(
-                label="Download CSV Report",
-                data=csv_bytes,
-                file_name="cfo_transactions_report.csv",
-                mime="text/csv",
-            )
-
-        with export_col2:
-            excel_bytes = build_excel_report(context, saved_df=saved_df)
-            st.download_button(
-                label="Download Excel Report",
-                data=excel_bytes,
-                file_name="cfo_financial_report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
-        with export_col3:
-            if REPORTLAB_AVAILABLE:
-                pdf_bytes = build_pdf_report(context)
-                st.download_button(
-                    label="Download PDF Report",
-                    data=pdf_bytes,
-                    file_name="cfo_executive_financial_report.pdf",
-                    mime="application/pdf",
-                )
-            else:
-                st.info("Install reportlab for PDF report generation.")
-
-        st.markdown("### Full Backup For Access")
-        st.caption("This exports the full saved transactions table, not only the filtered report above.")
-        access_backup_col1, access_backup_col2 = st.columns(2)
-
-        with access_backup_col1:
-            access_backup_csv = build_access_backup_csv(saved_df)
-            st.download_button(
-                label="Download Full Access Backup CSV",
-                data=access_backup_csv,
-                file_name="areti_access_full_backup.csv",
-                mime="text/csv",
-            )
-
-        with access_backup_col2:
-            access_backup_excel = build_access_backup_excel(saved_df)
-            st.download_button(
-                label="Download Full Access Backup Excel",
-                data=access_backup_excel,
-                file_name="areti_access_full_backup.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
-        st.markdown("### Monthly Email Reports")
-
-        secrets_cfg = get_secrets_config()
-        default_to = secrets_cfg["email_to"] if secrets_cfg else ""
-        default_from = secrets_cfg["email_from"] if secrets_cfg else ""
-        default_host = secrets_cfg["smtp_host"] if secrets_cfg else ""
-        default_port = secrets_cfg["smtp_port"] if secrets_cfg else 587
-        default_user = secrets_cfg["smtp_username"] if secrets_cfg else ""
-        default_use_tls = secrets_cfg["use_tls"] if secrets_cfg else True
-
-        with st.expander("Email Configuration", expanded=False):
-            smtp_host = st.text_input("SMTP Host", value=default_host)
-            smtp_port = st.number_input("SMTP Port", min_value=1, max_value=65535, value=int(default_port))
-            smtp_username = st.text_input("SMTP Username", value=default_user)
-            smtp_password = st.text_input("SMTP Password", type="password")
-            sender_email = st.text_input("Sender Email", value=default_from)
-            recipient_email = st.text_input("Recipient Email", value=default_to)
-            use_tls = st.checkbox("Use TLS", value=default_use_tls)
-            attach_pdf = st.checkbox("Attach PDF Report", value=True)
-
-        email_subject = f"Executive Financial Report - {context['period_label']}"
-        email_html = build_email_html(context)
-
-        if st.button("Send Email Report Now"):
-            try:
-                attachment_bytes = None
-                attachment_name = None
-                if attach_pdf:
-                    if REPORTLAB_AVAILABLE:
-                        attachment_bytes = build_pdf_report(context)
-                        attachment_name = "executive_financial_report.pdf"
-                    else:
-                        st.warning("PDF attachment skipped because reportlab is not installed.")
-
-                send_email_report(
-                    smtp_host=smtp_host,
-                    smtp_port=int(smtp_port),
-                    smtp_username=smtp_username,
-                    smtp_password=smtp_password,
-                    sender_email=sender_email,
-                    recipient_email=recipient_email,
-                    subject=email_subject,
-                    html_body=email_html,
-                    attachment_bytes=attachment_bytes,
-                    attachment_filename=attachment_name,
-                    use_tls=use_tls,
-                )
-                st.success("Email report sent successfully.")
-            except Exception as e:
-                st.error(str(e))
-
-
-# -------------------------
-# TAB 4
-# -------------------------
-
-with tab4:
-    st.info(f"Database location: {DB_PATH}")
-
-    st.markdown("## 👁️ Audit & Database Transparency")
-
-    view_option = st.selectbox(
-        "Select data to view",
-        ["Transactions", "Memory", "Categories", "Accounts", "Rates"]
-    )
-
-    audit_df = None
-    save_audit_changes = None
-
-    if view_option == "Transactions":
-        audit_df = get_saved_transactions()
-        save_audit_changes = replace_saved_transaction_records
-    elif view_option == "Memory":
-        audit_df = get_memory()
-        save_audit_changes = replace_memory_records
-    elif view_option == "Categories":
-        audit_df = get_category_records()
-        save_audit_changes = replace_category_records
-    elif view_option == "Accounts":
-        audit_df = get_account_registry()
-        save_audit_changes = replace_account_registry_records
-    elif view_option == "Rates":
-        audit_df = get_monthly_rates()
-        save_audit_changes = replace_monthly_rate_records
-
-    if audit_df is not None:
-        filtered_audit_df = apply_audit_filters(
-            audit_df,
-            f"audit_filter_{view_option.lower()}",
-        )
-
-        column_config = None
-        if view_option == "Transactions":
-            category_options = get_categories()
-            subcategory_options = sorted(
-                {
-                    subcategory
-                    for options in get_subcategory_options_map().values()
-                    for subcategory in options
-                    if subcategory
-                },
-                key=str.lower,
-            )
-            column_config = {
-                "category": st.column_config.SelectboxColumn(
-                    "category",
-                    options=category_options,
-                    required=False,
-                ),
-                "subcategory": st.column_config.SelectboxColumn(
-                    "subcategory",
-                    options=subcategory_options,
-                    required=False,
-                ),
-            } if category_options else None
-
-        edited_audit_df = st.data_editor(
-            filtered_audit_df,
-            use_container_width=True,
-            num_rows="dynamic",
-            column_config=column_config,
-            key=f"audit_editor_{view_option.lower()}",
-        )
-
-        if st.button(f"Save {view_option} changes", key=f"save_{view_option.lower()}"):
-            updated_audit_df = merge_filtered_audit_edits(
-                audit_df,
-                filtered_audit_df,
-                edited_audit_df,
-            )
-            save_audit_changes(updated_audit_df)
-            st.success(f"{view_option} updated successfully.")
-            st.rerun()
-
-    if audit_df is not None and not audit_df.empty:
-        csv = audit_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download as CSV",
-            csv,
-            file_name=f"{view_option}.csv",
-            mime="text/csv",
-        )
-
-    st.subheader("Manage categories")
-
-    current_category_records = get_category_records()
-    if current_category_records.empty:
-        st.info("No categories uploaded yet.")
-    else:
-        st.dataframe(
-            current_category_records[["category", "subcategory"]],
+        db_edit = st.data_editor(
+            db_view[[col for col in editable_cols if col in db_view.columns]],
             use_container_width=True,
             hide_index=True,
+            height=620,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "status": st.column_config.SelectboxColumn("Status", options=["pending", "reviewed"]),
+                "reviewed": st.column_config.CheckboxColumn("Reviewed"),
+                "category": st.column_config.SelectboxColumn("Category", options=categories),
+                "subcategory": st.column_config.SelectboxColumn("Subcategory", options=[""] + subcategories),
+            },
+            key="database_editor",
         )
-
-    new_category = st.text_input("Add new category")
-    new_subcategory = st.text_input("Add subcategory (optional)")
-
-    if st.button("Add category"):
-        add_category(new_category, new_subcategory)
-        st.success(f"Category added: {new_category}")
-        st.rerun()
-
-    st.markdown("### Upload Categories from Excel")
-
-    if "cat_upload_key" not in st.session_state:
-        st.session_state["cat_upload_key"] = 0
-
-    cat_file = st.file_uploader(
-        "Upload categories file",
-        type=["xlsx", "xls"],
-        key=f"cat_upload_{st.session_state['cat_upload_key']}",
-    )
-
-    if cat_file is not None:
-        try:
-            from db import replace_categories
-
-            imported_categories_df = parse_category_excel(cat_file)
-
-            with st.expander(
-                f"Imported category rows ({len(imported_categories_df)})",
-                expanded=True,
-            ):
-                st.dataframe(
-                    imported_categories_df,
-                    use_container_width=True,
-                    height=320,
-                    hide_index=True,
-                )
-
-            replace_categories(imported_categories_df.to_dict("records"))
-            st.session_state["cat_upload_key"] += 1
-            st.success("Categories updated from Excel.")
+        if st.button("Apply database edits", type="primary"):
+            count = update_database_rows(db_edit)
+            st.success(f"Updated {count} rows.")
             st.rerun()
 
-        except Exception as e:
-            st.error(str(e))
+        st.download_button(
+            "Download filtered database Excel",
+            data=dataframe_to_excel_bytes({"Transactions": db_view}),
+            file_name="transactions_database_filtered.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    render_manual_transaction_form(categories, subcategories)
 
-    st.markdown("### System Reset")
 
-    c1, c2 = st.columns(2)
+elif page == "Balances":
+    st.subheader("Statement Balances")
+    balances = get_statement_balances()
 
+    if balances.empty:
+        st.info("No statement balance summaries have been imported yet.")
+    else:
+        numeric_closing = pd.to_numeric(balances["closing_balance"], errors="coerce")
+        needs_review_count = int((balances["reconciliation_status"] == "Needs review").sum())
+        render_summary_strip([
+            ("STMT", "Statements", len(balances)),
+            ("CLS", "With closing", int(numeric_closing.notna().sum())),
+            ("OK", "Reconciled", int((balances["reconciliation_status"] == "OK").sum())),
+            ("FLAG", "Needs review", needs_review_count),
+        ])
+        if needs_review_count:
+            st.warning(f"{needs_review_count} statement balance summaries do not reconcile. Review the difference column.")
+
+        search = st.text_input("Search balances")
+        balance_view = balances.copy()
+        if search:
+            mask = balance_view.astype(str).apply(
+                lambda col: col.str.contains(search, case=False, na=False)
+            ).any(axis=1)
+            balance_view = balance_view[mask].copy()
+
+        editable_cols = [
+            "id",
+            "statement_name",
+            "account_name",
+            "bank",
+            "account_number",
+            "currency",
+            "period_start",
+            "period_end",
+            "opening_balance",
+            "money_in",
+            "money_out",
+            "closing_balance",
+            "calculated_closing",
+            "reconciliation_difference",
+            "reconciliation_status",
+            "source",
+            "notes",
+            "updated_at",
+        ]
+        balance_edit = st.data_editor(
+            balance_view[[col for col in editable_cols if col in balance_view.columns]],
+            use_container_width=True,
+            hide_index=True,
+            height=560,
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                "statement_name": st.column_config.TextColumn("Statement", disabled=True, width="large"),
+                "account_name": st.column_config.TextColumn("Account"),
+                "bank": st.column_config.TextColumn("Bank"),
+                "account_number": st.column_config.TextColumn("Account number"),
+                "currency": st.column_config.TextColumn("Currency", width="small"),
+                "period_start": st.column_config.TextColumn("Period start"),
+                "period_end": st.column_config.TextColumn("Period end"),
+                "opening_balance": st.column_config.NumberColumn("Opening balance", format="%.2f"),
+                "money_in": st.column_config.NumberColumn("Money in / payments", format="%.2f"),
+                "money_out": st.column_config.NumberColumn("Money out / charges", format="%.2f"),
+                "closing_balance": st.column_config.NumberColumn("Closing balance", format="%.2f"),
+                "calculated_closing": st.column_config.NumberColumn("Calculated closing", format="%.2f", disabled=True),
+                "reconciliation_difference": st.column_config.NumberColumn("Difference", format="%.2f", disabled=True),
+                "reconciliation_status": st.column_config.TextColumn("Reconciliation", disabled=True),
+                "source": st.column_config.TextColumn("Source", disabled=True, width="small"),
+                "notes": st.column_config.TextColumn("Notes", width="large"),
+                "updated_at": st.column_config.TextColumn("Updated", disabled=True),
+            },
+            key="balances_editor",
+        )
+        if st.button("Apply balance edits", type="primary"):
+            count = update_statement_balance_rows(balance_edit)
+            st.success(f"Updated {count} balance rows.")
+            st.rerun()
+
+        st.download_button(
+            "Download filtered balances Excel",
+            data=dataframe_to_excel_bytes({"Statement balances": balance_view}),
+            file_name="statement_balances_filtered.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+elif page == "Memory":
+    st.subheader("Memory")
+    memory = get_memory()
+
+    if memory.empty:
+        st.info("No learned transactions yet.")
+    else:
+        search = st.text_input("Search memory")
+        memory_view = memory.copy()
+        if search:
+            mask = memory_view.astype(str).apply(
+                lambda col: col.str.contains(search, case=False, na=False)
+            ).any(axis=1)
+            memory_view = memory_view[mask]
+        st.dataframe(memory_view, use_container_width=True, height=560)
+        st.download_button(
+            "Download memory Excel",
+            data=dataframe_to_excel_bytes({"Memory": memory}),
+            file_name="transaction_memory.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+elif page == "Reports":
+    st.subheader("Sample Expenses Report")
+    reviewed = get_saved_transactions()
+    categories_df = get_categories(include_subcategories=True)
+
+    if reviewed.empty:
+        st.info("Review and save transactions before generating the sample expenses report.")
+    else:
+        filtered_reviewed = transaction_filter_controls(reviewed, "reports")
+        if filtered_reviewed.empty:
+            st.warning("No reviewed transactions match the selected filters.")
+            st.stop()
+
+        filtered_reviewed = filtered_reviewed.copy()
+        filtered_reviewed["amount"] = pd.to_numeric(filtered_reviewed["amount"], errors="coerce").fillna(0)
+        filtered_reviewed["amount_usd"] = pd.to_numeric(filtered_reviewed["amount_usd"], errors="coerce")
+        total_usd = filtered_reviewed["amount_usd"].fillna(filtered_reviewed["amount"]).sum()
+
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Reviewed rows", len(filtered_reviewed))
+        r2.metric("Total USD movement", format_currency(total_usd))
+        r3.metric("Categories", filtered_reviewed["category"].replace("", pd.NA).dropna().nunique())
+
+        report_bytes = build_sample_expenses_report(filtered_reviewed, categories_df)
+        st.download_button(
+            "Download sample expenses report",
+            data=report_bytes,
+            file_name="sample_expenses_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
+        st.download_button(
+            "Download filtered reviewed transactions Excel",
+            data=dataframe_to_excel_bytes({"Reviewed transactions": filtered_reviewed}),
+            file_name="reviewed_transactions_filtered.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        preview = filtered_reviewed[[
+            "txn_date",
+            "category",
+            "subcategory",
+            "amount",
+            "amount_usd",
+            "account_name",
+            "original_description",
+        ]].head(200)
+        st.dataframe(preview, use_container_width=True, height=460)
+
+
+elif page == "Setup":
+    st.subheader("Setup")
+
+    missing_shared = [
+        label for label, path in SHARED_SETUP_FILES.items()
+        if not path.exists()
+    ]
+    if not missing_shared:
+        if st.button("Load shared folder setup", type="primary"):
+            category_count, account_count, rate_count = load_shared_setup_files()
+            st.success(
+                f"Loaded {category_count} category rows, "
+                f"{account_count} accounts, and {rate_count} monthly rates."
+            )
+            st.rerun()
+    else:
+        st.warning("Shared setup files missing: " + ", ".join(missing_shared))
+
+    c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("Reset transactions, memory, and report logs"):
-            reset_runtime_data()
-            st.success("Runtime data cleared successfully.")
+        category_file = st.file_uploader("Expense categories", type=["xlsx", "xls"], key="category_file")
+        if category_file and st.button("Replace categories", type="primary"):
+            count = replace_categories_from_excel(category_file)
+            st.success(f"Loaded {count} category rows.")
             st.rerun()
 
     with c2:
-        if st.button("Full reset (including categories)"):
-            full_reset_database()
-            st.success("Full database reset completed.")
+        account_file = st.file_uploader("Who made the expense", type=["xlsx", "xls"], key="account_file")
+        if account_file and st.button("Replace accounts", type="primary"):
+            count = replace_accounts_from_excel(account_file)
+            st.success(f"Loaded {count} account rows.")
             st.rerun()
+
+    with c3:
+        rates_file = st.file_uploader("Monthly rates", type=["xlsx", "xls"], key="rates_file")
+        if rates_file and st.button("Replace rates", type="primary"):
+            count = replace_rates_from_excel(rates_file)
+            st.success(f"Loaded {count} monthly rates.")
+            st.rerun()
+
+    st.markdown("### Current Setup")
+    setup_left, setup_middle, setup_right = st.columns(3)
+    with setup_left:
+        st.markdown("Categories")
+        st.dataframe(get_categories(include_subcategories=True), use_container_width=True, height=260)
+        new_category = st.text_input("Add category")
+        new_subcategory = st.text_input("Add subcategory")
+        if st.button("Add category row"):
+            add_category(new_category, new_subcategory)
+            st.rerun()
+    with setup_middle:
+        st.markdown("Accounts")
+        st.dataframe(get_accounts(), use_container_width=True, height=330)
+    with setup_right:
+        st.markdown("Rates")
+        st.dataframe(get_rates(), use_container_width=True, height=330)
+
+    st.markdown("### Maintenance")
+    m1, m2 = st.columns(2)
+    with m1:
+        clear_confirm = st.text_input("Type CLEAR to clear transactions, import history, balances, and memory")
+        if st.button(
+            "Clear transactions and memory",
+            disabled=clear_confirm.strip().upper() != "CLEAR",
+        ):
+            reset_runtime_data()
+            st.success("Transactions and memory cleared.")
+            st.rerun()
+    with m2:
+        reset_confirm = st.text_input("Type RESET to delete all setup and transaction data")
+        if st.button(
+            "Full reset",
+            disabled=reset_confirm.strip().upper() != "RESET",
+        ):
+            full_reset_database()
+            st.success("Database reset completed.")
+            st.rerun()
+
+    st.download_button(
+        "Download full backup Excel",
+        data=dataframe_to_excel_bytes({
+            "Transactions": get_all_transactions(),
+            "Statement balances": get_statement_balances(),
+            "Import history": get_import_history(),
+            "Memory": get_memory(),
+            "Categories": get_categories(include_subcategories=True),
+            "Accounts": get_accounts(),
+            "Rates": get_rates(),
+        }),
+        file_name="statement_management_full_backup.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )

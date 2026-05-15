@@ -1,20 +1,41 @@
-# =========================
-# FILE: db.py
-# =========================
+import hashlib
+import os
 import sqlite3
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
-import streamlit as st
 
-DB_PATH = str((Path(__file__).resolve().parent / "transactions.db").resolve())
+from utils import extract_beneficiary, infer_transaction_type, normalize_description, simplify_merchant
 
-DEFAULT_CATEGORIES = []
+
+DEFAULT_SHARED_DIR = Path(os.getenv("ARETI_SHARED_FOLDER", r"C:\Users\Student\Dropbox\ARETI FILES ONE DRIVE"))
+DEFAULT_DB_PATH = (
+    DEFAULT_SHARED_DIR / "transactions.db"
+    if DEFAULT_SHARED_DIR.exists()
+    else Path(__file__).with_name("transactions.db")
+)
+DB_PATH = os.getenv("ARETI_DB_PATH") or str(DEFAULT_DB_PATH)
+
+
+def _now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_connection():
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH, check_same_thread=False)
+
+
+def _table_columns(cur, table_name):
+    cur.execute(f"PRAGMA table_info({table_name})")
+    return {row[1] for row in cur.fetchall()}
+
+
+def _ensure_column(cur, table_name, column_name, definition):
+    if column_name not in _table_columns(cur, table_name):
+        cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
 def init_db():
@@ -25,20 +46,79 @@ def init_db():
         CREATE TABLE IF NOT EXISTS category_list (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category TEXT NOT NULL,
-            subcategory TEXT,
+            subcategory TEXT DEFAULT '',
+            created_at TEXT,
             UNIQUE(category, subcategory)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS account_list (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_name TEXT NOT NULL,
+            bank TEXT,
+            account_number TEXT,
+            currency TEXT,
+            rate_type TEXT,
+            created_at TEXT,
+            UNIQUE(account_name, bank, account_number)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS rates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rate_month TEXT NOT NULL,
+            rate_type TEXT NOT NULL,
+            rate_value REAL NOT NULL,
+            created_at TEXT,
+            UNIQUE(rate_month, rate_type)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS statement_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            statement_hash TEXT UNIQUE NOT NULL,
+            statement_name TEXT,
+            imported_at TEXT,
+            transaction_count INTEGER DEFAULT 0,
+            duplicate_attempts INTEGER DEFAULT 0,
+            last_duplicate_at TEXT
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS statement_balances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            statement_hash TEXT UNIQUE NOT NULL,
+            statement_name TEXT,
+            account_name TEXT,
+            bank TEXT,
+            account_number TEXT,
+            currency TEXT,
+            period_start TEXT,
+            period_end TEXT,
+            opening_balance REAL,
+            money_out REAL,
+            money_in REAL,
+            closing_balance REAL,
+            source TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            imported_at TEXT,
+            updated_at TEXT
         )
     """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS transaction_memory (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            normalized_description TEXT NOT NULL,
             original_description TEXT,
+            normalized_description TEXT NOT NULL,
             beneficiary TEXT,
             transaction_type TEXT,
             category TEXT NOT NULL,
-            subcategory TEXT,
+            subcategory TEXT DEFAULT '',
             first_seen TEXT,
             last_seen TEXT,
             times_seen INTEGER DEFAULT 1,
@@ -49,20 +129,67 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS classified_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            statement_hash TEXT,
+            statement_name TEXT,
+            row_hash TEXT,
             txn_date TEXT,
             original_description TEXT,
             normalized_description TEXT,
             amount REAL,
+            currency TEXT,
+            rate_type TEXT,
+            fx_rate REAL,
+            amount_usd REAL,
+            account_name TEXT,
+            bank TEXT,
+            account_number TEXT,
             beneficiary TEXT,
             transaction_type TEXT,
             category TEXT,
-            subcategory TEXT,
+            subcategory TEXT DEFAULT '',
+            suggested_category TEXT,
+            suggested_subcategory TEXT DEFAULT '',
             match_type TEXT,
             confidence REAL,
             reviewed INTEGER DEFAULT 0,
-            created_at TEXT
+            status TEXT DEFAULT 'pending',
+            dup_flag INTEGER DEFAULT 0,
+            created_at TEXT,
+            reviewed_at TEXT
         )
     """)
+
+    for column_name, definition in {
+        "duplicate_attempts": "INTEGER DEFAULT 0",
+        "last_duplicate_at": "TEXT",
+    }.items():
+        _ensure_column(cur, "statement_imports", column_name, definition)
+
+    for column_name, definition in {
+        "statement_hash": "TEXT",
+        "statement_name": "TEXT",
+        "row_hash": "TEXT",
+        "currency": "TEXT",
+        "rate_type": "TEXT",
+        "fx_rate": "REAL",
+        "amount_usd": "REAL",
+        "account_name": "TEXT",
+        "bank": "TEXT",
+        "account_number": "TEXT",
+        "subcategory": "TEXT DEFAULT ''",
+        "suggested_category": "TEXT",
+        "suggested_subcategory": "TEXT DEFAULT ''",
+        "status": "TEXT DEFAULT 'pending'",
+        "dup_flag": "INTEGER DEFAULT 0",
+        "reviewed_at": "TEXT",
+    }.items():
+        _ensure_column(cur, "classified_transactions", column_name, definition)
+
+    for column_name, definition in {
+        "original_description": "TEXT",
+        "subcategory": "TEXT DEFAULT ''",
+    }.items():
+        _ensure_column(cur, "transaction_memory", column_name, definition)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS report_delivery_log (
@@ -77,595 +204,1004 @@ def init_db():
     """)
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS monthly_rates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            report_month TEXT NOT NULL,
-            source_currency TEXT NOT NULL,
-            rate_to_usd REAL NOT NULL,
-            UNIQUE(report_month, source_currency)
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS account_registry (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_name TEXT NOT NULL,
-            bank TEXT,
-            account_number TEXT NOT NULL,
-            currency TEXT NOT NULL,
-            rate_type TEXT,
-            UNIQUE(account_name, account_number)
-        )
-    """)
-
-    existing_columns = {
-        row[1] for row in cur.execute("PRAGMA table_info(classified_transactions)").fetchall()
-    }
-    if "currency" not in existing_columns:
-        cur.execute("ALTER TABLE classified_transactions ADD COLUMN currency TEXT")
-    if "usd_amount" not in existing_columns:
-        cur.execute("ALTER TABLE classified_transactions ADD COLUMN usd_amount REAL")
-    if "account_name" not in existing_columns:
-        cur.execute("ALTER TABLE classified_transactions ADD COLUMN account_name TEXT")
-    if "account_number" not in existing_columns:
-        cur.execute("ALTER TABLE classified_transactions ADD COLUMN account_number TEXT")
-    if "bank" not in existing_columns:
-        cur.execute("ALTER TABLE classified_transactions ADD COLUMN bank TEXT")
-    if "source_occurrence" not in existing_columns:
-        cur.execute("ALTER TABLE classified_transactions ADD COLUMN source_occurrence INTEGER DEFAULT 0")
-    if "subcategory" not in existing_columns:
-        cur.execute("ALTER TABLE classified_transactions ADD COLUMN subcategory TEXT")
-
-    account_registry_columns = {
-        row[1] for row in cur.execute("PRAGMA table_info(account_registry)").fetchall()
-    }
-    if "rate_type" not in account_registry_columns:
-        cur.execute("ALTER TABLE account_registry ADD COLUMN rate_type TEXT")
-
-    category_columns = {
-        row[1] for row in cur.execute("PRAGMA table_info(category_list)").fetchall()
-    }
-    if "subcategory" not in category_columns:
-        legacy_categories = cur.execute(
-            "SELECT id, category FROM category_list ORDER BY id ASC"
-        ).fetchall()
-        cur.execute("ALTER TABLE category_list RENAME TO category_list_legacy")
-        cur.execute("""
-            CREATE TABLE category_list (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                category TEXT NOT NULL,
-                subcategory TEXT,
-                UNIQUE(category, subcategory)
-            )
-        """)
-        if legacy_categories:
-            cur.executemany(
-                "INSERT INTO category_list (id, category, subcategory) VALUES (?, ?, ?)",
-                [(row_id, category, "") for row_id, category in legacy_categories],
-            )
-        cur.execute("DROP TABLE category_list_legacy")
-
-    memory_columns = {
-        row[1] for row in cur.execute("PRAGMA table_info(transaction_memory)").fetchall()
-    }
-    if "subcategory" not in memory_columns:
-        legacy_memory_rows = cur.execute(
-            """
-            SELECT id, normalized_description, beneficiary, transaction_type, category,
-                   first_seen, last_seen, times_seen,
-                   COALESCE(original_description, '') AS original_description
-            FROM transaction_memory
-            ORDER BY id ASC
-            """
-        ).fetchall()
-        cur.execute("ALTER TABLE transaction_memory RENAME TO transaction_memory_legacy")
-        cur.execute("""
-            CREATE TABLE transaction_memory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                normalized_description TEXT NOT NULL,
-                original_description TEXT,
-                beneficiary TEXT,
-                transaction_type TEXT,
-                category TEXT NOT NULL,
-                subcategory TEXT,
-                first_seen TEXT,
-                last_seen TEXT,
-                times_seen INTEGER DEFAULT 1,
-                UNIQUE(normalized_description, category, subcategory)
-            )
-        """)
-        if legacy_memory_rows:
-            cur.executemany(
-                """
-                INSERT INTO transaction_memory (
-                    id, normalized_description, original_description, beneficiary,
-                    transaction_type, category, subcategory, first_seen, last_seen, times_seen
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        row_id,
-                        normalized_description,
-                        original_description,
-                        beneficiary,
-                        transaction_type,
-                        category,
-                        "",
-                        first_seen,
-                        last_seen,
-                        times_seen,
-                    )
-                    for (
-                        row_id,
-                        normalized_description,
-                        beneficiary,
-                        transaction_type,
-                        category,
-                        first_seen,
-                        last_seen,
-                        times_seen,
-                        original_description,
-                    ) in legacy_memory_rows
-                ],
-            )
-        cur.execute("DROP TABLE transaction_memory_legacy")
-    else:
-        if "original_description" not in memory_columns:
-            cur.execute("ALTER TABLE transaction_memory ADD COLUMN original_description TEXT")
-
-    # Performance indexes
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_ct_lookup
-        ON classified_transactions(txn_date, original_description, amount, currency, account_number, source_occurrence)
+        CREATE INDEX IF NOT EXISTS idx_classified_status
+        ON classified_transactions(status, reviewed)
     """)
     cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_ct_reviewed
-        ON classified_transactions(reviewed)
+        CREATE INDEX IF NOT EXISTS idx_classified_statement
+        ON classified_transactions(statement_hash)
     """)
     cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_memory_desc
-        ON transaction_memory(normalized_description)
+        CREATE INDEX IF NOT EXISTS idx_classified_row_hash
+        ON classified_transactions(row_hash)
     """)
-
-    conn.commit()
-
-    cur.execute("SELECT COUNT(*) FROM category_list")
-    count = cur.fetchone()[0]
-    if count == 0:
-        for cat in DEFAULT_CATEGORIES:
-            cur.execute(
-                "INSERT OR IGNORE INTO category_list (category) VALUES (?)",
-                (cat,)
-            )
-        conn.commit()
-
-    conn.close()
-
-
-@st.cache_data
-def get_categories():
-    conn = get_connection()
-    df = pd.read_sql_query(
-        "SELECT DISTINCT category FROM category_list ORDER BY category ASC",
-        conn
-    )
-    conn.close()
-    return df["category"].tolist()
-
-
-@st.cache_data
-def get_category_records():
-    conn = get_connection()
-    df = pd.read_sql_query(
-        "SELECT id, category, COALESCE(subcategory, '') AS subcategory FROM category_list ORDER BY category ASC, subcategory ASC, id ASC",
-        conn
-    )
-    conn.close()
-    return df
-
-
-@st.cache_data
-def get_monthly_rates():
-    conn = get_connection()
-    df = pd.read_sql_query(
-        """
-        SELECT id, report_month, source_currency, rate_to_usd
-        FROM monthly_rates
-        ORDER BY report_month ASC, source_currency ASC
-        """,
-        conn,
-    )
-    conn.close()
-    return df
-
-
-@st.cache_data
-def get_account_registry():
-    conn = get_connection()
-    df = pd.read_sql_query(
-        """
-        SELECT id, account_name, bank, account_number, currency, rate_type
-        FROM account_registry
-        ORDER BY account_name ASC, bank ASC, account_number ASC
-        """,
-        conn,
-    )
-    conn.close()
-    return df
-
-
-def add_category(category: str, subcategory: str = ""):
-    category = str(category).strip()
-    subcategory = str(subcategory).strip()
-    if not category:
-        return
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT OR IGNORE INTO category_list (category, subcategory) VALUES (?, ?)",
-        (category, subcategory)
-    )
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_balances_account
+        ON statement_balances(account_name, period_end)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_balances_statement
+        ON statement_balances(statement_hash)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_memory_normalized
+        ON transaction_memory(normalized_description, transaction_type)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_memory_category
+        ON transaction_memory(category, subcategory)
+    """)
     conn.commit()
     conn.close()
-    get_categories.clear()
-    get_category_records.clear()
 
 
-def replace_categories(categories):
-    cleaned_categories = []
-    seen = set()
+def _clean(value):
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
 
-    for entry in categories:
-        if isinstance(entry, dict):
-            category = str(entry.get("category", "")).strip()
-            subcategory = str(entry.get("subcategory", "")).strip()
-        elif isinstance(entry, (list, tuple)):
-            category = str(entry[0]).strip() if len(entry) > 0 else ""
-            subcategory = str(entry[1]).strip() if len(entry) > 1 else ""
-        else:
-            category = str(entry).strip()
-            subcategory = ""
 
+def _float_or_none(value):
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace(",", "")
+    number = pd.to_numeric(text, errors="coerce")
+    if pd.isna(number):
+        return None
+    return float(number)
+
+
+def _norm_col(name):
+    return str(name).strip().lower().replace("_", " ")
+
+
+def _read_excel(uploaded_file):
+    uploaded_file.seek(0)
+    return pd.read_excel(uploaded_file)
+
+
+def replace_categories_from_excel(uploaded_file):
+    df = _read_excel(uploaded_file)
+    columns = {_norm_col(c): c for c in df.columns}
+    category_col = columns.get("category") or df.columns[0]
+    subcategory_col = columns.get("subcategory") or columns.get("sub category")
+
+    rows = []
+    for _, row in df.iterrows():
+        category = _clean(row.get(category_col))
         if not category:
             continue
-
-        dedupe_key = (category, subcategory)
-        if dedupe_key in seen:
-            continue
-
-        cleaned_categories.append((category, subcategory))
-        seen.add(dedupe_key)
-
-    if not cleaned_categories:
-        return
+        subcategory = _clean(row.get(subcategory_col)) if subcategory_col else ""
+        rows.append((category, subcategory, _now()))
 
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM category_list")
     cur.executemany(
-        "INSERT INTO category_list (category, subcategory) VALUES (?, ?)",
-        cleaned_categories,
+        "INSERT OR IGNORE INTO category_list (category, subcategory, created_at) VALUES (?, ?, ?)",
+        rows,
     )
     conn.commit()
     conn.close()
-    get_categories.clear()
-    get_category_records.clear()
+    return len(rows)
 
 
-def remember_transaction(normalized_description, beneficiary, transaction_type, category, subcategory="", original_description=""):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = get_connection()
-    cur = conn.cursor()
-    subcategory = str(subcategory).strip()
+def replace_accounts_from_excel(uploaded_file):
+    df = _read_excel(uploaded_file)
+    columns = {_norm_col(c): c for c in df.columns}
 
-    cur.execute("""
-        SELECT id, times_seen
-        FROM transaction_memory
-        WHERE normalized_description = ? AND category = ? AND COALESCE(subcategory, '') = ?
-    """, (normalized_description, category, subcategory))
-    row = cur.fetchone()
+    account_col = columns.get("account name") or columns.get("name")
+    bank_col = columns.get("bank")
+    number_col = columns.get("account number") or columns.get("iban")
+    currency_col = columns.get("currency")
+    rate_col = columns.get("rate type")
 
-    if row:
-        memory_id, times_seen = row
-        cur.execute("""
-            UPDATE transaction_memory
-            SET last_seen = ?, times_seen = ?, original_description = COALESCE(NULLIF(original_description, ''), ?)
-            WHERE id = ?
-        """, (now, times_seen + 1, original_description, memory_id))
-    else:
-        cur.execute("""
-            INSERT INTO transaction_memory
-            (normalized_description, original_description, beneficiary, transaction_type, category, subcategory, first_seen, last_seen, times_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            normalized_description,
-            original_description,
-            beneficiary,
-            transaction_type,
-            category,
-            subcategory,
-            now,
-            now,
-            1,
+    if not account_col:
+        raise ValueError("The accounts file must contain an 'Account Name' column.")
+
+    rows = []
+    for _, row in df.iterrows():
+        account_name = _clean(row.get(account_col))
+        if not account_name:
+            continue
+        currency = _clean(row.get(currency_col)).upper() if currency_col else ""
+        rate_type = _clean(row.get(rate_col)).upper() if rate_col else ""
+        if not rate_type and currency:
+            rate_type = f"{currency}/USD"
+        rows.append((
+            account_name,
+            _clean(row.get(bank_col)) if bank_col else "",
+            _clean(row.get(number_col)) if number_col else "",
+            currency,
+            rate_type,
+            _now(),
         ))
 
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM account_list")
+    cur.executemany("""
+        INSERT OR IGNORE INTO account_list
+        (account_name, bank, account_number, currency, rate_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, rows)
     conn.commit()
     conn.close()
-    get_memory.clear()
+    return len(rows)
 
 
-@st.cache_data
-def get_memory():
+def _rate_type_from_label(label):
+    text = str(label).strip().lower()
+    mapping = {
+        "euro": "EUR",
+        "eur": "EUR",
+        "gbp": "GBP",
+        "ils": "ILS",
+        "kzt": "KZT",
+        "rub": "RUB",
+        "dollar": "USD",
+        "usd": "USD",
+    }
+    for key, code in mapping.items():
+        if key in text:
+            return f"{code}/USD"
+    return str(label).strip().upper().replace(" ", "")
+
+
+def replace_rates_from_excel(uploaded_file):
+    uploaded_file.seek(0)
+    raw = pd.read_excel(uploaded_file, header=None)
+    rows = []
+
+    for col in range(1, raw.shape[1]):
+        month_value = None
+        date_row = None
+        for row in range(raw.shape[0]):
+            candidate = pd.to_datetime(raw.iat[row, col], errors="coerce")
+            if not pd.isna(candidate):
+                month_value = raw.iat[row, col]
+                date_row = row
+                break
+        month = pd.to_datetime(month_value, errors="coerce")
+        if pd.isna(month):
+            continue
+        month_key = month.to_period("M").to_timestamp().strftime("%Y-%m-%d")
+        for row in range((date_row or 0) + 1, raw.shape[0]):
+            label = raw.iat[row, 0]
+            value = pd.to_numeric(raw.iat[row, col], errors="coerce")
+            if pd.isna(label) or pd.isna(value) or float(value) == 0:
+                continue
+            rows.append((month_key, _rate_type_from_label(label), float(value), _now()))
+
     conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM rates")
+    cur.executemany("""
+        INSERT OR REPLACE INTO rates (rate_month, rate_type, rate_value, created_at)
+        VALUES (?, ?, ?, ?)
+    """, rows)
+    conn.commit()
+    conn.close()
+    return len(rows)
+
+
+def get_categories(include_subcategories=False):
+    conn = get_connection()
+    if include_subcategories:
+        df = pd.read_sql_query("""
+            SELECT category, COALESCE(subcategory, '') AS subcategory
+            FROM category_list
+            ORDER BY category, subcategory
+        """, conn)
+        conn.close()
+        return df
     df = pd.read_sql_query(
-        "SELECT * FROM transaction_memory ORDER BY times_seen DESC, last_seen DESC",
-        conn
+        "SELECT DISTINCT category FROM category_list ORDER BY category ASC",
+        conn,
     )
+    conn.close()
+    return df["category"].dropna().astype(str).tolist()
+
+
+def get_subcategories(category=None):
+    conn = get_connection()
+    if category:
+        df = pd.read_sql_query("""
+            SELECT DISTINCT subcategory
+            FROM category_list
+            WHERE category = ? AND COALESCE(subcategory, '') <> ''
+            ORDER BY subcategory
+        """, conn, params=(category,))
+    else:
+        df = pd.read_sql_query("""
+            SELECT DISTINCT subcategory
+            FROM category_list
+            WHERE COALESCE(subcategory, '') <> ''
+            ORDER BY subcategory
+        """, conn)
+    conn.close()
+    return df["subcategory"].dropna().astype(str).tolist()
+
+
+def add_category(category, subcategory=""):
+    category = _clean(category)
+    subcategory = _clean(subcategory)
+    if not category:
+        return
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR IGNORE INTO category_list (category, subcategory, created_at)
+        VALUES (?, ?, ?)
+    """, (category, subcategory, _now()))
+    conn.commit()
+    conn.close()
+
+
+def get_accounts():
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        SELECT id, account_name, bank, account_number, currency, rate_type
+        FROM account_list
+        ORDER BY account_name, bank, account_number
+    """, conn)
     conn.close()
     return df
 
 
-def save_classified_transactions(df):
+def get_rates():
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        SELECT rate_month, rate_type, rate_value
+        FROM rates
+        ORDER BY rate_month DESC, rate_type
+    """, conn)
+    conn.close()
+    return df
+
+
+def get_latest_rate(rate_type, txn_date=None):
+    rate_type = _clean(rate_type).upper()
+    if not rate_type:
+        return None
+    month = pd.to_datetime(txn_date, errors="coerce")
+    month_key = month.to_period("M").to_timestamp().strftime("%Y-%m-%d") if not pd.isna(month) else None
+
+    conn = get_connection()
+    if month_key:
+        df = pd.read_sql_query("""
+            SELECT rate_value
+            FROM rates
+            WHERE rate_type = ? AND rate_month <= ?
+            ORDER BY rate_month DESC
+            LIMIT 1
+        """, conn, params=(rate_type, month_key))
+    else:
+        df = pd.read_sql_query("""
+            SELECT rate_value
+            FROM rates
+            WHERE rate_type = ?
+            ORDER BY rate_month DESC
+            LIMIT 1
+        """, conn, params=(rate_type,))
+    conn.close()
     if df.empty:
-        return
+        return 1.0 if rate_type == "USD/USD" else None
+    return float(df["rate_value"].iloc[0])
+
+
+def remember_transaction(original_description, normalized_description, beneficiary, transaction_type, category, subcategory=""):
+    now = _now()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, times_seen
+        FROM transaction_memory
+        WHERE normalized_description = ? AND category = ? AND COALESCE(subcategory, '') = ?
+    """, (normalized_description, category, subcategory or ""))
+    row = cur.fetchone()
+    if row:
+        memory_id, times_seen = row
+        cur.execute("""
+            UPDATE transaction_memory
+            SET original_description = ?, beneficiary = ?, transaction_type = ?,
+                last_seen = ?, times_seen = ?
+            WHERE id = ?
+        """, (original_description, beneficiary, transaction_type, now, times_seen + 1, memory_id))
+    else:
+        cur.execute("""
+            INSERT INTO transaction_memory
+            (original_description, normalized_description, beneficiary, transaction_type,
+             category, subcategory, first_seen, last_seen, times_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+        """, (
+            original_description,
+            normalized_description,
+            beneficiary,
+            transaction_type,
+            category,
+            subcategory or "",
+            now,
+            now,
+        ))
+    conn.commit()
+    conn.close()
+
+
+def get_memory():
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        SELECT id, original_description, normalized_description, beneficiary,
+               transaction_type, category, subcategory, first_seen, last_seen, times_seen
+        FROM transaction_memory
+        ORDER BY times_seen DESC, last_seen DESC
+    """, conn)
+    conn.close()
+    return df
+
+
+def statement_already_imported(statement_hash):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM statement_imports WHERE statement_hash = ?", (statement_hash,))
+    exists = cur.fetchone()[0] > 0
+    conn.close()
+    return exists
+
+
+def record_duplicate_statement_attempt(statement_hash):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = _now()
+    cur.execute("""
+        UPDATE statement_imports
+        SET duplicate_attempts = COALESCE(duplicate_attempts, 0) + 1,
+            last_duplicate_at = ?
+        WHERE statement_hash = ?
+    """, (now, statement_hash))
+    conn.commit()
+    changed = cur.rowcount
+    conn.close()
+    return changed
+
+
+def statement_balance_exists(statement_hash):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM statement_balances WHERE statement_hash = ?", (statement_hash,))
+    exists = cur.fetchone()[0] > 0
+    conn.close()
+    return exists
+
+
+def get_statement_account(statement_hash):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT account_name, bank, account_number, currency, rate_type
+        FROM classified_transactions
+        WHERE statement_hash = ?
+        ORDER BY id
+        LIMIT 1
+    """, (statement_hash,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return {}
+    return {
+        "account_name": row[0] or "",
+        "bank": row[1] or "",
+        "account_number": row[2] or "",
+        "currency": row[3] or "",
+        "rate_type": row[4] or "",
+    }
+
+
+def save_statement_balance(statement_hash, statement_name, balance, account=None):
+    balance = balance or {}
+    account = account or {}
+
+    values = {
+        "statement_hash": statement_hash,
+        "statement_name": statement_name,
+        "account_name": _clean(account.get("account_name", "")),
+        "bank": _clean(balance.get("bank") or account.get("bank", "")),
+        "account_number": _clean(balance.get("account_number") or account.get("account_number", "")),
+        "currency": _clean(balance.get("currency") or account.get("currency", "")),
+        "period_start": _clean(balance.get("period_start", "")),
+        "period_end": _clean(balance.get("period_end", "")),
+        "opening_balance": _float_or_none(balance.get("opening_balance")),
+        "money_out": _float_or_none(balance.get("money_out")),
+        "money_in": _float_or_none(balance.get("money_in")),
+        "closing_balance": _float_or_none(balance.get("closing_balance")),
+        "source": _clean(balance.get("source", "")),
+        "notes": _clean(balance.get("notes", "")),
+    }
+
+    useful_values = [
+        values["bank"],
+        values["account_number"],
+        values["period_start"],
+        values["period_end"],
+        values["opening_balance"],
+        values["money_out"],
+        values["money_in"],
+        values["closing_balance"],
+    ]
+    if not any(value not in ("", None) for value in useful_values):
+        return 0
+
+    now = _now()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO statement_balances
+        (statement_hash, statement_name, account_name, bank, account_number, currency,
+         period_start, period_end, opening_balance, money_out, money_in, closing_balance,
+         source, notes, imported_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(statement_hash) DO UPDATE SET
+            statement_name = excluded.statement_name,
+            account_name = excluded.account_name,
+            bank = excluded.bank,
+            account_number = excluded.account_number,
+            currency = excluded.currency,
+            period_start = excluded.period_start,
+            period_end = excluded.period_end,
+            opening_balance = excluded.opening_balance,
+            money_out = excluded.money_out,
+            money_in = excluded.money_in,
+            closing_balance = excluded.closing_balance,
+            source = excluded.source,
+            notes = CASE
+                WHEN COALESCE(statement_balances.notes, '') = '' THEN excluded.notes
+                ELSE statement_balances.notes
+            END,
+            updated_at = excluded.updated_at
+    """, (
+        values["statement_hash"],
+        values["statement_name"],
+        values["account_name"],
+        values["bank"],
+        values["account_number"],
+        values["currency"],
+        values["period_start"],
+        values["period_end"],
+        values["opening_balance"],
+        values["money_out"],
+        values["money_in"],
+        values["closing_balance"],
+        values["source"],
+        values["notes"],
+        now,
+        now,
+    ))
+    conn.commit()
+    changed = cur.rowcount
+    conn.close()
+    return changed
+
+
+def _apply_balance_reconciliation(df):
+    if df.empty:
+        return df
+    out = df.copy()
+
+    def calculate(row):
+        opening = _float_or_none(row.get("opening_balance"))
+        money_in = _float_or_none(row.get("money_in"))
+        money_out = _float_or_none(row.get("money_out"))
+        closing = _float_or_none(row.get("closing_balance"))
+        if any(value is None for value in [opening, money_in, money_out, closing]):
+            return pd.Series({
+                "calculated_closing": None,
+                "reconciliation_difference": None,
+                "reconciliation_status": "Missing data",
+            })
+
+        bank = _clean(row.get("bank", "")).lower()
+        account_name = _clean(row.get("account_name", "")).lower()
+        credit_style = any(token in f"{bank} {account_name}" for token in [
+            "american express",
+            "amex",
+            "chase",
+            "citi",
+            "saphire",
+            "sapphire",
+            "card",
+        ])
+        if credit_style:
+            calculated = opening + money_in + money_out
+        else:
+            calculated = opening + money_in + (money_out if money_out < 0 else -money_out)
+        difference = round(closing - calculated, 2)
+        status = "OK" if abs(difference) <= 0.05 else "Needs review"
+        return pd.Series({
+            "calculated_closing": round(calculated, 2),
+            "reconciliation_difference": difference,
+            "reconciliation_status": status,
+        })
+
+    reconciliation = out.apply(calculate, axis=1)
+    for column in reconciliation.columns:
+        out[column] = reconciliation[column]
+    return out
+
+
+def get_statement_balances():
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        SELECT id, statement_name, account_name, bank, account_number, currency,
+               period_start, period_end, opening_balance, money_out, money_in,
+               closing_balance, source, notes, imported_at, updated_at, statement_hash
+        FROM statement_balances
+        ORDER BY COALESCE(period_end, '') DESC, imported_at DESC, id DESC
+    """, conn)
+    conn.close()
+    return _apply_balance_reconciliation(df)
+
+
+def get_import_history():
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        WITH first_tx AS (
+            SELECT statement_hash,
+                   MIN(account_name) AS account_name,
+                   MIN(bank) AS bank,
+                   MIN(account_number) AS account_number,
+                   MIN(currency) AS currency
+            FROM classified_transactions
+            GROUP BY statement_hash
+        )
+        SELECT si.id,
+               si.statement_name,
+               si.imported_at,
+               si.transaction_count,
+               COALESCE(ft.account_name, sb.account_name, '') AS account_name,
+               COALESCE(ft.bank, sb.bank, '') AS bank,
+               COALESCE(ft.account_number, sb.account_number, '') AS account_number,
+               COALESCE(ft.currency, sb.currency, '') AS currency,
+               sb.period_start,
+               sb.period_end,
+               sb.opening_balance,
+               sb.money_in,
+               sb.money_out,
+               sb.closing_balance,
+               COALESCE(si.duplicate_attempts, 0) AS duplicate_attempts,
+               si.last_duplicate_at,
+               CASE
+                   WHEN COALESCE(si.duplicate_attempts, 0) > 0
+                       THEN 'Duplicate blocked (' || COALESCE(si.duplicate_attempts, 0) || ')'
+                   ELSE 'Imported'
+               END AS duplicate_status,
+               si.statement_hash
+        FROM statement_imports si
+        LEFT JOIN first_tx ft ON ft.statement_hash = si.statement_hash
+        LEFT JOIN statement_balances sb ON sb.statement_hash = si.statement_hash
+        ORDER BY si.imported_at DESC, si.id DESC
+    """, conn)
+    conn.close()
+    df = _apply_balance_reconciliation(df)
+    if not df.empty:
+        df["balance_status"] = df["reconciliation_status"].fillna("Missing data")
+    return df
+
+
+def update_statement_balance_rows(df):
+    if df.empty:
+        return 0
+    conn = get_connection()
+    cur = conn.cursor()
+    now = _now()
+    updated = 0
+    for _, row in df.iterrows():
+        if pd.isna(row.get("id")):
+            continue
+        cur.execute("""
+            UPDATE statement_balances
+            SET account_name = ?, bank = ?, account_number = ?, currency = ?,
+                period_start = ?, period_end = ?, opening_balance = ?,
+                money_out = ?, money_in = ?, closing_balance = ?, notes = ?,
+                updated_at = ?
+            WHERE id = ?
+        """, (
+            _clean(row.get("account_name", "")),
+            _clean(row.get("bank", "")),
+            _clean(row.get("account_number", "")),
+            _clean(row.get("currency", "")),
+            _clean(row.get("period_start", "")),
+            _clean(row.get("period_end", "")),
+            _float_or_none(row.get("opening_balance")),
+            _float_or_none(row.get("money_out")),
+            _float_or_none(row.get("money_in")),
+            _float_or_none(row.get("closing_balance")),
+            _clean(row.get("notes", "")),
+            now,
+            int(row["id"]),
+        ))
+        updated += cur.rowcount
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def apply_account_and_rates(df, account):
+    out = df.copy()
+    account = account or {}
+    out["account_name"] = account.get("account_name", "")
+    out["bank"] = account.get("bank", "")
+    out["account_number"] = account.get("account_number", "")
+    out["currency"] = account.get("currency", "")
+    out["rate_type"] = account.get("rate_type", "")
+
+    rate_type = _clean(account.get("rate_type", "")).upper()
+    rate_lookup = []
+    if rate_type:
+        conn = get_connection()
+        rate_lookup = pd.read_sql_query("""
+            SELECT rate_month, rate_value
+            FROM rates
+            WHERE rate_type = ?
+            ORDER BY rate_month DESC
+        """, conn, params=(rate_type,))
+        conn.close()
+        if not rate_lookup.empty:
+            rate_lookup["rate_month"] = pd.to_datetime(rate_lookup["rate_month"], errors="coerce")
+
+    def lookup_rate(txn_date):
+        if not rate_type:
+            return None
+        if rate_type == "USD/USD":
+            return 1.0
+        if rate_lookup.empty:
+            return None
+        month = pd.to_datetime(txn_date, errors="coerce")
+        if pd.isna(month):
+            return float(rate_lookup["rate_value"].iloc[0])
+        month = month.to_period("M").to_timestamp()
+        candidates = rate_lookup[rate_lookup["rate_month"] <= month]
+        if candidates.empty:
+            return float(rate_lookup["rate_value"].iloc[-1])
+        return float(candidates["rate_value"].iloc[0])
+
+    fx_rates = []
+    usd_values = []
+    for _, row in out.iterrows():
+        rate = lookup_rate(row.get("Date"))
+        amount = float(row.get("Amount", 0) or 0)
+        if rate is None or rate == 0:
+            fx_rates.append(None)
+            usd_values.append(None)
+        else:
+            fx_rates.append(rate)
+            usd_values.append(round(amount / rate, 2))
+    out["fx_rate"] = fx_rates
+    out["amount_usd"] = usd_values
+    return out
+
+
+def build_statement_hash(file_bytes):
+    return hashlib.sha256(file_bytes).hexdigest()
+
+
+def save_pending_transactions(df, statement_name, statement_hash):
+    if statement_already_imported(statement_hash):
+        record_duplicate_statement_attempt(statement_hash)
+        return 0, True
 
     conn = get_connection()
     cur = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = _now()
+    inserted = 0
 
-    rows = []
-    for _, row in df.iterrows():
-        rows.append({
-            "txn_date":      str(row.get("Date", "")),
-            "desc":          str(row.get("Description", "")),
-            "norm_desc":     str(row.get("normalized_description", "")),
-            "amount":        round(float(row.get("Amount", 0)), 2),
-            "beneficiary":   str(row.get("beneficiary", "")),
-            "txn_type":      str(row.get("transaction_type", "")),
-            "category":      str(row.get("final_category", row.get("category", ""))),
-            "subcategory":   str(row.get("final_subcategory", row.get("subcategory", ""))),
-            "match_type":    str(row.get("match_type", "")),
-            "confidence":    float(row.get("confidence", 0)),
-            "reviewed":      int(row.get("reviewed", 0)),
-            "created_at":    now,
-            "currency":      str(row.get("currency", "USD")),
-            "usd_amount":    float(row.get("usd_amount", row.get("Amount", 0))),
-            "account_name":  str(row.get("account_name", "")),
-            "account_number": str(row.get("account_number", "")),
-            "bank":          str(row.get("bank", "")),
-            "source_occurrence": int(row.get("source_occurrence", 0)),
-        })
+    for idx, row in df.reset_index(drop=True).iterrows():
+        row_hash_src = "|".join([
+            statement_hash,
+            str(idx),
+            str(row.get("Date", "")),
+            str(row.get("Amount", "")),
+            str(row.get("Description", "")),
+        ])
+        row_hash = hashlib.sha256(row_hash_src.encode("utf-8")).hexdigest()
+        cur.execute("SELECT COUNT(*) FROM classified_transactions WHERE row_hash = ?", (row_hash,))
+        if cur.fetchone()[0] > 0:
+            continue
 
-    if not rows:
-        conn.close()
-        return
-
-    # Single batch lookup via temp table instead of N individual SELECTs
-    cur.execute("""
-        CREATE TEMP TABLE IF NOT EXISTS _txn_keys (
-            txn_date TEXT, original_description TEXT, amount REAL,
-            currency TEXT, account_number TEXT, source_occurrence INTEGER
-        )
-    """)
-    cur.execute("DELETE FROM _txn_keys")
-    cur.executemany(
-        "INSERT INTO _txn_keys VALUES (?, ?, ?, ?, ?, ?)",
-        [(r["txn_date"], r["desc"], r["amount"],
-          r["currency"], r["account_number"], r["source_occurrence"]) for r in rows],
-    )
-
-    existing_rows = cur.execute("""
-        SELECT ct.id, ct.txn_date, ct.original_description, ct.amount,
-               ct.currency, ct.account_number, COALESCE(ct.source_occurrence, 0)
-        FROM classified_transactions ct
-        INNER JOIN _txn_keys k
-            ON  ct.txn_date             = k.txn_date
-            AND ct.original_description = k.original_description
-            AND ct.amount               = k.amount
-            AND ct.currency             = k.currency
-            AND ct.account_number       = k.account_number
-            AND COALESCE(ct.source_occurrence, 0) = k.source_occurrence
-        ORDER BY ct.id DESC
-    """).fetchall()
-
-    # Keep only the highest id per key (mirrors the original ORDER BY id DESC LIMIT 1)
-    existing_ids = {}
-    for ex in existing_rows:
-        key = (ex[1], ex[2], ex[3], ex[4], ex[5], ex[6])
-        if key not in existing_ids:
-            existing_ids[key] = ex[0]
-
-    updates, inserts = [], []
-    for r in rows:
-        key = (r["txn_date"], r["desc"], r["amount"],
-               r["currency"], r["account_number"], r["source_occurrence"])
-        vals = (
-            r["txn_date"], r["desc"], r["norm_desc"], r["amount"],
-            r["beneficiary"], r["txn_type"], r["category"], r["subcategory"],
-            r["match_type"], r["confidence"], r["reviewed"], r["created_at"],
-            r["currency"], r["usd_amount"], r["account_name"],
-            r["account_number"], r["bank"], r["source_occurrence"],
-        )
-        eid = existing_ids.get(key)
-        if eid is not None:
-            updates.append(vals + (eid,))
-        else:
-            inserts.append(vals)
-
-    if updates:
-        cur.executemany("""
-            UPDATE classified_transactions
-            SET txn_date=?, original_description=?, normalized_description=?, amount=?,
-                beneficiary=?, transaction_type=?, category=?, subcategory=?,
-                match_type=?, confidence=?, reviewed=?, created_at=?,
-                currency=?, usd_amount=?, account_name=?, account_number=?,
-                bank=?, source_occurrence=?
-            WHERE id=?
-        """, updates)
-
-    if inserts:
-        cur.executemany("""
+        cur.execute("""
             INSERT INTO classified_transactions
-            (txn_date, original_description, normalized_description, amount,
-             beneficiary, transaction_type, category, subcategory, match_type, confidence,
-             reviewed, created_at, currency, usd_amount, account_name,
-             account_number, bank, source_occurrence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, inserts)
+            (statement_hash, statement_name, row_hash, txn_date, original_description,
+             normalized_description, amount, currency, rate_type, fx_rate, amount_usd,
+             account_name, bank, account_number, beneficiary, transaction_type,
+             category, subcategory, suggested_category, suggested_subcategory,
+             match_type, confidence, reviewed, status, dup_flag, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?)
+        """, (
+            statement_hash,
+            statement_name,
+            row_hash,
+            str(row.get("Date", "")),
+            str(row.get("Description", "")),
+            str(row.get("normalized_description", "")),
+            float(row.get("Amount", 0) or 0),
+            str(row.get("currency", "")),
+            str(row.get("rate_type", "")),
+            None if pd.isna(row.get("fx_rate", None)) else row.get("fx_rate", None),
+            None if pd.isna(row.get("amount_usd", None)) else row.get("amount_usd", None),
+            str(row.get("account_name", "")),
+            str(row.get("bank", "")),
+            str(row.get("account_number", "")),
+            str(row.get("beneficiary", "")),
+            str(row.get("transaction_type", "")),
+            str(row.get("suggested_category", "")),
+            str(row.get("suggested_subcategory", "")),
+            str(row.get("suggested_category", "")),
+            str(row.get("suggested_subcategory", "")),
+            str(row.get("match_type", "")),
+            float(row.get("confidence", 0) or 0),
+            int(bool(row.get("dup_flag", False))),
+            now,
+        ))
+        inserted += 1
 
+    cur.execute("""
+        INSERT OR IGNORE INTO statement_imports
+        (statement_hash, statement_name, imported_at, transaction_count)
+        VALUES (?, ?, ?, ?)
+    """, (statement_hash, statement_name, now, inserted))
     conn.commit()
     conn.close()
-    get_saved_transactions.clear()
+    return inserted, False
 
 
-@st.cache_data
+def get_pending_transactions():
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        SELECT *
+        FROM classified_transactions
+        WHERE COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+        ORDER BY txn_date, id
+    """, conn)
+    conn.close()
+    return df
+
+
 def get_saved_transactions():
     conn = get_connection()
     df = pd.read_sql_query("""
         SELECT *
         FROM classified_transactions
+        WHERE COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
         ORDER BY txn_date DESC, id DESC
     """, conn)
     conn.close()
     return df
 
 
-def _normalize_db_value(value):
-    if pd.isna(value):
-        return None
-    if hasattr(value, "item"):
-        return value.item()
-    return value
+def get_all_transactions():
+    conn = get_connection()
+    df = pd.read_sql_query("""
+        SELECT *
+        FROM classified_transactions
+        ORDER BY id DESC
+    """, conn)
+    conn.close()
+    return df
 
 
-def _replace_table_from_dataframe(table_name, df, columns, required_columns=None):
-    working_df = df.copy()
-    working_df = working_df.reindex(columns=columns)
-
-    cleaned_rows = []
-    non_id_columns = [column for column in columns if column != "id"]
-
-    for _, row in working_df.iterrows():
-        normalized_row = {}
-
-        for column in columns:
-            value = _normalize_db_value(row[column])
-            if isinstance(value, str):
-                value = value.strip()
-            normalized_row[column] = value
-
-        if all(
-            normalized_row[column] in (None, "")
-            for column in non_id_columns
-        ):
-            continue
-
-        if required_columns and any(
-            normalized_row[column] in (None, "")
-            for column in required_columns
-        ):
-            continue
-
-        cleaned_rows.append(tuple(normalized_row[column] for column in columns))
-
+def get_dashboard_counts():
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(f"DELETE FROM {table_name}")
+    counts = {}
+    queries = {
+        "categories": "SELECT COUNT(*) FROM category_list",
+        "accounts": "SELECT COUNT(*) FROM account_list",
+        "rates": "SELECT COUNT(*) FROM rates",
+        "pending": """
+            SELECT COUNT(*)
+            FROM classified_transactions
+            WHERE COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+        """,
+        "reviewed": """
+            SELECT COUNT(*)
+            FROM classified_transactions
+            WHERE COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
+        """,
+        "memory": "SELECT COUNT(*) FROM transaction_memory",
+        "statements": "SELECT COUNT(*) FROM statement_imports",
+    }
+    for key, query in queries.items():
+        cur.execute(query)
+        counts[key] = int(cur.fetchone()[0])
+    conn.close()
+    return counts
 
-    if cleaned_rows:
-        placeholders = ", ".join(["?"] * len(columns))
-        cur.executemany(
-            f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})",
-            cleaned_rows,
-        )
+
+def save_reviewed_rows(df):
+    if df.empty:
+        return 0
+    conn = get_connection()
+    cur = conn.cursor()
+    now = _now()
+    saved = 0
+    memory_rows = []
+
+    for _, row in df.iterrows():
+        reviewed = bool(row.get("reviewed", False))
+        if not reviewed:
+            continue
+        tx_id = int(row["id"])
+        category = _clean(row.get("category"))
+        subcategory = _clean(row.get("subcategory"))
+        cur.execute("""
+            UPDATE classified_transactions
+            SET category = ?, subcategory = ?, reviewed = 1, status = 'reviewed', reviewed_at = ?
+            WHERE id = ?
+        """, (category, subcategory, now, tx_id))
+        saved += 1
+
+        cur.execute("""
+            SELECT original_description, normalized_description, beneficiary, transaction_type
+            FROM classified_transactions
+            WHERE id = ?
+        """, (tx_id,))
+        stored = cur.fetchone()
+        if not stored:
+            continue
+
+        memory_rows.append((
+            stored[0] or "",
+            stored[1] or "",
+            stored[2] or "",
+            stored[3] or "",
+            category,
+            subcategory,
+        ))
 
     conn.commit()
     conn.close()
+    for memory_row in memory_rows:
+        remember_transaction(*memory_row)
+    return saved
 
 
-def replace_category_records(df):
-    _replace_table_from_dataframe(
-        "category_list",
-        df,
-        ["id", "category", "subcategory"],
-        required_columns=["category"],
-    )
-    get_categories.clear()
-    get_category_records.clear()
+def update_database_rows(df):
+    if df.empty:
+        return 0
+    conn = get_connection()
+    cur = conn.cursor()
+    updated = 0
+    memory_rows = []
+    for _, row in df.iterrows():
+        reviewed = int(bool(row.get("reviewed", False)))
+        status = _clean(row.get("status")) or ("reviewed" if reviewed else "pending")
+        category = _clean(row.get("category"))
+        subcategory = _clean(row.get("subcategory"))
+        cur.execute("""
+            UPDATE classified_transactions
+            SET category = ?, subcategory = ?, status = ?, reviewed = ?
+            WHERE id = ?
+        """, (
+            category,
+            subcategory,
+            status,
+            reviewed,
+            int(row["id"]),
+        ))
+        updated += 1
+        if reviewed or status == "reviewed":
+            cur.execute("""
+                SELECT original_description, normalized_description, beneficiary, transaction_type
+                FROM classified_transactions
+                WHERE id = ?
+            """, (int(row["id"]),))
+            stored = cur.fetchone()
+            if stored and category:
+                memory_rows.append((
+                    stored[0] or "",
+                    stored[1] or "",
+                    stored[2] or "",
+                    stored[3] or "",
+                    category,
+                    subcategory,
+                ))
+    conn.commit()
+    conn.close()
+    for memory_row in memory_rows:
+        remember_transaction(*memory_row)
+    return updated
 
 
-def replace_monthly_rate_records(df):
-    _replace_table_from_dataframe(
-        "monthly_rates",
-        df,
-        ["id", "report_month", "source_currency", "rate_to_usd"],
-        required_columns=["report_month", "source_currency", "rate_to_usd"],
-    )
-    get_monthly_rates.clear()
+def insert_manual_transaction(txn_date, description, amount, category, subcategory, account):
+    account = account or {}
+    description = _clean(description)
+    category = _clean(category)
+    subcategory = _clean(subcategory)
+    if not description:
+        raise ValueError("Description is required.")
+    if not category:
+        raise ValueError("Category is required.")
+
+    parsed_date = pd.to_datetime(txn_date, errors="coerce")
+    date_text = parsed_date.strftime("%Y-%m-%d") if not pd.isna(parsed_date) else _clean(txn_date)
+    amount = float(amount or 0)
+    normalized = simplify_merchant(normalize_description(description))
+    beneficiary = extract_beneficiary(description)
+    transaction_type = infer_transaction_type(description, amount)
+    rate_type = _clean(account.get("rate_type", "")).upper()
+    fx_rate = get_latest_rate(rate_type, date_text)
+    amount_usd = round(amount / fx_rate, 2) if fx_rate else None
+    now = _now()
+
+    row_hash_src = "|".join([
+        "manual",
+        date_text,
+        str(amount),
+        description,
+        _clean(account.get("account_name", "")),
+    ])
+    row_hash = hashlib.sha256(row_hash_src.encode("utf-8")).hexdigest()
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM classified_transactions WHERE row_hash = ?", (row_hash,))
+    if cur.fetchone()[0] > 0:
+        conn.close()
+        return 0
+
+    cur.execute("""
+        INSERT OR IGNORE INTO classified_transactions
+        (statement_hash, statement_name, row_hash, txn_date, original_description,
+         normalized_description, amount, currency, rate_type, fx_rate, amount_usd,
+         account_name, bank, account_number, beneficiary, transaction_type,
+         category, subcategory, suggested_category, suggested_subcategory,
+         match_type, confidence, reviewed, status, dup_flag, created_at, reviewed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'reviewed', 0, ?, ?)
+    """, (
+        "manual",
+        "Manual entry",
+        row_hash,
+        date_text,
+        description,
+        normalized,
+        amount,
+        _clean(account.get("currency", "")),
+        rate_type,
+        fx_rate,
+        amount_usd,
+        _clean(account.get("account_name", "")),
+        _clean(account.get("bank", "")),
+        _clean(account.get("account_number", "")),
+        beneficiary,
+        transaction_type,
+        category,
+        subcategory,
+        category,
+        subcategory,
+        "manual",
+        1.0,
+        now,
+        now,
+    ))
+    inserted = cur.rowcount
+    conn.commit()
+    conn.close()
+    if inserted:
+        remember_transaction(description, normalized, beneficiary, transaction_type, category, subcategory)
+    return inserted
 
 
-def replace_account_registry_records(df):
-    _replace_table_from_dataframe(
-        "account_registry",
-        df,
-        ["id", "account_name", "bank", "account_number", "currency", "rate_type"],
-        required_columns=["account_name", "account_number", "currency"],
-    )
-    get_account_registry.clear()
+def dataframe_to_excel_bytes(sheets):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for name, frame in sheets.items():
+            frame.to_excel(writer, index=False, sheet_name=name[:31])
+    return output.getvalue()
 
 
-def replace_memory_records(df):
-    _replace_table_from_dataframe(
-        "transaction_memory",
-        df,
-        [
-            "id",
-            "normalized_description",
-            "original_description",
-            "beneficiary",
-            "transaction_type",
-            "category",
-            "subcategory",
-            "first_seen",
-            "last_seen",
-            "times_seen",
-        ],
-        required_columns=["normalized_description", "category"],
-    )
-    get_memory.clear()
-
-
-def replace_saved_transaction_records(df):
-    _replace_table_from_dataframe(
-        "classified_transactions",
-        df,
-        [
-            "id",
-            "txn_date",
-            "original_description",
-            "normalized_description",
-            "amount",
-            "beneficiary",
-            "transaction_type",
-            "category",
-            "subcategory",
-            "match_type",
-            "confidence",
-            "reviewed",
-            "created_at",
-            "currency",
-            "usd_amount",
-            "account_name",
-            "account_number",
-            "bank",
-            "source_occurrence",
-        ],
-    )
-    get_saved_transactions.clear()
-
-
-def report_already_sent(report_month: str, delivery_type: str, recipient: str) -> bool:
+def report_already_sent(report_month, delivery_type, recipient):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -678,15 +1214,14 @@ def report_already_sent(report_month: str, delivery_type: str, recipient: str) -
     return exists
 
 
-def log_report_delivery(report_month: str, delivery_type: str, recipient: str, status: str):
+def log_report_delivery(report_month, delivery_type, recipient, status):
     conn = get_connection()
     cur = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cur.execute("""
         INSERT OR IGNORE INTO report_delivery_log
         (report_month, delivery_type, recipient, status, sent_at)
         VALUES (?, ?, ?, ?, ?)
-    """, (report_month, delivery_type, recipient, status, now))
+    """, (report_month, delivery_type, recipient, status, _now()))
     conn.commit()
     conn.close()
 
@@ -696,11 +1231,11 @@ def reset_runtime_data():
     cur = conn.cursor()
     cur.execute("DELETE FROM classified_transactions")
     cur.execute("DELETE FROM transaction_memory")
+    cur.execute("DELETE FROM statement_imports")
+    cur.execute("DELETE FROM statement_balances")
     cur.execute("DELETE FROM report_delivery_log")
     conn.commit()
     conn.close()
-    get_saved_transactions.clear()
-    get_memory.clear()
 
 
 def full_reset_database():
@@ -708,12 +1243,11 @@ def full_reset_database():
     cur = conn.cursor()
     cur.execute("DELETE FROM classified_transactions")
     cur.execute("DELETE FROM transaction_memory")
+    cur.execute("DELETE FROM statement_imports")
+    cur.execute("DELETE FROM statement_balances")
     cur.execute("DELETE FROM report_delivery_log")
     cur.execute("DELETE FROM category_list")
+    cur.execute("DELETE FROM account_list")
+    cur.execute("DELETE FROM rates")
     conn.commit()
     conn.close()
-    get_saved_transactions.clear()
-    get_memory.clear()
-    get_categories.clear()
-    get_category_records.clear()
-    init_db()

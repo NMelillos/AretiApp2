@@ -1,27 +1,22 @@
-# =========================
-# FILE: parsing.py (FIXED VERSION)
-# =========================
 import re
 from datetime import datetime
 
 import pandas as pd
 
-from utils import (
-    normalize_description,
-    simplify_merchant,
-    extract_beneficiary,
-    infer_transaction_type,
-)
+from utils import extract_beneficiary, infer_transaction_type, normalize_description, simplify_merchant
+
 
 try:
     import pdfplumber
 except Exception:
     pdfplumber = None
 
+
 try:
     import pytesseract
 except Exception:
     pytesseract = None
+
 
 try:
     from pdf2image import convert_from_bytes
@@ -29,578 +24,752 @@ except Exception:
     convert_from_bytes = None
 
 
-DATE_AT_START_PATTERN = re.compile(r"^(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+")
-REVOLUT_DATE_PATTERN = re.compile(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}$")
-BOC_DATE_PATTERN = re.compile(r"^\d{2}/\d{2}/\d{4}$")
-BOC_CHANNEL_PREFIX = re.compile(
-    r"^1Bank\s*-\s*(?:Transfer-Internet-(?:Debit|Credit)|Sepa-(?:Debit|Credit))\s*",
+DATE_NAMES = {"date", "transaction date", "booking date", "value date", "posted date"}
+AMOUNT_NAMES = {"amount", "transaction amount", "paid in", "paid out"}
+DEBIT_NAMES = {"debit", "withdrawal", "paid out", "out"}
+CREDIT_NAMES = {"credit", "deposit", "paid in", "in"}
+IGNORE_TEXT_HINTS = {"balance", "currency", "rate", "account", "iban", "number"}
+MONTH_DATE_RE = re.compile(
+    r"^(?P<date>(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+"
+    r"\d{1,2},\s+\d{4})\s+(?P<rest>.+)$",
     re.IGNORECASE,
 )
-BOC_NOISE_MARKERS = [
-    "bank of cyprus", "statement of account", "statement period",
-    "balance brought forward", "balancebroughtforward",
-    "transaction value transaction", "date date",
-    "page ", "swift", "p.o.box", "www.", "http",
-]
-AMOUNT_TOKEN_PATTERN = re.compile(r"-?\d[\d,]*\.\d{2}")
-PDF_NOISE_MARKERS = [
-    "bank of cyprus",
-    "privacy statement",
-    "privacystatement",
-    "deposit guarantee scheme",
-    "depositguaranteescheme",
-    "analysis of interest rate",
-    "please review the present statement",
-    "if you wish to contact your branch",
-    "you can reach this",
-    "page ",
-    "do not print",
-    "www.",
-    "http://",
-    "https://",
-]
-PDF_BALANCE_SUFFIX_MARKERS = [
-    "total / balance carried forward",
-    "balance carried forward",
-    "balance brought forward",
-]
-REVOLUT_NOISE_MARKERS = [
-    "revolut",
-    "eur statement",
-    "generated on",
-    "revolut bank uab",
-    "balance summary",
-    "opening balance",
-    "closing balance",
-    "account transactions from",
-    "report lost or stolen card",
-    "get help directly in-app",
-    "scan the qr code",
-    "authorization code",
-    "deposit protection",
-    "www.lietuvosbankas.lt",
-    "page ",
-]
+NUMERIC_DATE_RE = re.compile(r"^(?P<date>\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(?P<rest>.+)$")
+MONEY_RE = re.compile(r"-?\s*(?:[$€£]|USD|EUR|GBP|M\$)?\s*\(?\d[\d,]*\.\d{2}\)?", re.IGNORECASE)
+PDF_SKIP_PREFIXES = (
+    "EUR Statement",
+    "Generated on",
+    "Revolut Bank",
+    "Report lost",
+    "Get help",
+    "Scan the QR",
+    "IBAN",
+    "BIC",
+    "Date Description",
+    "Transaction Merchant Name",
+    "Product Opening",
+    "Total ",
+    "The balance on",
+    "Account transactions",
+    "© ",
+    "Page ",
+    "To contact us",
+    "Information About",
+    "How to Avoid",
+    "Calculation table",
+    "Annual percentage",
+    "Balance type",
+    "PURCHASES",
+    "PURCHASE",
+    "PAYMENTS",
+    "Payments Amount",
+    "Credits Amount",
+    "Spend Amount",
+    "Detail ",
+    "Detail Continued",
+    "Continued on",
+    "Summary",
+    "CARDHOLDER SUMMARY",
+    "ACCOUNT SUMMARY",
+)
+PDF_SKIP_CONTAINS = (
+    "registered address",
+    "European Central Bank",
+    "Bank of Lithuania",
+    "deposit guarantee",
+    "iidraudimas",
+    "lost or stolen",
+    "Customer Service",
+    "Credit Reporting",
+    "Minimum Payment Warning",
+    "Late Payment Warning",
+    "Your Rights",
+    "Balance Subject",
+    "Interest Charge Calculation",
+    "AAdvantage",
+    "American Airlines",
+    "terms and conditions",
+    "conditions apply",
+    "Account messages",
+    "totals year-to-date",
+    "available credit",
+    "For more information",
+    "Public Institution",
+    "Important information",
+    "About Trailing Interest",
+    "Member Agreement",
+    "Variable APR",
+    "pre-set spending limit",
+    "minimum due",
+    "Important Notices",
+    "EFT Error",
+    "Tell us your",
+    "suspected error",
+    "our investigation",
+    "Benefit Removal",
+    "Amex Experiences",
+    "Centurion Lounge",
+    "End of Important Notices",
+    "Cards Warmly Welcomed",
+    "Credit Limit",
+    "Minimum payment",
+    "Annual Percentage",
+    "Billing Cycle",
+    "Statement Date",
+    "Variable Rate",
+    "Loyalty Points",
+    "Flight Symbol",
+    "Rewards and Benefits",
+    "with or without notice",
+    "you may",
+    "interest charges",
+    "Balance Type Percentage",
+    "Days in Billing Period",
+    "Daily Balance Method",
+    "Average Daily Balance",
+    "My Chase Loan",
+    "Citibank",
+    "Citi and Arc Design",
+    "Citigroup Inc",
+    "marks used herein",
+    "registered throughout",
+    "Relay Service",
+    "Message & data",
+    "payment confirmation text",
+    "recent income",
+    "housing information",
+    "Manage your account",
+    "Chase Mobile",
+    "Ultimate Rewards",
+    "citi.com",
+)
 
 
-def build_parsed_transaction_df(df: pd.DataFrame, currency: str = "EUR"):
-    work = df.copy()
-    work["Amount"] = pd.to_numeric(work["Amount"], errors="coerce").fillna(0)
-    work["Date"] = pd.to_datetime(work["Date"], errors="coerce", dayfirst=True)
-    work = work.dropna(subset=["Date"]).copy()
-    work["Date"] = work["Date"].dt.strftime("%Y-%m-%d")
-    work["Description"] = work["Description"].fillna("").astype(str).str.strip()
-
-    work["normalized_description"] = work["Description"].apply(normalize_description)
-    work["normalized_description"] = work["normalized_description"].apply(simplify_merchant)
-    work["beneficiary"] = work["Description"].apply(extract_beneficiary)
-    work["transaction_type"] = work.apply(
-        lambda r: infer_transaction_type(r["Description"], r["Amount"]),
-        axis=1
-    )
-    work["currency"] = currency
-    work["usd_amount"] = work["Amount"]
-    return work
+def _norm_col(name):
+    return str(name).strip().lower().replace("_", " ")
 
 
-def group_pdf_words_by_line(words, tolerance: float = 3.0):
-    grouped_lines = []
+def _parse_amount(value):
+    if pd.isna(value):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    negative = text.startswith("(") and text.endswith(")")
+    if text.replace(" ", "").startswith("-"):
+        negative = True
+    text = text.replace("(", "").replace(")", "")
+    text = re.sub(r"[^0-9,\.\-]", "", text)
+    if "," in text and "." in text:
+        text = text.replace(",", "")
+    elif "," in text and "." not in text:
+        text = text.replace(",", ".")
+    amount = pd.to_numeric(text, errors="coerce")
+    if pd.isna(amount):
+        return 0.0
+    amount = float(amount)
+    return -abs(amount) if negative else amount
 
-    for word in sorted(words, key=lambda item: (item["top"], item["x0"])):
-        if not grouped_lines or abs(word["top"] - grouped_lines[-1]["top"]) > tolerance:
-            grouped_lines.append({"top": word["top"], "words": [word]})
+
+def _parse_pdf_date(value):
+    text = str(value).replace("Sept ", "Sep ").strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+        return text
+    if re.match(r"^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+", text, re.IGNORECASE):
+        parsed = pd.to_datetime(text, errors="coerce", format="%b %d, %Y")
+    else:
+        parsed = pd.to_datetime(text, errors="coerce", dayfirst=True)
+    if pd.isna(parsed):
+        return ""
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _parse_any_date(value, default_year=None):
+    text = str(value).replace("Sept ", "Sep ").strip()
+    if not text:
+        return ""
+    if re.match(r"^[A-Za-z]+\s*\d{1,2}$", text) and default_year:
+        text = f"{text}, {default_year}"
+    if re.match(r"^\d{1,2}/\d{1,2}$", text) and default_year:
+        text = f"{text}/{default_year}"
+    if re.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$", text):
+        parsed = pd.to_datetime(text, errors="coerce", dayfirst=False)
+    elif re.match(r"^[A-Za-z]+", text):
+        compact = re.sub(r"([A-Za-z]+)(\d)", r"\1 \2", text)
+        compact = re.sub(r",(\d)", r", \1", compact)
+        parsed = pd.to_datetime(compact, errors="coerce")
+    else:
+        parsed = pd.to_datetime(text, errors="coerce", dayfirst=True)
+    if pd.isna(parsed):
+        return ""
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _parse_tabular_date(value):
+    if pd.isna(value):
+        return ""
+    if isinstance(value, datetime):
+        parsed = pd.to_datetime(value, errors="coerce")
+    else:
+        text = str(value).strip()
+        if not text:
+            return ""
+        if re.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$", text):
+            parsed = pd.to_datetime(text, errors="coerce", dayfirst=False)
         else:
-            grouped_lines[-1]["words"].append(word)
-
-    for line in grouped_lines:
-        line["words"] = sorted(line["words"], key=lambda item: item["x0"])
-
-    return grouped_lines
+            parsed = pd.to_datetime(text, errors="coerce", dayfirst=True)
+    if pd.isna(parsed):
+        return ""
+    return parsed.strftime("%Y-%m-%d")
 
 
-def is_revolut_pdf_noise_line(text: str):
-    normalized_text = re.sub(r"\s+", " ", str(text)).strip().lower()
-    if not normalized_text:
+def _money_values(text):
+    return [(match, _parse_amount(match.group(0))) for match in MONEY_RE.finditer(text)]
+
+
+def _is_pdf_noise(line):
+    if not line:
         return True
-
-    return any(marker in normalized_text for marker in REVOLUT_NOISE_MARKERS)
-
-
-def detect_revolut_header_positions(line_words):
-    positions = {}
-
-    for word in line_words:
-        text = str(word["text"]).strip().lower()
-        if text == "date" and "date" not in positions:
-            positions["date"] = word["x0"]
-        elif text == "description":
-            positions["description"] = word["x0"]
-        elif text == "money":
-            positions.setdefault("money", []).append(word["x0"])
-        elif text == "balance":
-            positions["balance"] = word["x0"]
-
-    if "description" not in positions or "balance" not in positions or len(positions.get("money", [])) < 2:
-        return None
-
-    money_positions = sorted(positions["money"])
-    return {
-        "date": positions.get("date", 0),
-        "description": positions["description"],
-        "money_out": money_positions[0],
-        "money_in": money_positions[1],
-        "balance": positions["balance"],
-    }
+    lower = line.lower()
+    plain = re.sub(r"(.)\1+", r"\1", lower)
+    return (
+        any(lower.startswith(prefix.lower()) for prefix in PDF_SKIP_PREFIXES)
+        or any(token.lower() in lower or token.lower() in plain for token in PDF_SKIP_CONTAINS)
+    )
 
 
-def parse_revolut_amount(text: str):
-    cleaned = str(text).replace(",", "").replace("€", "").strip()
-    match = re.search(r"-?\d[\d,]*\.\d{2}", cleaned)
-    if not match:
-        return None
-    return float(match.group(0).replace(",", ""))
+def _append_detail(description, line):
+    line = line.strip()
+    if not line or _is_pdf_noise(line):
+        return description
+    if line in {"Page 1 of 4", "Page 2 of 4", "Page 3 of 4", "Page 4 of 4"}:
+        return description
+    return f"{description} | {line}" if description else line
 
 
-def parse_revolut_transaction_line(line_words, header_positions):
-    date_boundary = header_positions["description"] - 8
-    description_boundary = header_positions["money_out"] - 8
-    money_in_boundary = header_positions["balance"] - 8
+def _parse_revolut_pdf_text(text):
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    rows = []
+    current = None
+    previous_balance = None
 
-    date_parts = [word["text"] for word in line_words if word["x0"] < date_boundary]
-    description_parts = [
-        word["text"] for word in line_words
-        if header_positions["description"] - 8 <= word["x0"] < description_boundary
-    ]
-    money_out_parts = [
-        word["text"] for word in line_words
-        if header_positions["money_out"] - 8 <= word["x0"] < header_positions["money_in"] - 8
-    ]
-    money_in_parts = [
-        word["text"] for word in line_words
-        if header_positions["money_in"] - 8 <= word["x0"] < money_in_boundary
-    ]
+    for line in lines:
+        if not line:
+            continue
 
-    date_text = " ".join(date_parts).strip()
-    description_text = " ".join(description_parts).strip()
-    money_out_text = " ".join(money_out_parts).strip()
-    money_in_text = " ".join(money_in_parts).strip()
+        summary_match = re.search(r"Account \(Current Account\)\s+(.+)", line)
+        if summary_match and previous_balance is None:
+            amounts = _money_values(summary_match.group(1))
+            if amounts:
+                previous_balance = amounts[0][1]
+            continue
 
-    if not REVOLUT_DATE_PATTERN.match(date_text):
-        return None
+        date_match = MONTH_DATE_RE.match(line)
+        if date_match:
+            if current:
+                rows.append(current)
 
-    money_out_amount = parse_revolut_amount(money_out_text)
-    money_in_amount = parse_revolut_amount(money_in_text)
-
-    if money_out_amount is None and money_in_amount is None:
-        return None
-
-    amount = money_in_amount if money_in_amount is not None else -money_out_amount
-    return {
-        "Date": date_text,
-        "Description": description_text,
-        "Amount": amount,
-    }
-
-
-def parse_revolut_pdf(uploaded_file):
-    if pdfplumber is None:
-        return None
-
-    uploaded_file.seek(0)
-    transactions = []
-
-    with pdfplumber.open(uploaded_file) as pdf:
-        first_page_text = (pdf.pages[0].extract_text() or "").lower() if pdf.pages else ""
-        if "revolut" not in first_page_text:
-            return None
-
-        for page in pdf.pages:
-            words = page.extract_words(x_tolerance=1, y_tolerance=3, keep_blank_chars=False)
-            if not words:
+            date_value = _parse_pdf_date(date_match.group("date"))
+            rest = date_match.group("rest")
+            amounts = _money_values(rest)
+            if len(amounts) < 2:
+                current = None
                 continue
 
-            lines = group_pdf_words_by_line(words)
-            header_positions = None
-            current_transaction = None
+            txn_abs = abs(amounts[-2][1])
+            new_balance = amounts[-1][1]
+            description = rest[: amounts[-2][0].start()].strip()
 
-            for line in lines:
-                line_text = " ".join(word["text"] for word in line["words"]).strip()
-                if not line_text:
-                    continue
+            amount = None
+            if previous_balance is not None:
+                delta = round(new_balance - previous_balance, 2)
+                if abs(abs(delta) - txn_abs) <= 0.02:
+                    amount = delta
 
-                if header_positions is None:
-                    header_positions = detect_revolut_header_positions(line["words"])
-                    continue
+            if amount is None:
+                upper_desc = description.upper()
+                incoming_hint = any(token in upper_desc for token in ["TRANSFER FROM", "TOP-UP", "REFUND"])
+                amount = txn_abs if incoming_hint else -txn_abs
 
-                if is_revolut_pdf_noise_line(line_text):
-                    continue
+            previous_balance = new_balance
+            current = [date_value, description, amount]
+            continue
 
-                transaction = parse_revolut_transaction_line(line["words"], header_positions)
-                if transaction is not None:
-                    if current_transaction is not None:
-                        transactions.append(current_transaction)
-                    current_transaction = transaction
-                    continue
+        if current:
+            current[1] = _append_detail(current[1], line)
 
-                if current_transaction is None:
-                    continue
+    if current:
+        rows.append(current)
 
-                description_only_parts = [
-                    word["text"]
-                    for word in line["words"]
-                    if header_positions["description"] - 8 <= word["x0"] < header_positions["money_out"] - 8
-                ]
-                continuation_text = " ".join(description_only_parts).strip()
-                if continuation_text and not is_revolut_pdf_noise_line(continuation_text):
-                    current_transaction["Description"] = (
-                        f"{current_transaction['Description']} {continuation_text}"
-                    ).strip()
-
-            if current_transaction is not None:
-                transactions.append(current_transaction)
-
-    if not transactions:
-        return None
-
-    return build_parsed_transaction_df(pd.DataFrame(transactions), currency="EUR")
+    return rows
 
 
-def extract_pdf_transaction_parts(line: str):
-    normalized_line = re.sub(r"\s+", " ", str(line)).strip()
-    if not normalized_line:
-        return None
+def _statement_year(text):
+    compact = re.sub(r"\s+", " ", text)
+    patterns = [
+        r"Opening/Closing Date\s+\d{1,2}/\d{1,2}/(\d{2,4})\s+-\s+\d{1,2}/\d{1,2}/(\d{2,4})",
+        r"Closing Date\s*(\d{1,2}/\d{1,2}/(\d{2,4}))",
+        r"New balance as of\s+\d{1,2}/\d{1,2}/(\d{2,4})",
+        r"(\w+\s*\d{1,2},\s*\d{4})\s*to\s*(\w+\s*\d{1,2},\s*\d{4})",
+        r"Account transactions from\s+\w+\s+\d{1,2},\s+(\d{4})\s+to\s+\w+\s+\d{1,2},\s+(\d{4})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, compact, re.IGNORECASE)
+        if not match:
+            continue
+        for group in reversed(match.groups()):
+            if not group:
+                continue
+            date_value = _parse_any_date(group)
+            if date_value:
+                return int(date_value[:4])
+            if re.match(r"^\d{2}$", str(group)):
+                return 2000 + int(group)
+            if re.match(r"^\d{4}$", str(group)):
+                return int(group)
+    return datetime.now().year
 
-    date_match = DATE_AT_START_PATTERN.match(normalized_line)
-    if not date_match:
-        return None
 
-    candidate_line = normalized_line
-    candidate_line_lower = candidate_line.lower()
-    for marker in PDF_BALANCE_SUFFIX_MARKERS:
-        marker_index = candidate_line_lower.find(marker)
-        if marker_index != -1:
-            candidate_line = candidate_line[:marker_index].rstrip()
-            break
-
-    amount_matches = list(AMOUNT_TOKEN_PATTERN.finditer(candidate_line))
-    if not amount_matches:
-        return None
-
-    selected_amount = amount_matches[-1]
-    if len(amount_matches) >= 2 and amount_matches[-1].end() == len(candidate_line):
-        # Many bank PDFs end the row with running balance, not transaction amount.
-        selected_amount = amount_matches[-2]
-
-    description = candidate_line[date_match.end():selected_amount.start()].strip()
-    if not description:
-        return None
-
-    return (
-        date_match.group(1),
-        description,
-        selected_amount.group(0).replace(",", ""),
+def _parse_credit_card_pdf_text(text):
+    default_year = _statement_year(text)
+    rows = []
+    current = None
+    date_line_re = re.compile(
+        r"^(?P<date>\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s+"
+        r"(?:(?P<post>\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s+)?"
+        r"(?P<rest>.+)$"
     )
 
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
 
-def is_pdf_noise_line(line: str):
-    normalized_line = re.sub(r"\s+", " ", str(line)).strip().lower()
-    if not normalized_line:
-        return True
+        match = date_line_re.match(line)
+        if match:
+            amounts = _money_values(match.group("rest"))
+            if amounts:
+                if current:
+                    rows.append(current)
+                amount_text = amounts[-1][0].group(0)
+                amount = _parse_amount(amount_text)
+                amount = abs(amount) if "-" in amount_text else -abs(amount)
+                description = match.group("rest")[: amounts[-1][0].start()].strip()
+                description = re.sub(r"^\d{1,2}/\d{1,2}(?:/\d{2,4})?\s+", "", description).strip()
+                if not description or _is_pdf_noise(description):
+                    current = None
+                    continue
+                current = [_parse_any_date(match.group("date"), default_year), description, amount]
+                continue
 
-    if any(marker in normalized_line for marker in PDF_NOISE_MARKERS):
-        return True
+        if current and _should_append_card_detail(line):
+            current_description = str(current[1]).lower()
+            if "interest charged" in current_description or "interest charge on" in current_description:
+                continue
+            current[1] = _append_detail(current[1], line)
 
-    compact_line = normalized_line.replace(" ", "")
-    if "page" in normalized_line and re.search(r"\d+\s*/\s*\d+", normalized_line):
-        return True
-
-    if re.search(r"\biban\b|\bbic\b|\bbranch\b|\bstatement\b", normalized_line) and len(normalized_line) > 40:
-        return True
-
-    if normalized_line.count("%") >= 2:
-        return True
-
-    if "." in compact_line and len(re.findall(r"[a-z]", compact_line)) > 20 and compact_line.count(".") >= 3:
-        return True
-
-    return False
+    if current:
+        rows.append(current)
+    return rows
 
 
-def detect_columns(df: pd.DataFrame):
+def _should_append_card_detail(line):
+    if _is_pdf_noise(line):
+        return False
+    if len(line) > 90:
+        return False
+    if len(line) <= 1:
+        return False
+    if re.fullmatch(r"[\W\d\s]+", line):
+        return False
+    if len(_money_values(line)) >= 2:
+        return False
+    lower = line.lower()
+    blocked = [
+        "program",
+        "conditions",
+        "terms",
+        "about trailing interest",
+        "member agreement",
+        "variable apr",
+        "pre-set spending",
+        "minimum due",
+        "important notices",
+        "eft error",
+        "tell us your",
+        "suspected error",
+        "investigation",
+        "benefit removal",
+        "amex experiences",
+        "centurion lounge",
+        "cards warmly welcomed",
+        "fees charged",
+        "interest charged",
+        "new charges",
+        "pay in full",
+        "pay over time",
+        "interest rate",
+        "cash advances",
+        "balance transfers",
+        "annual balance",
+        "payments/credits",
+        "minimum payment",
+        "customer service",
+        "credit limit",
+        "important information",
+        "american airlines",
+        "loyalty points",
+        "flight symbol",
+        "citi.com",
+        "you may",
+        "received",
+        "balance type",
+        "balance method",
+        "advances",
+        "days in billing",
+        "daily balance",
+        "average daily",
+        "my chase loan",
+        "determined by",
+        "citibank",
+        "citi and arc",
+        "citigroup",
+        "marks used herein",
+        "registered throughout",
+        "text pay",
+        "message & data",
+        "confirm your identity",
+        "payment confirmation",
+        "account information",
+        "recent income",
+        "housing",
+        "securely log",
+        "timur bekmambetov",
+        "tengri inc",
+        "total ",
+        "page ",
+        "account ending",
+        "card ending",
+        "foreign",
+    ]
+    return not any(token in lower for token in blocked)
+
+
+def _parse_comerica_pdf_text(text):
+    default_year = _statement_year(text)
+    rows = []
+    line_re = re.compile(
+        r"(?P<date>(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*\d{1,2})\s+"
+        r"(?P<amount>-?\d[\d,]*\.\d{2})\s+"
+        r"(?P<desc>.*?)(?=\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*\d{1,2}\s+-?\d[\d,]*\.\d{2}\s+|$)",
+        re.IGNORECASE,
+    )
+
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+        for match in line_re.finditer(line):
+            description = match.group("desc").strip()
+            if not description or _is_pdf_noise(description):
+                continue
+            rows.append([
+                _parse_any_date(match.group("date"), default_year),
+                description,
+                _parse_amount(match.group("amount")),
+            ])
+    return rows
+
+
+def _parse_generic_pdf_text(text):
+    rows = []
+    current = None
+
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+
+        date_match = NUMERIC_DATE_RE.match(line)
+        if date_match:
+            rest = date_match.group("rest")
+            amount_match = re.search(r"(-?\(?[\d,]+\.\d{2}\)?)\s*$", rest)
+            if amount_match:
+                if current:
+                    rows.append(current)
+                description = rest[: amount_match.start()].strip()
+                current = [date_match.group("date"), description, amount_match.group(1)]
+                continue
+
+        if current:
+            current[1] = _append_detail(current[1], line)
+
+    if current:
+        rows.append(current)
+    return rows
+
+
+def _detect_bank_name(text, file_name=""):
+    sample = f"{file_name} {text[:2000]}".upper()
+    plain_sample = re.sub(r"(.)\1+", r"\1", sample)
+    if "REVOLUT" in sample or "REVOLUT" in plain_sample:
+        return "Revolut"
+    if "COMERICA" in sample or "COMERICA" in plain_sample:
+        return "Comerica"
+    if (
+        "AMERICAN EXPRESS" in sample
+        or "AMEX" in sample
+        or "BUSINESS PLATINUM CARD" in sample
+        or "AMERICAN EXPRESS" in plain_sample
+    ):
+        return "American Express"
+    if "CITI" in sample or "CITICARDS" in sample or "CITI" in plain_sample:
+        return "Citi"
+    if (
+        "CARDMEMBER SERVICE" in sample
+        or "CHASE SAPPHIRE" in sample
+        or "JPMORGAN CHASE" in sample
+        or "CHASE.COM" in plain_sample
+        or "CHASE ULTIMATE" in plain_sample
+    ):
+        return "Chase"
+    return ""
+
+
+def _extract_account_number(text):
+    patterns = [
+        r"Account Number:\s*([X\d ]{4,})",
+        r"Account\s*number\s*ending\s*in:\s*([X\d\- ]{3,})",
+        r"Accountnumber\s*([X\d\- ]{3,})",
+        r"Account Ending\s*([X\d\- ]{3,})",
+        r"IBAN\s+([A-Z0-9]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return re.sub(r"\s+", " ", match.group(1)).strip()
+    return ""
+
+
+def _extract_currency(text):
+    head = text[:2000].upper()
+    if "EUR STATEMENT" in head or "EUR" in head or "€" in head:
+        return "EUR"
+    if "EUR STATEMENT" in head or "€" in head:
+        return "EUR"
+    if "$" in head or "USD" in head:
+        return "USD"
+    return ""
+
+
+def _find_first_amount(flat_text, patterns):
+    for pattern in patterns:
+        match = re.search(pattern, flat_text, re.IGNORECASE)
+        if match:
+            return _parse_amount(match.group(1))
+    return None
+
+
+def _find_statement_period(flat_text):
+    patterns = [
+        r"Account transactions from\s+([A-Za-z]+\s*\d{1,2},\s*\d{4})\s+to\s+([A-Za-z]+\s*\d{1,2},\s*\d{4})",
+        r"Account transactions from\s+(.+?)\s+to\s+(.+?)(?:\s+Date|\s+Balance|$)",
+        r"Opening/Closing Date\s+(\d{1,2}/\d{1,2}/\d{2,4})\s+-\s+(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"Statement period from\s+([A-Za-z]+\s*\d{1,2},\s*\d{4})\s+to\s+([A-Za-z]+\s*\d{1,2},\s*\d{4})",
+        r"([A-Za-z]+\s*\d{1,2},\s*\d{4})\s*to\s*([A-Za-z]+\s*\d{1,2},\s*\d{4})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, flat_text, re.IGNORECASE)
+        if match:
+            return _parse_any_date(match.group(1)), _parse_any_date(match.group(2))
+    end_match = re.search(r"Closing Date\s*(\d{1,2}/\d{1,2}/\d{2,4})", flat_text, re.IGNORECASE)
+    if end_match:
+        return "", _parse_any_date(end_match.group(1))
+    end_match = re.search(r"New balance as of\s+(\d{1,2}/\d{1,2}/\d{2,4})", flat_text, re.IGNORECASE)
+    if end_match:
+        return "", _parse_any_date(end_match.group(1))
+    return "", ""
+
+
+def extract_statement_balance_from_text(text, file_name=""):
+    flat = re.sub(r"\s+", " ", text)
+    bank = _detect_bank_name(text, file_name)
+    period_start, period_end = _find_statement_period(flat)
+    currency = _extract_currency(text)
+    account_number = _extract_account_number(text)
+
+    opening = closing = money_out = money_in = None
+
+    revolut_line = re.search(r"Account \(Current Account\).+?(?:Total|The balance)", flat, re.IGNORECASE)
+    if revolut_line:
+        amounts = [value for _, value in _money_values(revolut_line.group(0))]
+        if len(amounts) >= 4:
+            opening, money_out, money_in, closing = amounts[:4]
+
+    if opening is None and "Account Total" in flat:
+        account_total = flat.split("Account Total", 1)[1]
+        opening = _find_first_amount(account_total, [r"Previous Balance\s+(-?\$?\d[\d,]*\.\d{2})"])
+        closing = _find_first_amount(account_total, [r"New Balance\s+(-?\$?\d[\d,]*\.\d{2})"])
+        money_in = _find_first_amount(account_total, [r"Payments/Credits\s+(-?\$?\d[\d,]*\.\d{2})"])
+        money_out = _find_first_amount(account_total, [r"New Charges\s+\+?(-?\$?\d[\d,]*\.\d{2})"])
+
+    if bank == "Comerica":
+        deposits = []
+        for value in [
+            _find_first_amount(flat, [r"Electronic deposits\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Electronic deposits\s+\d+\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Electronic\s*deposits\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Paper deposits\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Paper deposits\s+\d+\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Paper\s*deposits\s+(-?\$?\d[\d,]*\.\d{2})"]),
+        ]:
+            if value is not None and all(abs(value - existing) > 0.005 for existing in deposits):
+                deposits.append(value)
+        if deposits:
+            money_in = round(sum(deposits), 2)
+
+    if opening is None:
+        opening = _find_first_amount(flat, [
+            r"Beginning\s*balance.*?(-?\$?\d[\d,]*\.\d{2})",
+            r"Previous\s+Balance\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Previous\s+balance\s+(-?\$?\d[\d,]*\.\d{2})",
+        ])
+    if closing is None:
+        closing = _find_first_amount(flat, [
+            r"Ending\s*balance\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"New\s+Balance\s*=\s*(-?\$?\d[\d,]*\.\d{2})",
+            r"New\s+Balance\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"New balance as of\s+\d{1,2}/\d{1,2}/\d{2,4}:\s+(-?\$?\d[\d,]*\.\d{2})",
+        ])
+    if money_out is None:
+        money_out = _find_first_amount(flat, [
+            r"Money out\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Purchases\s+\+?(-?\$?\d[\d,]*\.\d{2})",
+            r"New Charges\s+\+?(-?\$?\d[\d,]*\.\d{2})",
+            r"Electronic \(EFT\) withdrawals\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Electronic \(EFT\) withdrawals\s+\d+\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Electronic\s*\(EFT\)\s*withdrawals\s+(-?\$?\d[\d,]*\.\d{2})",
+        ])
+    if money_in is None:
+        money_in = _find_first_amount(flat, [
+            r"Money in\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Payment, Credits\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Payments/Credits\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Payments\s+-\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Payments\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Electronic deposits\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Electronic deposits\s+\d+\s+(-?\$?\d[\d,]*\.\d{2})",
+            r"Electronic\s*deposits\s+(-?\$?\d[\d,]*\.\d{2})",
+        ])
+
+    return {
+        "bank": bank,
+        "account_number": account_number,
+        "currency": currency,
+        "period_start": period_start,
+        "period_end": period_end,
+        "opening_balance": opening,
+        "money_out": money_out,
+        "money_in": money_in,
+        "closing_balance": closing,
+        "source": "parsed" if opening is not None or closing is not None else "",
+    }
+
+
+def extract_statement_balance(uploaded_file, file_name=""):
+    lower_name = str(file_name).lower()
+    if not lower_name.endswith(".pdf") or pdfplumber is None:
+        return {}
+    uploaded_file.seek(0)
+    with pdfplumber.open(uploaded_file) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    return extract_statement_balance_from_text(text, file_name)
+
+
+def detect_columns(df):
     date_col = None
-    desc_col = None
     amount_col = None
     debit_col = None
     credit_col = None
 
-    for c in df.columns:
-        cl = str(c).lower().strip()
+    for col in df.columns:
+        name = _norm_col(col)
+        if name in DATE_NAMES or ("date" in name and date_col is None):
+            date_col = col
+        if name in AMOUNT_NAMES and amount_col is None:
+            amount_col = col
+        if name in DEBIT_NAMES and debit_col is None:
+            debit_col = col
+        if name in CREDIT_NAMES and credit_col is None:
+            credit_col = col
 
-        if cl in ["date", "transaction date", "booking date", "value date"]:
-            date_col = c
+    desc_cols = []
+    for col in df.columns:
+        name = _norm_col(col)
+        if col in [date_col, amount_col, debit_col, credit_col]:
+            continue
+        if any(token in name for token in ["description", "details", "narration", "memo", "reference"]):
+            desc_cols.append(col)
 
-        if cl in ["description", "details", "narration", "transaction details", "memo"]:
-            desc_col = c
+    if not desc_cols:
+        for col in df.columns:
+            if col in [date_col, amount_col, debit_col, credit_col]:
+                continue
+            name = _norm_col(col)
+            if any(token in name for token in IGNORE_TEXT_HINTS):
+                continue
+            if df[col].dtype == object:
+                desc_cols.append(col)
 
-        if cl in ["amount", "transaction amount"]:
-            amount_col = c
-
-        if cl in ["debit", "withdrawal"]:
-            debit_col = c
-
-        if cl in ["credit", "deposit"]:
-            credit_col = c
-
-    if desc_col is None:
-        for c in df.columns:
-            cl = str(c).lower()
-            if "desc" in cl or "detail" in cl or "memo" in cl or "narration" in cl:
-                desc_col = c
-                break
-
-    if date_col is None:
-        for c in df.columns:
-            if "date" in str(c).lower():
-                date_col = c
-                break
-
-    return date_col, desc_col, amount_col, debit_col, credit_col
+    return date_col, desc_cols, amount_col, debit_col, credit_col
 
 
-def merge_multiline_transactions(df: pd.DataFrame):
-    """
-    Merge multi-line descriptions into single transactions.
-    Assumes rows without amount belong to previous transaction.
-    """
-    rows = []
-    current = None
-
-    for _, r in df.iterrows():
-        amount = r["Amount"]
-
-        if pd.notna(amount) and amount != 0:
-            if current is not None:
-                rows.append(current)
-            current = r.copy()
-        else:
-            if current is not None:
-                current["Description"] += " " + str(r["Description"])
-
-    if current is not None:
-        rows.append(current)
-
-    return pd.DataFrame(rows)
+def _combine_description(row, desc_cols):
+    parts = []
+    for col in desc_cols:
+        value = row.get(col)
+        if pd.isna(value):
+            continue
+        text = str(value).strip()
+        if text and text.lower() != "nan":
+            parts.append(text)
+    return " ".join(parts)
 
 
-def prepare_dataframe_from_tabular(df: pd.DataFrame):
-    # Filter Revolut CSV to completed transactions only
-    state_col = next((c for c in df.columns if str(c).lower().strip() == "state"), None)
-    if state_col is not None:
-        df = df[df[state_col].astype(str).str.upper().str.strip() == "COMPLETED"].copy()
-        if df.empty:
-            raise ValueError("No completed transactions found in the uploaded Revolut file.")
-
-    date_col, desc_col, amount_col, debit_col, credit_col = detect_columns(df)
-
-    # 🔥 FIX DATE COLUMN (using detected column)
-    if date_col in df.columns:
-        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-        df = df.dropna(subset=[date_col])
-        # 🔥 KEEP FULL ORIGINAL DESCRIPTION (ALL LINES)
-    if desc_col in df.columns:
-        df["original_full_description"] = df[desc_col].astype(str)
+def prepare_dataframe_from_tabular(df):
+    df = df.copy()
+    df = df.dropna(how="all")
+    date_col, desc_cols, amount_col, debit_col, credit_col = detect_columns(df)
 
     if amount_col is None and debit_col and credit_col:
-        df[debit_col] = pd.to_numeric(df[debit_col], errors="coerce").fillna(0)
-        df[credit_col] = pd.to_numeric(df[credit_col], errors="coerce").fillna(0)
-        df["Amount"] = df[credit_col] - df[debit_col]
+        debit = df[debit_col].apply(_parse_amount).abs()
+        credit = df[credit_col].apply(_parse_amount).abs()
+        df["Amount"] = credit - debit
         amount_col = "Amount"
 
-    if not all([date_col, desc_col, amount_col]):
+    if not date_col or not desc_cols or not amount_col:
         raise ValueError(
-            "Could not detect required columns (Date, Description, Amount)."
+            "Could not detect Date, Description, and Amount columns. "
+            "Please check the statement format before import."
         )
 
-    out = df[[date_col, desc_col, amount_col]].copy()
-    out.columns = ["Date", "Description", "Amount"]
+    out = pd.DataFrame()
+    out["Date"] = df[date_col].apply(_parse_tabular_date)
+    out["Description"] = df.apply(lambda row: _combine_description(row, desc_cols), axis=1)
+    out["Amount"] = df[amount_col].apply(_parse_amount)
+    out = out[(out["Description"].str.strip() != "") | (out["Amount"] != 0)].copy()
 
-    # Clean basic fields
+    out["Date"] = out["Date"].fillna("")
     out["Description"] = out["Description"].fillna("").astype(str)
-    out["Amount"] = pd.to_numeric(out["Amount"], errors="coerce")
-
-    # 🔥 FIX 1: Better date parsing (European format)
-    out["Date"] = pd.to_datetime(
-        out["Date"],
-        errors="coerce",
-        dayfirst=True
-    )
-
-    # 🔥 Detect date errors early
-    if out["Date"].isna().any():
-        raise ValueError("Date parsing failed for some rows. Check input format.")
-
-    out["Date"] = out["Date"].dt.strftime("%Y-%m-%d")
-
-    # 🔥 FIX 2: Merge multiline descriptions
-    out = merge_multiline_transactions(out)
-
-    # Continue processing
-    out["normalized_description"] = out["Description"].apply(normalize_description)
-    out["normalized_description"] = out["normalized_description"].apply(simplify_merchant)
+    out["normalized_description"] = out["Description"].apply(normalize_description).apply(simplify_merchant)
     out["beneficiary"] = out["Description"].apply(extract_beneficiary)
     out["transaction_type"] = out.apply(
-        lambda r: infer_transaction_type(r["Description"], r["Amount"]),
-        axis=1
+        lambda row: infer_transaction_type(row["Description"], row["Amount"]),
+        axis=1,
     )
-
-    # 🔥 Add currency (default EUR for now)
-    out["currency"] = "EUR"
-
-    # Placeholder for USD (will calculate later)
-    out["usd_amount"] = out["Amount"]
-
-    return out
-
-
-def _is_boc_date(text):
-    return bool(BOC_DATE_PATTERN.match(str(text).strip()))
-
-
-def _is_boc_noise(text):
-    t = str(text).lower().strip()
-    return not t or any(m in t for m in BOC_NOISE_MARKERS)
-
-
-def _detect_boc_columns(line_words):
-    pos = {}
-    for w in line_words:
-        t = str(w["text"]).strip()
-        if t == "Debit":
-            pos["debit"] = w["x0"]
-        elif t == "Credit":
-            pos["credit"] = w["x0"]
-        elif t == "Balance":
-            pos["balance"] = w["x0"]
-    return pos if len(pos) == 3 else None
-
-
-def _parse_boc_amount(text):
-    try:
-        return float(str(text).replace(",", "").replace("€", "").strip())
-    except ValueError:
-        return None
-
-
-def parse_bank_of_cyprus_pdf(uploaded_file):
-    if pdfplumber is None:
-        return None
-
-    uploaded_file.seek(0)
-    transactions = []
-
-    with pdfplumber.open(uploaded_file) as pdf:
-        # Detect BoC format by presence of Debit/Credit/Balance column headers
-        first_page_words = pdf.pages[0].extract_words(x_tolerance=2, y_tolerance=3) if pdf.pages else []
-        first_page_lines = group_pdf_words_by_line(first_page_words)
-        if not any(_detect_boc_columns(line["words"]) for line in first_page_lines):
-            return None
-
-        for page in pdf.pages:
-            words = page.extract_words(x_tolerance=2, y_tolerance=3)
-            if not words:
-                continue
-
-            lines = group_pdf_words_by_line(words)
-            col_pos = None
-            current_txn = None
-
-            for line in lines:
-                if not line["words"]:
-                    continue
-
-                line_text = " ".join(w["text"] for w in line["words"])
-
-                if col_pos is None:
-                    col_pos = _detect_boc_columns(line["words"])
-                    continue
-
-                if _is_boc_noise(line_text):
-                    continue
-
-                first_word = line["words"][0]["text"]
-
-                if _is_boc_date(first_word):
-                    if current_txn is not None:
-                        transactions.append(current_txn)
-
-                    debit_start = col_pos["debit"] - 20
-                    credit_start = col_pos["credit"] - 15
-                    balance_start = col_pos["balance"] - 10
-
-                    desc_parts = []
-                    debit_val = None
-                    credit_val = None
-                    date_count = 0
-
-                    for w in line["words"]:
-                        x = w["x0"]
-                        text = w["text"]
-
-                        if _is_boc_date(text) and date_count < 2:
-                            date_count += 1
-                            continue
-
-                        if x >= balance_start:
-                            continue
-
-                        if x >= credit_start:
-                            v = _parse_boc_amount(text)
-                            if v is not None:
-                                credit_val = v
-                            continue
-
-                        if x >= debit_start:
-                            v = _parse_boc_amount(text)
-                            if v is not None:
-                                debit_val = v
-                            continue
-
-                        desc_parts.append(text)
-
-                    if debit_val is None and credit_val is None:
-                        current_txn = None
-                        continue
-
-                    amount = credit_val if credit_val is not None else -debit_val
-                    current_txn = {
-                        "Date": first_word,
-                        "Description": " ".join(desc_parts).strip(),
-                        "Amount": amount,
-                    }
-
-                else:
-                    if current_txn is not None and not _is_boc_noise(line_text):
-                        continuation = [
-                            w["text"] for w in line["words"]
-                            if w["x0"] < col_pos["debit"] - 20
-                        ]
-                        if continuation:
-                            current_txn["Description"] = (
-                                f"{current_txn['Description']} {' '.join(continuation)}"
-                            ).strip()
-
-            if current_txn is not None:
-                transactions.append(current_txn)
-
-    if not transactions:
-        return None
-
-    for txn in transactions:
-        cleaned = BOC_CHANNEL_PREFIX.sub("", txn["Description"]).strip()
-        if cleaned:
-            txn["Description"] = cleaned
-
-    return build_parsed_transaction_df(pd.DataFrame(transactions))
+    return out.reset_index(drop=True)
 
 
 def parse_csv(uploaded_file):
@@ -615,57 +784,67 @@ def parse_excel(uploaded_file):
     return prepare_dataframe_from_tabular(df)
 
 
+def _frame_from_pdf_rows(rows):
+    df = pd.DataFrame(rows, columns=["Date", "Description", "Amount"])
+    df["Date"] = df["Date"].apply(_parse_pdf_date)
+    df["Amount"] = df["Amount"].apply(_parse_amount)
+    df["Description"] = df["Description"].fillna("").astype(str)
+    df["normalized_description"] = df["Description"].apply(normalize_description).apply(simplify_merchant)
+    df["beneficiary"] = df["Description"].apply(extract_beneficiary)
+    df["transaction_type"] = df.apply(
+        lambda row: infer_transaction_type(row["Description"], row["Amount"]),
+        axis=1,
+    )
+    return df.reset_index(drop=True)
+
+
 def parse_pdf(uploaded_file):
-    revolut_df = parse_revolut_pdf(uploaded_file)
-    if revolut_df is not None and not revolut_df.empty:
-        return revolut_df
-
-    boc_df = parse_bank_of_cyprus_pdf(uploaded_file)
-    if boc_df is not None and not boc_df.empty:
-        return boc_df
-
+    rows = []
     if pdfplumber is not None:
+        uploaded_file.seek(0)
         try:
-            uploaded_file.seek(0)
-            data = []
-
             with pdfplumber.open(uploaded_file) as pdf:
-                for page in pdf.pages:
-                    text = page.extract_text()
+                text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+                if "Revolut Bank" in text or "Account transactions from" in text:
+                    rows = _parse_revolut_pdf_text(text)
+                elif "Comerica" in text or "Commercial Checking" in text:
+                    rows = _parse_comerica_pdf_text(text)
+                elif (
+                    "CARDMEMBER SERVICE" in text
+                    or "CITI" in text
+                    or "American Express" in text
+                    or "Account Ending" in text
+                ):
+                    rows = _parse_credit_card_pdf_text(text)
+                if not rows:
+                    rows = _parse_generic_pdf_text(text)
+            if rows:
+                return _frame_from_pdf_rows(rows)
+        except Exception:
+            rows = []
 
-                    if text:
-                        lines = text.split("\n")
-                        current_transaction = None
-
-                        for line in lines:
-                            line = re.sub(r"\s+", " ", line).strip()
-                            if not line:
-                                continue
-
-                            match = extract_pdf_transaction_parts(line)
-
-                            if match:
-                                if current_transaction is not None:
-                                    data.append(current_transaction)
-
-                                date, desc, amount = match
-                                current_transaction = [
-                                    date,
-                                    desc.strip(),
-                                    amount.replace(",", ""),
-                                ]
-                            elif current_transaction is not None and not is_pdf_noise_line(line):
-                                current_transaction[1] = (
-                                    f"{current_transaction[1]} {line}"
-                                ).strip()
-
-                        if current_transaction is not None:
-                            data.append(current_transaction)
-
-            if data:
-                df = pd.DataFrame(data, columns=["Date", "Description", "Amount"])
-                return build_parsed_transaction_df(df, currency="EUR")
+    if pytesseract is not None and convert_from_bytes is not None:
+        uploaded_file.seek(0)
+        try:
+            images = convert_from_bytes(uploaded_file.read())
+            fallback_date = datetime.now().strftime("%Y-%m-%d")
+            for image in images:
+                text = pytesseract.image_to_string(image)
+                for line in text.splitlines():
+                    line = re.sub(r"\s+", " ", line).strip()
+                    match = re.search(
+                        r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(.*?)\s+(-?\(?[\d,]+\.\d{2}\)?)",
+                        line,
+                    )
+                    if match:
+                        rows.append(list(match.groups()))
+                        continue
+                    match = re.search(r"(.+?)\s+(-?\(?[\d,]+\.\d{2}\)?)$", line)
+                    if match and len(match.group(1).strip()) > 3:
+                        rows.append([fallback_date, match.group(1), match.group(2)])
+            if rows:
+                return _frame_from_pdf_rows(rows)
         except Exception:
             pass
 
-    raise ValueError("Could not extract data from PDF.")
+    raise ValueError("Could not extract statement rows from this PDF.")

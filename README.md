@@ -37,6 +37,15 @@ Expected workbook names:
 - `Who made the expense.xlsx`
 - `Rates.xlsx`
 
-## Render Persistence
+## Production Database
 
-SQLite data is saved to `transactions.db`. On Render, attach a persistent disk at `/var/data` for production use; the app will then save the database as `/var/data/transactions.db`.
+For production, create a Render Postgres database and set `DATABASE_URL` on the web service to the database internal connection string. When `DATABASE_URL` is present, the app uses PostgreSQL for setup files, transactions, statement history, balances, and memory.
+
+SQLite remains available only as a local fallback through `transactions.db`.
+
+Render setup:
+
+1. Create a Render Postgres database in the same region as the web service.
+2. Copy the database Internal Database URL.
+3. Add it to the `aretiapp` web service as `DATABASE_URL`.
+4. Redeploy the web service.

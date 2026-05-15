@@ -10,6 +10,7 @@ import streamlit as st
 from classification import classify_transactions
 from db import (
     DB_PATH,
+    USING_POSTGRES,
     add_category,
     apply_account_and_rates,
     build_statement_hash,
@@ -353,6 +354,8 @@ def balance_has_values(balance):
 
 
 def render_unsafe_storage_notice():
+    if USING_POSTGRES:
+        return
     render_env = any(
         os.getenv(name)
         for name in ["RENDER", "RENDER_SERVICE_NAME", "RENDER_EXTERNAL_URL", "RENDER_INSTANCE_ID"]

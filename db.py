@@ -10,6 +10,8 @@ import pandas as pd
 from utils import extract_beneficiary, infer_transaction_type, normalize_description, simplify_merchant
 
 
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
+USING_POSTGRES = bool(DATABASE_URL)
 DEFAULT_SHARED_DIR = Path(os.getenv("ARETI_SHARED_FOLDER", r"C:\Users\Student\Dropbox\ARETI FILES ONE DRIVE"))
 RENDER_DISK_DB_PATH = Path("/var/data/transactions.db")
 DEFAULT_DB_PATH = (
@@ -19,19 +21,96 @@ DEFAULT_DB_PATH = (
     if RENDER_DISK_DB_PATH.parent.exists()
     else Path(__file__).with_name("transactions.db")
 )
-DB_PATH = os.getenv("ARETI_DB_PATH") or str(DEFAULT_DB_PATH)
+DB_PATH = "PostgreSQL database" if USING_POSTGRES else os.getenv("ARETI_DB_PATH") or str(DEFAULT_DB_PATH)
 
 
 def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _postgres_query(query):
+    sql = query.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+    sql = sql.replace("INSERT OR IGNORE INTO", "INSERT INTO")
+
+    if "INSERT OR REPLACE INTO rates" in query:
+        sql = sql.replace("INSERT OR REPLACE INTO", "INSERT INTO")
+        sql = sql.rstrip()
+        sql += """
+        ON CONFLICT(rate_month, rate_type) DO UPDATE SET
+            rate_value = EXCLUDED.rate_value,
+            created_at = EXCLUDED.created_at
+        """
+    elif "INSERT OR IGNORE INTO" in query:
+        sql = sql.rstrip()
+        sql += " ON CONFLICT DO NOTHING"
+
+    return sql.replace("?", "%s")
+
+
+class PostgresCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def execute(self, query, params=None):
+        self._cursor.execute(_postgres_query(query), params)
+        return self
+
+    def executemany(self, query, params=None):
+        self._cursor.executemany(_postgres_query(query), params or [])
+        return self
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    def close(self):
+        self._cursor.close()
+
+
+class PostgresConnection:
+    def __init__(self, connection):
+        self._connection = connection
+
+    def cursor(self):
+        return PostgresCursor(self._connection.cursor())
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        self._connection.close()
+
+
 def get_connection():
+    if USING_POSTGRES:
+        import psycopg2
+
+        return PostgresConnection(psycopg2.connect(DATABASE_URL))
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 def _table_columns(cur, table_name):
+    if USING_POSTGRES:
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = ?
+        """, (table_name,))
+        return {row[0] for row in cur.fetchall()}
     cur.execute(f"PRAGMA table_info({table_name})")
     return {row[1] for row in cur.fetchall()}
 
@@ -777,7 +856,7 @@ def get_import_history():
                si.last_duplicate_at,
                CASE
                    WHEN COALESCE(si.duplicate_attempts, 0) > 0
-                       THEN 'Duplicate blocked (' || COALESCE(si.duplicate_attempts, 0) || ')'
+                       THEN 'Duplicate blocked (' || CAST(COALESCE(si.duplicate_attempts, 0) AS TEXT) || ')'
                    ELSE 'Imported'
                END AS duplicate_status,
                si.statement_hash

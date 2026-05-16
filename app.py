@@ -1460,6 +1460,7 @@ elif page == "Reports":
 elif page == "Setup":
     st.subheader("Setup")
 
+    setup_missing = missing_setup_items()
     missing_shared = [
         label for label, path in SHARED_SETUP_FILES.items()
         if not path.exists()
@@ -1473,7 +1474,7 @@ elif page == "Setup":
             )
             st.cache_data.clear()
             st.rerun()
-    else:
+    elif setup_missing:
         st.warning("Shared setup files missing: " + ", ".join(missing_shared))
 
     c1, c2, c3 = st.columns(3)

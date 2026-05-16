@@ -501,8 +501,14 @@ def render_session_line():
         st.rerun()
 
 
+@st.cache_resource(show_spinner=False)
+def ensure_database_ready():
+    init_db()
+    return True
+
+
+ensure_database_ready()
 require_login()
-init_db()
 
 SHARED_DIR = Path(os.getenv("ARETI_SHARED_FOLDER", r"C:\Users\Student\Dropbox\ARETI FILES ONE DRIVE"))
 SHARED_SETUP_FILES = {

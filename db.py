@@ -98,7 +98,13 @@ def get_connection():
     if USING_POSTGRES:
         import psycopg2
 
-        return PostgresConnection(psycopg2.connect(DATABASE_URL))
+        return PostgresConnection(
+            psycopg2.connect(
+                DATABASE_URL,
+                connect_timeout=10,
+                sslmode=os.getenv("POSTGRES_SSLMODE", "require"),
+            )
+        )
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 

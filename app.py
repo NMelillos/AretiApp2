@@ -381,12 +381,73 @@ def require_login():
 
     st.markdown(
         """
+        <style>
+        .block-container {
+            max-width: 392px !important;
+            padding-top: 4.2rem !important;
+            padding-bottom: 1.5rem !important;
+        }
+        .login-shell {
+            min-height: 0 !important;
+            display: block !important;
+            padding-top: 0 !important;
+        }
+        .login-card {
+            width: 100% !important;
+            background: transparent !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            padding: 0 0 12px !important;
+        }
+        .login-brand {
+            gap: 7px !important;
+            margin-bottom: 16px !important;
+        }
+        .login-brand .app-brand-mark {
+            width: 34px !important;
+            height: 34px !important;
+            border-radius: 7px !important;
+            font-size: 11px !important;
+        }
+        .login-title {
+            font-size: 20px !important;
+            line-height: 1.15 !important;
+            font-weight: 740 !important;
+        }
+        .login-subtitle {
+            font-size: 12px !important;
+            margin-top: 5px !important;
+        }
+        div[data-testid="stForm"] {
+            background: #ffffff !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 6px !important;
+            box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06) !important;
+            padding: 18px 16px 16px !important;
+        }
+        div[data-testid="stForm"] [data-testid="stVerticalBlock"] {
+            gap: 0.55rem !important;
+        }
+        div[data-testid="stTextInput"] label {
+            color: var(--text-main) !important;
+            font-size: 13px !important;
+        }
+        div[data-testid="stTextInput"] input {
+            min-height: 38px !important;
+            border-radius: 4px !important;
+        }
+        div[data-testid="stFormSubmitButton"] button {
+            min-height: 38px !important;
+            border-radius: 4px !important;
+        }
+        </style>
         <div class="login-shell">
           <div class="login-card">
             <div class="login-brand">
               <div class="app-brand-mark">SM</div>
               <div>
-                <h1 class="login-title">Statement Management</h1>
+                <div class="login-title">Statement Management</div>
                 <div class="login-subtitle">Secure access</div>
               </div>
             </div>

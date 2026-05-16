@@ -433,6 +433,17 @@ def require_login():
             color: var(--text-main) !important;
             font-size: 13px !important;
         }
+        div[data-testid="stTextInput"] div[data-baseweb="input"] {
+            min-height: 38px !important;
+            background: #ffffff !important;
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 4px !important;
+            box-shadow: none !important;
+        }
+        div[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
+            border-color: var(--accent) !important;
+            box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.14) !important;
+        }
         div[data-testid="stTextInput"] input {
             min-height: 38px !important;
             border-radius: 4px !important;

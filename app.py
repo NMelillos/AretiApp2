@@ -52,6 +52,74 @@ from utils import format_currency
 
 st.set_page_config(page_title="Statement Management", layout="wide")
 
+_DB_CACHE_TTL_SECONDS = 90
+_db_get_accounts = get_accounts
+_db_get_all_transactions = get_all_transactions
+_db_get_categories = get_categories
+_db_get_dashboard_counts = get_dashboard_counts
+_db_get_import_history = get_import_history
+_db_get_memory = get_memory
+_db_get_pending_transactions = get_pending_transactions
+_db_get_rates = get_rates
+_db_get_saved_transactions = get_saved_transactions
+_db_get_statement_balances = get_statement_balances
+_db_get_subcategories = get_subcategories
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_accounts():
+    return _db_get_accounts()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_all_transactions():
+    return _db_get_all_transactions()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_categories(include_subcategories=False):
+    return _db_get_categories(include_subcategories=include_subcategories)
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_dashboard_counts():
+    return _db_get_dashboard_counts()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_import_history():
+    return _db_get_import_history()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_memory():
+    return _db_get_memory()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_pending_transactions():
+    return _db_get_pending_transactions()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_rates():
+    return _db_get_rates()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_saved_transactions():
+    return _db_get_saved_transactions()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_statement_balances():
+    return _db_get_statement_balances()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_subcategories(category=None):
+    return _db_get_subcategories(category=category)
+
 st.markdown(
     """
     <style>
@@ -771,6 +839,7 @@ def render_manual_transaction_form(categories, subcategories):
             )
             if inserted:
                 st.success("Manual transaction saved.")
+                st.cache_data.clear()
                 st.rerun()
             else:
                 st.warning("This manual transaction already exists.")
@@ -1152,6 +1221,7 @@ elif page == "Pending Review":
             saved = save_reviewed_rows(edited_pending)
             if saved:
                 st.success(f"Saved {saved} reviewed transactions.")
+                st.cache_data.clear()
                 st.rerun()
             else:
                 st.warning("No rows were ticked as reviewed.")
@@ -1215,6 +1285,7 @@ elif page == "Database":
         if st.button("Apply database edits", type="primary"):
             count = update_database_rows(db_edit)
             st.success(f"Updated {count} rows.")
+            st.cache_data.clear()
             st.rerun()
 
         st.download_button(
@@ -1302,6 +1373,7 @@ elif page == "Balances":
         if st.button("Apply balance edits", type="primary"):
             count = update_statement_balance_rows(balance_edit)
             st.success(f"Updated {count} balance rows.")
+            st.cache_data.clear()
             st.rerun()
 
         st.download_button(
@@ -1399,6 +1471,7 @@ elif page == "Setup":
                 f"Loaded {category_count} category rows, "
                 f"{account_count} accounts, and {rate_count} monthly rates."
             )
+            st.cache_data.clear()
             st.rerun()
     else:
         st.warning("Shared setup files missing: " + ", ".join(missing_shared))
@@ -1409,6 +1482,7 @@ elif page == "Setup":
         if category_file and st.button("Replace categories", type="primary"):
             count = replace_categories_from_excel(category_file)
             st.success(f"Loaded {count} category rows.")
+            st.cache_data.clear()
             st.rerun()
 
     with c2:
@@ -1416,6 +1490,7 @@ elif page == "Setup":
         if account_file and st.button("Replace accounts", type="primary"):
             count = replace_accounts_from_excel(account_file)
             st.success(f"Loaded {count} account rows.")
+            st.cache_data.clear()
             st.rerun()
 
     with c3:
@@ -1423,6 +1498,7 @@ elif page == "Setup":
         if rates_file and st.button("Replace rates", type="primary"):
             count = replace_rates_from_excel(rates_file)
             st.success(f"Loaded {count} monthly rates.")
+            st.cache_data.clear()
             st.rerun()
 
     st.markdown("### Current Setup")
@@ -1434,6 +1510,7 @@ elif page == "Setup":
         new_subcategory = st.text_input("Add subcategory")
         if st.button("Add category row"):
             add_category(new_category, new_subcategory)
+            st.cache_data.clear()
             st.rerun()
     with setup_middle:
         st.markdown("Accounts")
@@ -1452,6 +1529,7 @@ elif page == "Setup":
         ):
             reset_runtime_data()
             st.success("Transactions and memory cleared.")
+            st.cache_data.clear()
             st.rerun()
     with m2:
         reset_confirm = st.text_input("Type RESET to delete all setup and transaction data")
@@ -1461,6 +1539,7 @@ elif page == "Setup":
         ):
             full_reset_database()
             st.success("Database reset completed.")
+            st.cache_data.clear()
             st.rerun()
 
     st.download_button(

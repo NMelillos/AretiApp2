@@ -22,6 +22,7 @@ DEFAULT_DB_PATH = (
     else Path(__file__).with_name("transactions.db")
 )
 DB_PATH = "PostgreSQL database" if USING_POSTGRES else os.getenv("ARETI_DB_PATH") or str(DEFAULT_DB_PATH)
+_POSTGRES_POOL = None
 
 
 def _now():
@@ -78,8 +79,9 @@ class PostgresCursor:
 
 
 class PostgresConnection:
-    def __init__(self, connection):
+    def __init__(self, connection, pool=None):
         self._connection = connection
+        self._pool = pool
 
     def cursor(self):
         return PostgresCursor(self._connection.cursor())
@@ -91,20 +93,47 @@ class PostgresConnection:
         self._connection.rollback()
 
     def close(self):
+        if self._pool is not None:
+            try:
+                if not self._connection.closed:
+                    self._connection.rollback()
+                self._pool.putconn(self._connection, close=bool(self._connection.closed))
+            except Exception:
+                try:
+                    self._pool.putconn(self._connection, close=True)
+                except Exception:
+                    try:
+                        self._connection.close()
+                    except Exception:
+                        pass
+            return
         self._connection.close()
+
+
+def _get_postgres_pool():
+    global _POSTGRES_POOL
+    if _POSTGRES_POOL is None:
+        import psycopg2.pool
+
+        pool_size = max(1, int(os.getenv("POSTGRES_POOL_SIZE", "4")))
+        _POSTGRES_POOL = psycopg2.pool.SimpleConnectionPool(
+            1,
+            pool_size,
+            DATABASE_URL,
+            connect_timeout=10,
+            sslmode=os.getenv("POSTGRES_SSLMODE", "require"),
+        )
+    return _POSTGRES_POOL
 
 
 def get_connection():
     if USING_POSTGRES:
-        import psycopg2
-
-        return PostgresConnection(
-            psycopg2.connect(
-                DATABASE_URL,
-                connect_timeout=10,
-                sslmode=os.getenv("POSTGRES_SSLMODE", "require"),
-            )
-        )
+        pool = _get_postgres_pool()
+        connection = pool.getconn()
+        if connection.closed:
+            pool.putconn(connection, close=True)
+            connection = pool.getconn()
+        return PostgresConnection(connection, pool)
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 

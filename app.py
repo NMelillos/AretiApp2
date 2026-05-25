@@ -15,6 +15,7 @@ st.set_page_config(page_title="Statement Management", layout="wide")
 
 EARLY_LOGIN_SALT = "aretiapp-login-v1"
 EARLY_LOGIN_PASSWORD_HASH = "99cd9990ece838f798db50d75308cc7f75c4309be343063329772bc8998aad16"
+LOGIN_BUILD_MARKER = "login-form-20260525"
 
 
 def _early_hash_password(password, salt):
@@ -148,6 +149,7 @@ def early_login_gate():
         }
         </style>
         <div class="fast-login-brand">
+            <span data-login-build="login-form-20260525" style="display:none"></span>
             <div class="fast-login-mark">SM</div>
             <div>
                 <div class="fast-login-title">Statement Management</div>
@@ -738,6 +740,7 @@ def require_login():
         }
         </style>
         <div class="login-brand">
+            <span data-login-build="login-form-20260525" style="display:none"></span>
             <div class="app-brand-mark">SM</div>
             <div>
                 <div class="login-title">Statement Management</div>

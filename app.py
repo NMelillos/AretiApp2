@@ -524,16 +524,6 @@ def require_login():
             font-size: 12px !important;
             margin-top: 5px !important;
         }
-        div[data-testid="stVerticalBlockBorderWrapper"] {
-            background: #ffffff !important;
-            border: 1px solid var(--border) !important;
-            border-radius: 6px !important;
-            box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06) !important;
-            padding: 18px 16px 16px !important;
-        }
-        div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] {
-            gap: 0.55rem !important;
-        }
         div[data-testid="stTextInput"] label {
             color: var(--text-main) !important;
             font-size: 13px !important;
@@ -568,10 +558,9 @@ def require_login():
         """,
         unsafe_allow_html=True,
     )
-    with st.container(border=True, key="login_panel"):
-        username = st.text_input("Username", key="login_username")
-        password = st.text_input("Password", type="password", key="login_password")
-        submitted = st.button("Sign in", type="primary", use_container_width=True, key="login_submit")
+    username = st.text_input("Username", key="login_username")
+    password = st.text_input("Password", type="password", key="login_password")
+    submitted = st.button("Sign in", type="primary", use_container_width=True, key="login_submit")
 
     if submitted:
         if _login_is_valid(username, password):

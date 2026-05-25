@@ -1,6 +1,4 @@
 from datetime import datetime
-import hashlib
-import hmac
 from html import escape
 from io import BytesIO
 import os
@@ -10,175 +8,11 @@ import zipfile
 
 import streamlit as st
 
+from auth import get_login_user, require_login, sign_out
+
 st.set_page_config(page_title="Statement Management", layout="wide")
 
-
-EARLY_LOGIN_SALT = "aretiapp-login-v1"
-EARLY_LOGIN_PASSWORD_HASH = "99cd9990ece838f798db50d75308cc7f75c4309be343063329772bc8998aad16"
-LOGIN_BUILD_MARKER = "login-form-20260525"
-
-
-def _early_hash_password(password, salt):
-    return hashlib.pbkdf2_hmac(
-        "sha256",
-        str(password).encode("utf-8"),
-        str(salt).encode("utf-8"),
-        120000,
-    ).hex()
-
-
-def _early_password_candidates(password):
-    raw = str(password)
-    trimmed = raw.strip()
-    return [raw] if raw == trimmed else [raw, trimmed]
-
-
-def _early_login_is_valid(username, password):
-    expected_username = os.getenv("LOGIN_USERNAME", "Areti")
-    configured_password = os.getenv("LOGIN_PASSWORD", "")
-    configured_hash = os.getenv("LOGIN_PASSWORD_HASH", EARLY_LOGIN_PASSWORD_HASH)
-    salt = os.getenv("LOGIN_PASSWORD_SALT", EARLY_LOGIN_SALT)
-
-    username_value = str(username).strip().casefold()
-    username_ok = any(
-        hmac.compare_digest(username_value, candidate.strip().casefold())
-        for candidate in [expected_username, "Areti"]
-    )
-    password_candidates = _early_password_candidates(password)
-    if configured_password:
-        password_ok = any(
-            hmac.compare_digest(candidate, configured_password)
-            or hmac.compare_digest(candidate, configured_password.strip())
-            for candidate in password_candidates
-        )
-    else:
-        password_ok = any(
-            hmac.compare_digest(_early_hash_password(candidate, salt), configured_hash)
-            for candidate in password_candidates
-        )
-    default_password_ok = any(
-        hmac.compare_digest(_early_hash_password(candidate, EARLY_LOGIN_SALT), EARLY_LOGIN_PASSWORD_HASH)
-        for candidate in password_candidates
-    )
-    return username_ok and (password_ok or default_password_ok)
-
-
-def early_login_gate():
-    if st.session_state.get("authenticated"):
-        return
-
-    st.markdown(
-        """
-        <style>
-        .stApp { background: #edf2f7; color: #172033; }
-        #MainMenu, footer, header, .stDeployButton,
-        [data-testid="stToolbar"], [data-testid="stDecoration"],
-        [data-testid="stStatusWidget"], [data-testid="manage-app-button"] {
-            display: none !important;
-            visibility: hidden !important;
-            height: 0 !important;
-        }
-        .block-container {
-            max-width: 392px !important;
-            padding-top: 4.2rem !important;
-            padding-bottom: 1.5rem !important;
-        }
-        .fast-login-brand {
-            display: grid;
-            justify-items: center;
-            gap: 7px;
-            margin-bottom: 16px;
-            text-align: center;
-        }
-        .fast-login-mark {
-            width: 34px;
-            height: 34px;
-            border-radius: 7px;
-            display: grid;
-            place-items: center;
-            background: #111c3d;
-            color: #ffffff;
-            font-size: 11px;
-            font-weight: 800;
-            letter-spacing: 0;
-        }
-        .fast-login-title {
-            color: #172033;
-            font-size: 20px;
-            line-height: 1.15;
-            font-weight: 740;
-        }
-        .fast-login-subtitle,
-        .fast-login-note {
-            color: #64748b;
-            font-size: 12px;
-        }
-        .fast-login-note {
-            margin-top: 10px;
-            line-height: 1.45;
-            text-align: center;
-        }
-        div[data-testid="stTextInput"] label {
-            color: #172033 !important;
-            font-size: 13px !important;
-        }
-        div[data-testid="stTextInput"] div[data-baseweb="input"] {
-            min-height: 38px !important;
-            background: #ffffff !important;
-            border: 1px solid #cbd5e1 !important;
-            border-radius: 4px !important;
-            box-shadow: none !important;
-        }
-        div[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
-            border-color: #0f766e !important;
-            box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.14) !important;
-        }
-        div[data-testid="stTextInput"] input,
-        div[data-testid="stButton"] button {
-            min-height: 38px !important;
-            border-radius: 4px !important;
-        }
-        div[data-testid="stButton"] button[kind="primary"] {
-            background: #0f766e !important;
-            border-color: #0f766e !important;
-        }
-        div[data-testid="stForm"] {
-            border: 0 !important;
-            padding: 0 !important;
-            background: transparent !important;
-        }
-        </style>
-        <div class="fast-login-brand">
-            <span data-login-build="login-form-20260525" style="display:none"></span>
-            <div class="fast-login-mark">SM</div>
-            <div>
-                <div class="fast-login-title">Statement Management</div>
-                <div class="fast-login-subtitle">Secure access</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("Username", key="login_username")
-        password = st.text_input("Password", type="password", key="login_password")
-        sign_in_clicked = st.form_submit_button("Sign in", type="primary", use_container_width=True)
-    if sign_in_clicked:
-        if _early_login_is_valid(username, password):
-            st.session_state["authenticated"] = True
-            st.session_state["login_user"] = str(username).strip() or "Areti"
-            st.session_state.pop("login_error", None)
-        else:
-            st.session_state["login_error"] = "Invalid username or password."
-    if st.session_state.get("authenticated"):
-        st.rerun()
-    if st.session_state.get("login_error"):
-        st.error(st.session_state["login_error"])
-    st.markdown('<div class="fast-login-note">Authorized users only.</div>', unsafe_allow_html=True)
-    st.stop()
-
-
-early_login_gate()
+require_login()
 
 # Keep heavy data/reporting imports after the login gate so the first screen appears quickly.
 import pandas as pd
@@ -623,167 +457,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-DEFAULT_LOGIN_SALT = "aretiapp-login-v1"
-DEFAULT_LOGIN_PASSWORD_HASH = "99cd9990ece838f798db50d75308cc7f75c4309be343063329772bc8998aad16"
-
-
-def _hash_password(password, salt):
-    return hashlib.pbkdf2_hmac(
-        "sha256",
-        str(password).encode("utf-8"),
-        str(salt).encode("utf-8"),
-        120000,
-    ).hex()
-
-
-def _login_is_valid(username, password):
-    expected_username = os.getenv("LOGIN_USERNAME", "Areti")
-    configured_password = os.getenv("LOGIN_PASSWORD", "")
-    configured_hash = os.getenv("LOGIN_PASSWORD_HASH", DEFAULT_LOGIN_PASSWORD_HASH)
-    salt = os.getenv("LOGIN_PASSWORD_SALT", DEFAULT_LOGIN_SALT)
-
-    username_value = str(username).strip().casefold()
-    username_ok = any(
-        hmac.compare_digest(username_value, candidate.strip().casefold())
-        for candidate in [expected_username, "Areti"]
-    )
-    password_candidates = _early_password_candidates(password)
-    if configured_password:
-        password_ok = any(
-            hmac.compare_digest(candidate, configured_password)
-            or hmac.compare_digest(candidate, configured_password.strip())
-            for candidate in password_candidates
-        )
-    else:
-        password_ok = any(
-            hmac.compare_digest(_hash_password(candidate, salt), configured_hash)
-            for candidate in password_candidates
-        )
-    default_password_ok = any(
-        hmac.compare_digest(_hash_password(candidate, DEFAULT_LOGIN_SALT), DEFAULT_LOGIN_PASSWORD_HASH)
-        for candidate in password_candidates
-    )
-    return username_ok and (password_ok or default_password_ok)
-
-
-def require_login():
-    if st.session_state.get("authenticated"):
-        return
-
-    st.markdown(
-        """
-        <style>
-        .block-container {
-            max-width: 392px !important;
-            padding-top: 4.2rem !important;
-            padding-bottom: 1.5rem !important;
-        }
-        .login-shell {
-            min-height: 0 !important;
-            display: block !important;
-            padding-top: 0 !important;
-        }
-        .login-card {
-            width: 100% !important;
-            background: transparent !important;
-            border: 0 !important;
-            border-radius: 0 !important;
-            box-shadow: none !important;
-            padding: 0 0 12px !important;
-        }
-        .login-brand {
-            gap: 7px !important;
-            margin-bottom: 16px !important;
-        }
-        .login-brand .app-brand-mark {
-            width: 34px !important;
-            height: 34px !important;
-            border-radius: 7px !important;
-            font-size: 11px !important;
-        }
-        .login-title {
-            font-size: 20px !important;
-            line-height: 1.15 !important;
-            font-weight: 740 !important;
-        }
-        .login-subtitle {
-            font-size: 12px !important;
-            margin-top: 5px !important;
-        }
-        div[data-testid="stTextInput"] label {
-            color: var(--text-main) !important;
-            font-size: 13px !important;
-        }
-        div[data-testid="stTextInput"] div[data-baseweb="input"] {
-            min-height: 38px !important;
-            background: #ffffff !important;
-            border: 1px solid #cbd5e1 !important;
-            border-radius: 4px !important;
-            box-shadow: none !important;
-        }
-        div[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
-            border-color: var(--accent) !important;
-            box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.14) !important;
-        }
-        div[data-testid="stTextInput"] input {
-            min-height: 38px !important;
-            border-radius: 4px !important;
-        }
-        div[data-testid="stButton"] button {
-            min-height: 38px !important;
-            border-radius: 4px !important;
-        }
-        div[data-testid="stForm"] {
-            border: 0 !important;
-            padding: 0 !important;
-            background: transparent !important;
-        }
-        </style>
-        <div class="login-brand">
-            <span data-login-build="login-form-20260525" style="display:none"></span>
-            <div class="app-brand-mark">SM</div>
-            <div>
-                <div class="login-title">Statement Management</div>
-                <div class="login-subtitle">Secure access</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("Username", key="login_username")
-        password = st.text_input("Password", type="password", key="login_password")
-        sign_in_clicked = st.form_submit_button("Sign in", type="primary", use_container_width=True)
-    if sign_in_clicked:
-        if _login_is_valid(username, password):
-            st.session_state["authenticated"] = True
-            st.session_state["login_user"] = str(username).strip() or "Areti"
-            st.session_state.pop("login_error", None)
-        else:
-            st.session_state["login_error"] = "Invalid username or password."
-    if st.session_state.get("authenticated"):
-        st.rerun()
-    if st.session_state.get("login_error"):
-        st.error(st.session_state["login_error"])
-
-    st.markdown(
-        """
-        <div class="login-note">Authorized users only.</div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.stop()
-
-
 def render_session_line():
     left, right = st.columns([8, 1])
     left.markdown(
-        f"<div class=\"session-line\">Signed in as {st.session_state.get('login_user', 'Areti')}</div>",
+        f"<div class=\"session-line\">Signed in as {get_login_user()}</div>",
         unsafe_allow_html=True,
     )
     if right.button("Sign out"):
-        st.session_state.pop("authenticated", None)
-        st.session_state.pop("login_user", None)
+        sign_out()
         st.rerun()
 
 
@@ -792,8 +473,6 @@ def ensure_database_ready():
     init_db()
     return True
 
-
-require_login()
 try:
     ensure_database_ready()
 except Exception as exc:

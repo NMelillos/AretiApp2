@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import sqlite3
 from datetime import datetime
 from io import BytesIO
@@ -164,6 +165,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category TEXT NOT NULL,
             subcategory TEXT DEFAULT '',
+            report_group TEXT DEFAULT '',
             created_at TEXT,
             UNIQUE(category, subcategory)
         )
@@ -308,6 +310,8 @@ def init_db():
     }.items():
         _ensure_column(cur, "transaction_memory", column_name, definition)
 
+    _ensure_column(cur, "category_list", "report_group", "TEXT DEFAULT ''")
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS report_delivery_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -385,6 +389,12 @@ def replace_categories_from_excel(uploaded_file):
     columns = {_norm_col(c): c for c in df.columns}
     category_col = columns.get("category") or df.columns[0]
     subcategory_col = columns.get("subcategory") or columns.get("sub category")
+    report_group_col = (
+        columns.get("categorisation for reporting")
+        or columns.get("categorization for reporting")
+        or columns.get("reporting category")
+        or columns.get("report group")
+    )
 
     rows = []
     for _, row in df.iterrows():
@@ -392,13 +402,18 @@ def replace_categories_from_excel(uploaded_file):
         if not category:
             continue
         subcategory = _clean(row.get(subcategory_col)) if subcategory_col else ""
-        rows.append((category, subcategory, _now()))
+        report_group = _clean(row.get(report_group_col)) if report_group_col else ""
+        rows.append((category, subcategory, report_group, _now()))
 
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM category_list")
     cur.executemany(
-        "INSERT OR IGNORE INTO category_list (category, subcategory, created_at) VALUES (?, ?, ?)",
+        """
+        INSERT OR IGNORE INTO category_list
+        (category, subcategory, report_group, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
         rows,
     )
     conn.commit()
@@ -509,7 +524,9 @@ def get_categories(include_subcategories=False):
     conn = get_connection()
     if include_subcategories:
         df = pd.read_sql_query("""
-            SELECT category, COALESCE(subcategory, '') AS subcategory
+            SELECT category,
+                   COALESCE(subcategory, '') AS subcategory,
+                   COALESCE(report_group, '') AS report_group
             FROM category_list
             ORDER BY category, subcategory
         """, conn)
@@ -610,10 +627,8 @@ def get_latest_rate(rate_type, txn_date=None):
     return float(df["rate_value"].iloc[0])
 
 
-def remember_transaction(original_description, normalized_description, beneficiary, transaction_type, category, subcategory=""):
+def _remember_transaction_with_cursor(cur, original_description, normalized_description, beneficiary, transaction_type, category, subcategory=""):
     now = _now()
-    conn = get_connection()
-    cur = conn.cursor()
     cur.execute("""
         SELECT id, times_seen
         FROM transaction_memory
@@ -644,6 +659,20 @@ def remember_transaction(original_description, normalized_description, beneficia
             now,
             now,
         ))
+
+
+def remember_transaction(original_description, normalized_description, beneficiary, transaction_type, category, subcategory=""):
+    conn = get_connection()
+    cur = conn.cursor()
+    _remember_transaction_with_cursor(
+        cur,
+        original_description,
+        normalized_description,
+        beneficiary,
+        transaction_type,
+        category,
+        subcategory,
+    )
     conn.commit()
     conn.close()
 
@@ -658,6 +687,93 @@ def get_memory():
     """, conn)
     conn.close()
     return df
+
+
+def import_memory_from_excel(uploaded_file):
+    df = _read_excel(uploaded_file)
+    columns = {_norm_col(c): c for c in df.columns}
+    normalized_col = columns.get("normalized description") or columns.get("normalized_description")
+    original_col = columns.get("original description") or columns.get("original_description")
+    beneficiary_col = columns.get("beneficiary")
+    transaction_type_col = columns.get("transaction type") or columns.get("transaction_type")
+    category_col = columns.get("category")
+    subcategory_col = columns.get("subcategory") or columns.get("sub category")
+    first_seen_col = columns.get("first seen") or columns.get("first_seen")
+    last_seen_col = columns.get("last seen") or columns.get("last_seen")
+    times_seen_col = columns.get("times seen") or columns.get("times_seen")
+
+    if not category_col:
+        raise ValueError("The memory file must contain a category column.")
+    if not normalized_col and not original_col:
+        raise ValueError("The memory file must contain original_description or normalized_description.")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    imported = 0
+    now = _now()
+
+    for _, row in df.iterrows():
+        original = _clean(row.get(original_col)) if original_col else ""
+        normalized = _clean(row.get(normalized_col)) if normalized_col else ""
+        if not normalized and original:
+            normalized = simplify_merchant(normalize_description(original))
+        category = _clean(row.get(category_col))
+        if not normalized or not category:
+            continue
+        subcategory = _clean(row.get(subcategory_col)) if subcategory_col else ""
+        beneficiary = _clean(row.get(beneficiary_col)) if beneficiary_col else extract_beneficiary(original)
+        transaction_type = _clean(row.get(transaction_type_col)) if transaction_type_col else infer_transaction_type(original, 0)
+        first_seen = _clean(row.get(first_seen_col)) if first_seen_col else now
+        last_seen = _clean(row.get(last_seen_col)) if last_seen_col else now
+        raw_times_seen = pd.to_numeric(row.get(times_seen_col), errors="coerce") if times_seen_col else None
+        times_seen = int(raw_times_seen) if raw_times_seen is not None and not pd.isna(raw_times_seen) else 1
+
+        cur.execute("""
+            SELECT id, times_seen
+            FROM transaction_memory
+            WHERE normalized_description = ? AND category = ? AND COALESCE(subcategory, '') = ?
+        """, (normalized, category, subcategory))
+        existing = cur.fetchone()
+        if existing:
+            memory_id, existing_times = existing
+            cur.execute("""
+                UPDATE transaction_memory
+                SET original_description = ?, beneficiary = ?, transaction_type = ?,
+                    first_seen = COALESCE(NULLIF(first_seen, ''), ?),
+                    last_seen = ?,
+                    times_seen = ?
+                WHERE id = ?
+            """, (
+                original,
+                beneficiary,
+                transaction_type,
+                first_seen,
+                last_seen,
+                max(int(existing_times or 0), times_seen),
+                memory_id,
+            ))
+        else:
+            cur.execute("""
+                INSERT INTO transaction_memory
+                (original_description, normalized_description, beneficiary, transaction_type,
+                 category, subcategory, first_seen, last_seen, times_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                original,
+                normalized,
+                beneficiary,
+                transaction_type,
+                category,
+                subcategory,
+                first_seen,
+                last_seen,
+                times_seen,
+            ))
+        imported += 1
+
+    conn.commit()
+    conn.close()
+    return imported
 
 
 def statement_already_imported(statement_hash):
@@ -945,56 +1061,136 @@ def update_statement_balance_rows(df):
     return updated
 
 
+def _digits(value):
+    text = str(value or "").strip()
+    if re.fullmatch(r"-?\d+\.0+", text):
+        text = text.split(".", 1)[0]
+    return re.sub(r"\D", "", text)
+
+
+def _amex_member_label(value):
+    return re.sub(r"\s+", " ", _clean(value)).strip()
+
+
+def _dynamic_amex_account(row, default_account, accounts):
+    card_member = _amex_member_label(row.get("card_member", ""))
+    suffix_digits = _digits(row.get("source_account_number", ""))
+    if not card_member and not suffix_digits:
+        return default_account
+
+    candidates = accounts.copy()
+    if not candidates.empty and "bank" in candidates.columns:
+        candidates = candidates[candidates["bank"].fillna("").astype(str).str.contains("AMEX", case=False, na=False)]
+
+    if not candidates.empty and suffix_digits:
+        for _, account_row in candidates.iterrows():
+            account_digits = _digits(account_row.get("account_number", ""))
+            if account_digits and account_digits.endswith(suffix_digits):
+                return account_row.to_dict()
+
+    dynamic_rows = pd.DataFrame()
+    if not candidates.empty:
+        dynamic_rows = candidates[
+            candidates["account_number"].fillna("").astype(str).str.contains("append", case=False, na=False)
+        ]
+    source_account = (
+        dynamic_rows.iloc[0].to_dict()
+        if not dynamic_rows.empty
+        else default_account
+    )
+    if not card_member:
+        return source_account
+
+    out = dict(source_account)
+    base_number = re.sub(r"\s*\[.*?\]\s*", "", _clean(out.get("account_number", ""))).strip()
+    out["account_number"] = f"{base_number} {card_member}".strip()
+    return out
+
+
+def _load_rate_lookup():
+    conn = get_connection()
+    rates = pd.read_sql_query("""
+        SELECT rate_month, rate_type, rate_value
+        FROM rates
+        ORDER BY rate_type, rate_month DESC
+    """, conn)
+    conn.close()
+    if rates.empty:
+        return {}
+    rates["rate_type"] = rates["rate_type"].fillna("").astype(str).str.upper()
+    rates["rate_month"] = pd.to_datetime(rates["rate_month"], errors="coerce")
+    return {
+        rate_type: frame.sort_values("rate_month", ascending=False).reset_index(drop=True)
+        for rate_type, frame in rates.groupby("rate_type")
+        if rate_type
+    }
+
+
+def _lookup_rate(rate_lookup, rate_type, txn_date=None):
+    rate_type = _clean(rate_type).upper()
+    if not rate_type:
+        return None
+    if rate_type == "USD/USD":
+        return 1.0
+    frame = rate_lookup.get(rate_type)
+    if frame is None or frame.empty:
+        return None
+    month = pd.to_datetime(txn_date, errors="coerce")
+    if pd.isna(month):
+        return float(frame["rate_value"].iloc[0])
+    month = month.to_period("M").to_timestamp()
+    candidates = frame[frame["rate_month"] <= month]
+    if candidates.empty:
+        return float(frame["rate_value"].iloc[-1])
+    return float(candidates["rate_value"].iloc[0])
+
+
+def _rate_type_from_account(account):
+    rate_type = _clean(account.get("rate_type", "")).upper()
+    if rate_type:
+        return rate_type
+    currency = _clean(account.get("currency", "")).upper()
+    return f"{currency}/USD" if currency else ""
+
+
 def apply_account_and_rates(df, account):
     out = df.copy()
     account = account or {}
-    out["account_name"] = account.get("account_name", "")
-    out["bank"] = account.get("bank", "")
-    out["account_number"] = account.get("account_number", "")
-    out["currency"] = account.get("currency", "")
-    out["rate_type"] = account.get("rate_type", "")
 
-    rate_type = _clean(account.get("rate_type", "")).upper()
-    rate_lookup = []
-    if rate_type:
-        conn = get_connection()
-        rate_lookup = pd.read_sql_query("""
-            SELECT rate_month, rate_value
-            FROM rates
-            WHERE rate_type = ?
-            ORDER BY rate_month DESC
-        """, conn, params=(rate_type,))
-        conn.close()
-        if not rate_lookup.empty:
-            rate_lookup["rate_month"] = pd.to_datetime(rate_lookup["rate_month"], errors="coerce")
-
-    def lookup_rate(txn_date):
-        if not rate_type:
-            return None
-        if rate_type == "USD/USD":
-            return 1.0
-        if rate_lookup.empty:
-            return None
-        month = pd.to_datetime(txn_date, errors="coerce")
-        if pd.isna(month):
-            return float(rate_lookup["rate_value"].iloc[0])
-        month = month.to_period("M").to_timestamp()
-        candidates = rate_lookup[rate_lookup["rate_month"] <= month]
-        if candidates.empty:
-            return float(rate_lookup["rate_value"].iloc[-1])
-        return float(candidates["rate_value"].iloc[0])
-
+    rate_lookup = _load_rate_lookup()
+    accounts = get_accounts()
+    account_names = []
+    banks = []
+    account_numbers = []
+    currencies = []
+    rate_types = []
     fx_rates = []
     usd_values = []
+
     for _, row in out.iterrows():
-        rate = lookup_rate(row.get("Date"))
+        row_account = _dynamic_amex_account(row, account, accounts)
+        rate_type = _rate_type_from_account(row_account)
+        rate = _lookup_rate(rate_lookup, rate_type, row.get("Date"))
         amount = float(row.get("Amount", 0) or 0)
+
+        account_names.append(row_account.get("account_name", ""))
+        banks.append(row_account.get("bank", ""))
+        account_numbers.append(row_account.get("account_number", ""))
+        currencies.append(row_account.get("currency", ""))
+        rate_types.append(rate_type)
+
         if rate is None or rate == 0:
             fx_rates.append(None)
             usd_values.append(None)
         else:
             fx_rates.append(rate)
             usd_values.append(round(amount / rate, 2))
+
+    out["account_name"] = account_names
+    out["bank"] = banks
+    out["account_number"] = account_numbers
+    out["currency"] = currencies
+    out["rate_type"] = rate_types
     out["fx_rate"] = fx_rates
     out["amount_usd"] = usd_values
     return out
@@ -1143,7 +1339,6 @@ def save_reviewed_rows(df):
     cur = conn.cursor()
     now = _now()
     saved = 0
-    memory_rows = []
 
     for _, row in df.iterrows():
         reviewed = bool(row.get("reviewed", False))
@@ -1168,19 +1363,18 @@ def save_reviewed_rows(df):
         if not stored:
             continue
 
-        memory_rows.append((
+        _remember_transaction_with_cursor(
+            cur,
             stored[0] or "",
             stored[1] or "",
             stored[2] or "",
             stored[3] or "",
             category,
             subcategory,
-        ))
+        )
 
     conn.commit()
     conn.close()
-    for memory_row in memory_rows:
-        remember_transaction(*memory_row)
     return saved
 
 
@@ -1190,7 +1384,6 @@ def update_database_rows(df):
     conn = get_connection()
     cur = conn.cursor()
     updated = 0
-    memory_rows = []
     for _, row in df.iterrows():
         reviewed = int(bool(row.get("reviewed", False)))
         status = _clean(row.get("status")) or ("reviewed" if reviewed else "pending")
@@ -1216,18 +1409,17 @@ def update_database_rows(df):
             """, (int(row["id"]),))
             stored = cur.fetchone()
             if stored and category:
-                memory_rows.append((
+                _remember_transaction_with_cursor(
+                    cur,
                     stored[0] or "",
                     stored[1] or "",
                     stored[2] or "",
                     stored[3] or "",
                     category,
                     subcategory,
-                ))
+                )
     conn.commit()
     conn.close()
-    for memory_row in memory_rows:
-        remember_transaction(*memory_row)
     return updated
 
 

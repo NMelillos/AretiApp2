@@ -1,10 +1,12 @@
 from datetime import datetime
 import hashlib
 import hmac
+from html import escape
 from io import BytesIO
 import os
 from pathlib import Path
 import re
+import zipfile
 
 import pandas as pd
 import streamlit as st
@@ -30,6 +32,7 @@ from db import (
     get_statement_account,
     get_statement_balances,
     get_subcategories,
+    import_memory_from_excel,
     init_db,
     insert_manual_transaction,
     replace_accounts_from_excel,
@@ -46,7 +49,7 @@ from db import (
     update_statement_balance_rows,
 )
 from parsing import extract_statement_balance, parse_csv, parse_excel, parse_pdf
-from reporting import build_sample_expenses_report
+from reporting import build_pdf_report, build_sample_expenses_report, get_report_groups, safe_filename
 from utils import format_currency
 
 
@@ -327,10 +330,44 @@ st.markdown(
         border-radius: 6px;
         overflow: hidden;
     }
+    div[data-testid="stDataEditor"] [role="gridcell"] {
+        white-space: normal !important;
+        line-height: 1.35 !important;
+    }
     .section-divider {
         height: 1px;
         background: var(--border);
         margin: 0.75rem 0 1rem;
+    }
+    .import-progress {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: #fff1f2;
+        border: 1px solid #fecdd3;
+        border-left: 4px solid #dc2626;
+        color: #991b1b;
+        border-radius: 8px;
+        padding: 14px 16px;
+        margin: 10px 0;
+        font-weight: 800;
+    }
+    .import-runner {
+        display: inline-grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 999px;
+        background: #dc2626;
+        color: #ffffff;
+        font-size: 26px;
+        line-height: 1;
+        animation: runnerPulse 0.8s ease-in-out infinite alternate;
+        box-shadow: 0 6px 14px rgba(220, 38, 38, 0.28);
+    }
+    @keyframes runnerPulse {
+        from { transform: translateX(0); opacity: 0.72; }
+        to { transform: translateX(8px); opacity: 1; }
     }
     [data-testid="stFileUploader"] {
         background: var(--panel);
@@ -579,10 +616,29 @@ ensure_database_ready()
 require_login()
 
 SHARED_DIR = Path(os.getenv("ARETI_SHARED_FOLDER", r"C:\Users\Student\Dropbox\ARETI FILES ONE DRIVE"))
+SHARED_SETUP_CANDIDATES = {
+    "categories": ["Expenses categories.xlsx"],
+    "accounts": ["Who made the expense (1).xlsx", "Who made the expense.xlsx"],
+    "rates": ["Rates.xlsx"],
+}
+
+
+def latest_shared_setup_file(file_names):
+    candidates = []
+    if SHARED_DIR.exists():
+        for file_name in file_names:
+            direct = SHARED_DIR / file_name
+            if direct.exists():
+                candidates.append(direct)
+            candidates.extend(path for path in SHARED_DIR.glob(f"*/{file_name}") if path.is_file())
+    if not candidates:
+        return SHARED_DIR / file_names[0]
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
 SHARED_SETUP_FILES = {
-    "categories": SHARED_DIR / "Expenses categories.xlsx",
-    "accounts": SHARED_DIR / "Who made the expense.xlsx",
-    "rates": SHARED_DIR / "Rates.xlsx",
+    label: latest_shared_setup_file(file_names)
+    for label, file_names in SHARED_SETUP_CANDIDATES.items()
 }
 
 
@@ -766,19 +822,20 @@ def editable_pending_table(df, categories, subcategories, key):
     table["subcategory"] = table["subcategory"].fillna(table["suggested_subcategory"]).fillna("")
 
     visible_cols = [
-        "id",
-        "reviewed",
         "txn_date",
-        "account_name",
-        "bank",
         "currency",
         "amount",
-        "amount_usd",
         "original_description",
-        "match_type",
-        "confidence",
         "category",
         "subcategory",
+        "reviewed",
+        "id",
+        "account_name",
+        "bank",
+        "account_number",
+        "amount_usd",
+        "match_type",
+        "confidence",
     ]
     table = table[[col for col in visible_cols if col in table.columns]]
 
@@ -794,6 +851,7 @@ def editable_pending_table(df, categories, subcategories, key):
             "txn_date": st.column_config.TextColumn("Date", disabled=True),
             "account_name": st.column_config.TextColumn("Account", disabled=True),
             "bank": st.column_config.TextColumn("Bank", disabled=True),
+            "account_number": st.column_config.TextColumn("Account number", disabled=True),
             "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
             "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
             "amount_usd": st.column_config.NumberColumn("USD amount", format="%.2f", disabled=True),
@@ -808,6 +866,22 @@ def editable_pending_table(df, categories, subcategories, key):
             ),
         },
     )
+
+
+def render_wrapped_descriptions(df):
+    preview = df[["txn_date", "amount", "original_description"]].head(80).copy()
+    rows = []
+    for _, row in preview.iterrows():
+        rows.append(
+            "<div class=\"soft-panel\">"
+            f"<div class=\"summary-label\">{escape(str(row.get('txn_date', '')))} | "
+            f"{escape(format_currency(row.get('amount', 0)))}</div>"
+            f"<div style=\"margin-top:6px; line-height:1.45; white-space:normal;\">"
+            f"{escape(str(row.get('original_description', '')))}</div>"
+            "</div>"
+        )
+    with st.expander("Full statement descriptions"):
+        st.markdown("".join(rows), unsafe_allow_html=True)
 
 
 def render_manual_transaction_form(categories, subcategories):
@@ -846,7 +920,7 @@ def render_manual_transaction_form(categories, subcategories):
 
 
 def render_app_header():
-    updated_at = datetime.now().strftime("%d %b %Y, %H:%M")
+    today_at = "Today, " + datetime.now().strftime("%d %b %Y, %H:%M")
     st.markdown(
         f"""
         <div class="app-header">
@@ -857,7 +931,7 @@ def render_app_header():
                     <div class="app-subtitle">Transaction review, account balances, reporting, and setup in one workspace.</div>
                 </div>
             </div>
-            <div class="updated-pill">{updated_at}</div>
+            <div class="updated-pill">{today_at}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1052,10 +1126,17 @@ if page == "Import":
         balance_info = parse_statement_balance(file_bytes, uploaded_statement.name)
 
         try:
+            progress_slot = st.empty()
+            progress_slot.markdown(
+                '<div class="import-progress"><span class="import-runner">&#x1F3C3;</span>'
+                '<span>Processing statement. Please wait until the preview appears.</span></div>',
+                unsafe_allow_html=True,
+            )
             parsed = parse_statement(file_bytes, uploaded_statement.name)
             parsed = flag_duplicates(parsed)
             parsed = apply_account_and_rates(parsed, selected_account)
             classified = classify_transactions(parsed, get_memory())
+            progress_slot.empty()
 
             st.success(f"Prepared {len(classified)} transactions for review.")
 
@@ -1088,6 +1169,8 @@ if page == "Import":
                 "Date",
                 "Description",
                 "Amount",
+                "account_name",
+                "account_number",
                 "currency",
                 "amount_usd",
                 "suggested_category",
@@ -1213,12 +1296,33 @@ elif page == "Pending Review":
         p3.metric("Similar", int((pending["match_type"] == "similar").sum()))
         p4.metric("New", int((pending["match_type"] == "new").sum()))
 
+        description_filter = st.text_input(
+            "Filter by transaction description",
+            placeholder="e.g. Wolt",
+            key="pending_description_filter",
+        )
+        pending_view = pending.copy()
+        if description_filter:
+            pending_view = pending_view[
+                pending_view["original_description"].fillna("").astype(str).str.contains(
+                    description_filter,
+                    case=False,
+                    regex=False,
+                )
+            ].copy()
+
+        if pending_view.empty:
+            st.warning("No pending transactions match the current description filter.")
+            st.stop()
+
+        render_wrapped_descriptions(pending_view)
         top_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_top")
-        edited_pending = editable_pending_table(pending, categories, subcategories, "pending_editor")
+        edited_pending = editable_pending_table(pending_view, categories, subcategories, "pending_editor")
         bottom_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_bottom")
 
         if top_save or bottom_save:
-            saved = save_reviewed_rows(edited_pending)
+            with st.spinner("Saving reviewed rows..."):
+                saved = save_reviewed_rows(edited_pending)
             if saved:
                 st.success(f"Saved {saved} reviewed transactions.")
                 st.cache_data.clear()
@@ -1388,6 +1492,20 @@ elif page == "Memory":
     st.subheader("Memory")
     memory = get_memory()
 
+    memory_upload = st.file_uploader(
+        "Upload transaction memory",
+        type=["xlsx", "xls"],
+        key="memory_upload_file",
+    )
+    if memory_upload and st.button("Import memory", type="primary"):
+        try:
+            imported = import_memory_from_excel(memory_upload)
+            st.success(f"Imported {imported} memory rows.")
+            st.cache_data.clear()
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
     if memory.empty:
         st.info("No learned transactions yet.")
     else:
@@ -1438,6 +1556,30 @@ elif page == "Reports":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
         )
+        report_groups = get_report_groups(categories_df)
+        if report_groups:
+            pdf_zip = BytesIO()
+            with zipfile.ZipFile(pdf_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+                for group in report_groups:
+                    archive.writestr(
+                        f"{safe_filename(group)}_expenses_report.pdf",
+                        build_pdf_report(filtered_reviewed, categories_df, group),
+                    )
+            st.download_button(
+                "Download all PDF reports",
+                data=pdf_zip.getvalue(),
+                file_name="expense_reports_by_group.zip",
+                mime="application/zip",
+            )
+            with st.expander("PDF reports by reporting group"):
+                for group in report_groups:
+                    st.download_button(
+                        f"Download {group} PDF",
+                        data=build_pdf_report(filtered_reviewed, categories_df, group),
+                        file_name=f"{safe_filename(group)}_expenses_report.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_report_{safe_filename(group)}",
+                    )
         st.download_button(
             "Download filtered reviewed transactions Excel",
             data=dataframe_to_excel_bytes({"Reviewed transactions": filtered_reviewed}),

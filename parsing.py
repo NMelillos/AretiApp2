@@ -225,6 +225,18 @@ def _parse_tabular_date(value):
     return parsed.strftime("%Y-%m-%d")
 
 
+def _parse_us_tabular_date(value):
+    if pd.isna(value):
+        return ""
+    if isinstance(value, datetime):
+        parsed = pd.to_datetime(value, errors="coerce")
+    else:
+        parsed = pd.to_datetime(str(value).strip(), errors="coerce", dayfirst=False)
+    if pd.isna(parsed):
+        return ""
+    return parsed.strftime("%Y-%m-%d")
+
+
 def _money_values(text):
     return [(match, _parse_amount(match.group(0))) for match in MONEY_RE.finditer(text)]
 
@@ -354,13 +366,21 @@ def _parse_credit_card_pdf_text(text):
                 if current:
                     rows.append(current)
                 amount_text = amounts[-1][0].group(0)
-                amount = _parse_amount(amount_text)
-                amount = abs(amount) if "-" in amount_text else -abs(amount)
                 description = match.group("rest")[: amounts[-1][0].start()].strip()
                 description = re.sub(r"^\d{1,2}/\d{1,2}(?:/\d{2,4})?\s+", "", description).strip()
                 if not description or _is_pdf_noise(description):
                     current = None
                     continue
+                upper_desc = description.upper()
+                credit_hint = any(token in upper_desc for token in [
+                    "PAYMENT",
+                    "CREDIT",
+                    "REFUND",
+                    "REVERSAL",
+                    "ADJUSTMENT",
+                    "THANK YOU",
+                ])
+                amount = abs(_parse_amount(amount_text)) if credit_hint else -abs(_parse_amount(amount_text))
                 current = [_parse_any_date(match.group("date"), default_year), description, amount]
                 continue
 
@@ -509,6 +529,52 @@ def _parse_generic_pdf_text(text):
     if current:
         rows.append(current)
     return rows
+
+
+def _bank_of_cyprus_transaction_amount(description, fallback_amount):
+    amounts = _money_values(description)
+    if not amounts:
+        return fallback_amount
+
+    amount = abs(amounts[0][1])
+    upper = re.sub(r"\s+", " ", str(description or "").upper())
+    incoming_tokens = [
+        "TRANSFER-INTERNET-CREDIT",
+        "CREDIT TRANSFER",
+        "CREDIT",
+        "DEPOSIT",
+        "REFUND",
+        "REVERSAL",
+        "TIPS IN",
+    ]
+    outgoing_tokens = [
+        "TRANSFER-INTERNET-DEBIT",
+        "TIPS OUT",
+        "CASH WITHDRAWAL",
+        "ATM",
+        "CARD",
+        "FEES",
+        "FEE",
+        "MAINTENANCE",
+        "PURCHASE",
+        "DEBIT",
+    ]
+
+    if any(token in upper for token in incoming_tokens) and not any(token in upper for token in outgoing_tokens):
+        return amount
+    return -amount
+
+
+def _parse_bank_of_cyprus_pdf_text(text):
+    rows = _parse_generic_pdf_text(text)
+    corrected = []
+    for date_value, description, amount in rows:
+        corrected.append([
+            date_value,
+            description,
+            _bank_of_cyprus_transaction_amount(description, amount),
+        ])
+    return corrected
 
 
 def _detect_bank_name(text, file_name=""):
@@ -742,6 +808,9 @@ def prepare_dataframe_from_tabular(df):
     df = df.copy()
     df = df.dropna(how="all")
     date_col, desc_cols, amount_col, debit_col, credit_col = detect_columns(df)
+    columns = {_norm_col(c): c for c in df.columns}
+    card_member_col = columns.get("card member")
+    source_account_col = columns.get("account #") or columns.get("account number")
 
     if amount_col is None and debit_col and credit_col:
         debit = df[debit_col].apply(_parse_amount).abs()
@@ -756,9 +825,16 @@ def prepare_dataframe_from_tabular(df):
         )
 
     out = pd.DataFrame()
-    out["Date"] = df[date_col].apply(_parse_tabular_date)
+    date_parser = _parse_us_tabular_date if card_member_col and source_account_col else _parse_tabular_date
+    out["Date"] = df[date_col].apply(date_parser)
     out["Description"] = df.apply(lambda row: _combine_description(row, desc_cols), axis=1)
     out["Amount"] = df[amount_col].apply(_parse_amount)
+    if card_member_col and source_account_col:
+        out["Amount"] = -out["Amount"]
+    if card_member_col:
+        out["card_member"] = df[card_member_col].fillna("").astype(str).str.strip()
+    if source_account_col:
+        out["source_account_number"] = df[source_account_col].fillna("").astype(str).str.strip()
     out = out[(out["Description"].str.strip() != "") | (out["Amount"] != 0)].copy()
 
     out["Date"] = out["Date"].fillna("")
@@ -807,6 +883,8 @@ def parse_pdf(uploaded_file):
                 text = "\n".join(page.extract_text() or "" for page in pdf.pages)
                 if "Revolut Bank" in text or "Account transactions from" in text:
                     rows = _parse_revolut_pdf_text(text)
+                elif "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
+                    rows = _parse_bank_of_cyprus_pdf_text(text)
                 elif "Comerica" in text or "Commercial Checking" in text:
                     rows = _parse_comerica_pdf_text(text)
                 elif (

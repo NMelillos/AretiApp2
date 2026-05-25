@@ -609,7 +609,12 @@ def ensure_database_ready():
 
 
 require_login()
-ensure_database_ready()
+try:
+    ensure_database_ready()
+except Exception as exc:
+    st.error("Database connection is not ready. Please refresh in a moment.")
+    st.caption(str(exc))
+    st.stop()
 
 SHARED_DIR = Path(os.getenv("ARETI_SHARED_FOLDER", r"C:\Users\Student\Dropbox\ARETI FILES ONE DRIVE"))
 SHARED_SETUP_CANDIDATES = {

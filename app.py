@@ -480,6 +480,17 @@ def _login_is_valid(username, password):
     return username_ok and password_ok
 
 
+def _attempt_login():
+    username = st.session_state.get("login_username", "")
+    password = st.session_state.get("login_password", "")
+    if _login_is_valid(username, password):
+        st.session_state["authenticated"] = True
+        st.session_state["login_user"] = str(username).strip()
+        st.session_state.pop("login_error", None)
+    else:
+        st.session_state["login_error"] = "Invalid username or password."
+
+
 def require_login():
     if st.session_state.get("authenticated"):
         return
@@ -524,16 +535,6 @@ def require_login():
             font-size: 12px !important;
             margin-top: 5px !important;
         }
-        div[data-testid="stForm"] {
-            background: #ffffff !important;
-            border: 1px solid var(--border) !important;
-            border-radius: 6px !important;
-            box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06) !important;
-            padding: 18px 16px 16px !important;
-        }
-        div[data-testid="stForm"] [data-testid="stVerticalBlock"] {
-            gap: 0.55rem !important;
-        }
         div[data-testid="stTextInput"] label {
             color: var(--text-main) !important;
             font-size: 13px !important;
@@ -553,7 +554,7 @@ def require_login():
             min-height: 38px !important;
             border-radius: 4px !important;
         }
-        div[data-testid="stFormSubmitButton"] button {
+        div[data-testid="stButton"] button {
             min-height: 38px !important;
             border-radius: 4px !important;
         }
@@ -568,18 +569,13 @@ def require_login():
         """,
         unsafe_allow_html=True,
     )
-    with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
-
-    if submitted:
-        if _login_is_valid(username, password):
-            st.session_state["authenticated"] = True
-            st.session_state["login_user"] = str(username).strip()
-            st.rerun()
-        else:
-            st.error("Invalid username or password.")
+    st.text_input("Username", key="login_username")
+    st.text_input("Password", type="password", key="login_password")
+    st.button("Sign in", type="primary", use_container_width=True, key="login_submit", on_click=_attempt_login)
+    if st.session_state.get("authenticated"):
+        st.rerun()
+    if st.session_state.get("login_error"):
+        st.error(st.session_state["login_error"])
 
     st.markdown(
         """

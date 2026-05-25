@@ -141,6 +141,11 @@ def early_login_gate():
             background: #0f766e !important;
             border-color: #0f766e !important;
         }
+        div[data-testid="stForm"] {
+            border: 0 !important;
+            padding: 0 !important;
+            background: transparent !important;
+        }
         </style>
         <div class="fast-login-brand">
             <div class="fast-login-mark">SM</div>
@@ -152,9 +157,10 @@ def early_login_gate():
         """,
         unsafe_allow_html=True,
     )
-    username = st.text_input("Username", key="login_username")
-    password = st.text_input("Password", type="password", key="login_password")
-    sign_in_clicked = st.button("Sign in", type="primary", use_container_width=True, key="login_submit")
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input("Password", type="password", key="login_password")
+        sign_in_clicked = st.form_submit_button("Sign in", type="primary", use_container_width=True)
     if sign_in_clicked:
         if _early_login_is_valid(username, password):
             st.session_state["authenticated"] = True
@@ -725,6 +731,11 @@ def require_login():
             min-height: 38px !important;
             border-radius: 4px !important;
         }
+        div[data-testid="stForm"] {
+            border: 0 !important;
+            padding: 0 !important;
+            background: transparent !important;
+        }
         </style>
         <div class="login-brand">
             <div class="app-brand-mark">SM</div>
@@ -736,9 +747,10 @@ def require_login():
         """,
         unsafe_allow_html=True,
     )
-    username = st.text_input("Username", key="login_username")
-    password = st.text_input("Password", type="password", key="login_password")
-    sign_in_clicked = st.button("Sign in", type="primary", use_container_width=True, key="login_submit")
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input("Password", type="password", key="login_password")
+        sign_in_clicked = st.form_submit_button("Sign in", type="primary", use_container_width=True)
     if sign_in_clicked:
         if _login_is_valid(username, password):
             st.session_state["authenticated"] = True

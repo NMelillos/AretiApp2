@@ -524,14 +524,14 @@ def require_login():
             font-size: 12px !important;
             margin-top: 5px !important;
         }
-        div[data-testid="stForm"] {
+        div[data-testid="stVerticalBlockBorderWrapper"] {
             background: #ffffff !important;
             border: 1px solid var(--border) !important;
             border-radius: 6px !important;
             box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06) !important;
             padding: 18px 16px 16px !important;
         }
-        div[data-testid="stForm"] [data-testid="stVerticalBlock"] {
+        div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] {
             gap: 0.55rem !important;
         }
         div[data-testid="stTextInput"] label {
@@ -553,27 +553,25 @@ def require_login():
             min-height: 38px !important;
             border-radius: 4px !important;
         }
-        div[data-testid="stFormSubmitButton"] button {
+        div[data-testid="stButton"] button {
             min-height: 38px !important;
             border-radius: 4px !important;
         }
         </style>
-        <div class="login-shell">
-          <div class="login-card">
-            <div class="login-brand">
-              <div class="app-brand-mark">SM</div>
-              <div>
+        <div class="login-brand">
+            <div class="app-brand-mark">SM</div>
+            <div>
                 <div class="login-title">Statement Management</div>
                 <div class="login-subtitle">Secure access</div>
-              </div>
             </div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
-    with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
+    with st.container(border=True, key="login_panel"):
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input("Password", type="password", key="login_password")
+        submitted = st.button("Sign in", type="primary", use_container_width=True, key="login_submit")
 
     if submitted:
         if _login_is_valid(username, password):
@@ -585,9 +583,7 @@ def require_login():
 
     st.markdown(
         """
-            <div class="login-note">Authorized users only.</div>
-          </div>
-        </div>
+        <div class="login-note">Authorized users only.</div>
         """,
         unsafe_allow_html=True,
     )

@@ -1086,7 +1086,7 @@ def _dynamic_amex_account(row, default_account, accounts):
         for _, account_row in candidates.iterrows():
             account_digits = _digits(account_row.get("account_number", ""))
             if account_digits and account_digits.endswith(suffix_digits):
-                return account_row.to_dict()
+                return _append_amex_card_member(account_row.to_dict(), card_member)
 
     dynamic_rows = pd.DataFrame()
     if not candidates.empty:
@@ -1101,9 +1101,20 @@ def _dynamic_amex_account(row, default_account, accounts):
     if not card_member:
         return source_account
 
-    out = dict(source_account)
-    base_number = re.sub(r"\s*\[.*?\]\s*", "", _clean(out.get("account_number", ""))).strip()
-    out["account_number"] = f"{base_number} {card_member}".strip()
+    return _append_amex_card_member(source_account, card_member, remove_instruction=True)
+
+
+def _append_amex_card_member(account, card_member, remove_instruction=False):
+    if not card_member:
+        return account
+
+    out = dict(account)
+    account_number = _clean(out.get("account_number", ""))
+    if remove_instruction:
+        account_number = re.sub(r"\s*\[.*?\]\s*", "", account_number).strip()
+    if card_member.casefold() not in account_number.casefold():
+        account_number = f"{account_number} {card_member}".strip()
+    out["account_number"] = account_number
     return out
 
 

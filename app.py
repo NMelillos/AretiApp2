@@ -8,8 +8,167 @@ from pathlib import Path
 import re
 import zipfile
 
-import pandas as pd
 import streamlit as st
+
+st.set_page_config(page_title="Statement Management", layout="wide")
+
+
+EARLY_LOGIN_SALT = "aretiapp-login-v1"
+EARLY_LOGIN_PASSWORD_HASH = "99cd9990ece838f798db50d75308cc7f75c4309be343063329772bc8998aad16"
+
+
+def _early_hash_password(password, salt):
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        str(password).encode("utf-8"),
+        str(salt).encode("utf-8"),
+        120000,
+    ).hex()
+
+
+def _early_password_candidates(password):
+    raw = str(password)
+    trimmed = raw.strip()
+    return [raw] if raw == trimmed else [raw, trimmed]
+
+
+def _early_login_is_valid(username, password):
+    expected_username = os.getenv("LOGIN_USERNAME", "Areti")
+    configured_password = os.getenv("LOGIN_PASSWORD", "")
+    configured_hash = os.getenv("LOGIN_PASSWORD_HASH", EARLY_LOGIN_PASSWORD_HASH)
+    salt = os.getenv("LOGIN_PASSWORD_SALT", EARLY_LOGIN_SALT)
+
+    username_ok = hmac.compare_digest(str(username).strip().casefold(), expected_username.strip().casefold())
+    if configured_password:
+        password_ok = any(
+            hmac.compare_digest(candidate, configured_password)
+            or hmac.compare_digest(candidate, configured_password.strip())
+            for candidate in _early_password_candidates(password)
+        )
+    else:
+        password_ok = any(
+            hmac.compare_digest(_early_hash_password(candidate, salt), configured_hash)
+            for candidate in _early_password_candidates(password)
+        )
+    return username_ok and password_ok
+
+
+def _early_attempt_login():
+    username = st.session_state.get("login_username", "")
+    password = st.session_state.get("login_password", "")
+    if _early_login_is_valid(username, password):
+        st.session_state["authenticated"] = True
+        st.session_state["login_user"] = str(username).strip() or "Areti"
+        st.session_state.pop("login_error", None)
+    else:
+        st.session_state["login_error"] = "Invalid username or password."
+
+
+def early_login_gate():
+    if st.session_state.get("authenticated"):
+        return
+
+    st.markdown(
+        """
+        <style>
+        .stApp { background: #edf2f7; color: #172033; }
+        #MainMenu, footer, header, .stDeployButton,
+        [data-testid="stToolbar"], [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"], [data-testid="manage-app-button"] {
+            display: none !important;
+            visibility: hidden !important;
+            height: 0 !important;
+        }
+        .block-container {
+            max-width: 392px !important;
+            padding-top: 4.2rem !important;
+            padding-bottom: 1.5rem !important;
+        }
+        .fast-login-brand {
+            display: grid;
+            justify-items: center;
+            gap: 7px;
+            margin-bottom: 16px;
+            text-align: center;
+        }
+        .fast-login-mark {
+            width: 34px;
+            height: 34px;
+            border-radius: 7px;
+            display: grid;
+            place-items: center;
+            background: #111c3d;
+            color: #ffffff;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0;
+        }
+        .fast-login-title {
+            color: #172033;
+            font-size: 20px;
+            line-height: 1.15;
+            font-weight: 740;
+        }
+        .fast-login-subtitle,
+        .fast-login-note {
+            color: #64748b;
+            font-size: 12px;
+        }
+        .fast-login-note {
+            margin-top: 10px;
+            line-height: 1.45;
+            text-align: center;
+        }
+        div[data-testid="stTextInput"] label {
+            color: #172033 !important;
+            font-size: 13px !important;
+        }
+        div[data-testid="stTextInput"] div[data-baseweb="input"] {
+            min-height: 38px !important;
+            background: #ffffff !important;
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 4px !important;
+            box-shadow: none !important;
+        }
+        div[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
+            border-color: #0f766e !important;
+            box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.14) !important;
+        }
+        div[data-testid="stTextInput"] input,
+        div[data-testid="stButton"] button {
+            min-height: 38px !important;
+            border-radius: 4px !important;
+        }
+        div[data-testid="stButton"] button[kind="primary"] {
+            background: #0f766e !important;
+            border-color: #0f766e !important;
+        }
+        </style>
+        <div class="fast-login-brand">
+            <div class="fast-login-mark">SM</div>
+            <div>
+                <div class="fast-login-title">Statement Management</div>
+                <div class="fast-login-subtitle">Secure access</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.text_input("Username", key="login_username")
+    st.text_input("Password", type="password", key="login_password")
+    st.button("Sign in", type="primary", use_container_width=True, key="login_submit", on_click=_early_attempt_login)
+    if st.session_state.get("authenticated"):
+        st.rerun()
+    if st.session_state.get("login_error"):
+        st.error(st.session_state["login_error"])
+    st.markdown('<div class="fast-login-note">Authorized users only.</div>', unsafe_allow_html=True)
+    st.stop()
+
+
+early_login_gate()
+
+# Keep heavy data/reporting imports after the login gate so the first screen appears quickly.
+import pandas as pd
 
 from classification import classify_transactions
 from db import (
@@ -52,8 +211,6 @@ from parsing import extract_statement_balance, parse_csv, parse_excel, parse_pdf
 from reporting import build_pdf_report, build_sample_expenses_report, get_report_groups, safe_filename
 from utils import format_currency
 
-
-st.set_page_config(page_title="Statement Management", layout="wide")
 
 _DB_CACHE_TTL_SECONDS = 90
 _db_get_accounts = get_accounts
@@ -472,11 +629,18 @@ def _login_is_valid(username, password):
     configured_hash = os.getenv("LOGIN_PASSWORD_HASH", DEFAULT_LOGIN_PASSWORD_HASH)
     salt = os.getenv("LOGIN_PASSWORD_SALT", DEFAULT_LOGIN_SALT)
 
-    username_ok = hmac.compare_digest(str(username).strip(), expected_username)
+    username_ok = hmac.compare_digest(str(username).strip().casefold(), expected_username.strip().casefold())
     if configured_password:
-        password_ok = hmac.compare_digest(str(password), configured_password)
+        password_ok = any(
+            hmac.compare_digest(candidate, configured_password)
+            or hmac.compare_digest(candidate, configured_password.strip())
+            for candidate in _early_password_candidates(password)
+        )
     else:
-        password_ok = hmac.compare_digest(_hash_password(password, salt), configured_hash)
+        password_ok = any(
+            hmac.compare_digest(_hash_password(candidate, salt), configured_hash)
+            for candidate in _early_password_candidates(password)
+        )
     return username_ok and password_ok
 
 

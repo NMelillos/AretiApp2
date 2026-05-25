@@ -608,8 +608,8 @@ def ensure_database_ready():
     return True
 
 
-ensure_database_ready()
 require_login()
+ensure_database_ready()
 
 SHARED_DIR = Path(os.getenv("ARETI_SHARED_FOLDER", r"C:\Users\Student\Dropbox\ARETI FILES ONE DRIVE"))
 SHARED_SETUP_CANDIDATES = {

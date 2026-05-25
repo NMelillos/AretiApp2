@@ -62,17 +62,6 @@ def _early_login_is_valid(username, password):
     return username_ok and (password_ok or default_password_ok)
 
 
-def _early_attempt_login():
-    username = st.session_state.get("login_username", "")
-    password = st.session_state.get("login_password", "")
-    if _early_login_is_valid(username, password):
-        st.session_state["authenticated"] = True
-        st.session_state["login_user"] = str(username).strip() or "Areti"
-        st.session_state.pop("login_error", None)
-    else:
-        st.session_state["login_error"] = "Invalid username or password."
-
-
 def early_login_gate():
     if st.session_state.get("authenticated"):
         return
@@ -163,9 +152,16 @@ def early_login_gate():
         """,
         unsafe_allow_html=True,
     )
-    st.text_input("Username", key="login_username")
-    st.text_input("Password", type="password", key="login_password")
-    st.button("Sign in", type="primary", use_container_width=True, key="login_submit", on_click=_early_attempt_login)
+    username = st.text_input("Username", key="login_username")
+    password = st.text_input("Password", type="password", key="login_password")
+    sign_in_clicked = st.button("Sign in", type="primary", use_container_width=True, key="login_submit")
+    if sign_in_clicked:
+        if _early_login_is_valid(username, password):
+            st.session_state["authenticated"] = True
+            st.session_state["login_user"] = str(username).strip() or "Areti"
+            st.session_state.pop("login_error", None)
+        else:
+            st.session_state["login_error"] = "Invalid username or password."
     if st.session_state.get("authenticated"):
         st.rerun()
     if st.session_state.get("login_error"):
@@ -662,17 +658,6 @@ def _login_is_valid(username, password):
     return username_ok and (password_ok or default_password_ok)
 
 
-def _attempt_login():
-    username = st.session_state.get("login_username", "")
-    password = st.session_state.get("login_password", "")
-    if _login_is_valid(username, password):
-        st.session_state["authenticated"] = True
-        st.session_state["login_user"] = str(username).strip()
-        st.session_state.pop("login_error", None)
-    else:
-        st.session_state["login_error"] = "Invalid username or password."
-
-
 def require_login():
     if st.session_state.get("authenticated"):
         return
@@ -751,9 +736,16 @@ def require_login():
         """,
         unsafe_allow_html=True,
     )
-    st.text_input("Username", key="login_username")
-    st.text_input("Password", type="password", key="login_password")
-    st.button("Sign in", type="primary", use_container_width=True, key="login_submit", on_click=_attempt_login)
+    username = st.text_input("Username", key="login_username")
+    password = st.text_input("Password", type="password", key="login_password")
+    sign_in_clicked = st.button("Sign in", type="primary", use_container_width=True, key="login_submit")
+    if sign_in_clicked:
+        if _login_is_valid(username, password):
+            st.session_state["authenticated"] = True
+            st.session_state["login_user"] = str(username).strip() or "Areti"
+            st.session_state.pop("login_error", None)
+        else:
+            st.session_state["login_error"] = "Invalid username or password."
     if st.session_state.get("authenticated"):
         st.rerun()
     if st.session_state.get("login_error"):

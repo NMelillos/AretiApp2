@@ -36,6 +36,7 @@ MONTH_DATE_RE = re.compile(
 )
 NUMERIC_DATE_RE = re.compile(r"^(?P<date>\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(?P<rest>.+)$")
 MONEY_RE = re.compile(r"-?\s*(?:[$€£]|USD|EUR|GBP|M\$)?\s*\(?\d[\d,]*\.\d{2}\)?", re.IGNORECASE)
+MONEY_TOKEN = r"-?\s*(?:[$€£]|USD|EUR|GBP|M\$)?\s*\(?\d[\d,]*\.\d{2}\)?"
 PDF_SKIP_PREFIXES = (
     "EUR Statement",
     "Generated on",
@@ -239,6 +240,10 @@ def _parse_us_tabular_date(value):
 
 def _money_values(text):
     return [(match, _parse_amount(match.group(0))) for match in MONEY_RE.finditer(text)]
+
+
+def _money_values_with_spans(text):
+    return [(match.span(), match.group(0), _parse_amount(match.group(0))) for match in MONEY_RE.finditer(text)]
 
 
 def _is_pdf_noise(line):
@@ -480,10 +485,15 @@ def _should_append_card_detail(line):
 def _parse_comerica_pdf_text(text):
     default_year = _statement_year(text)
     rows = []
+    section_sign = None
     line_re = re.compile(
         r"(?P<date>(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*\d{1,2})\s+"
-        r"(?P<amount>-?\d[\d,]*\.\d{2})\s+"
-        r"(?P<desc>.*?)(?=\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*\d{1,2}\s+-?\d[\d,]*\.\d{2}\s+|$)",
+        rf"(?P<amount>{MONEY_TOKEN})\s+"
+        rf"(?P<desc>.*?)(?=\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*\d{{1,2}}\s+{MONEY_TOKEN}\s+|$)",
+        re.IGNORECASE,
+    )
+    date_first_re = re.compile(
+        r"^(?P<date>(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*\d{1,2}|\d{1,2}/\d{1,2})(?P<rest>\s+.+)$",
         re.IGNORECASE,
     )
 
@@ -491,15 +501,56 @@ def _parse_comerica_pdf_text(text):
         line = re.sub(r"\s+", " ", raw_line).strip()
         if not line:
             continue
+        compact = re.sub(r"[^a-z]", "", line.lower())
+        if any(token in compact for token in ["withdrawal", "debit", "checks"]):
+            section_sign = -1
+        elif any(token in compact for token in ["deposit", "credit"]):
+            section_sign = 1
+
+        found_line_row = False
         for match in line_re.finditer(line):
             description = match.group("desc").strip()
             if not description or _is_pdf_noise(description):
                 continue
+            amount = _parse_amount(match.group("amount"))
+            if section_sign == -1 and amount > 0:
+                amount = -abs(amount)
+            elif section_sign == 1 and amount < 0:
+                amount = abs(amount)
             rows.append([
                 _parse_any_date(match.group("date"), default_year),
                 description,
-                _parse_amount(match.group("amount")),
+                amount,
             ])
+            found_line_row = True
+        if found_line_row:
+            continue
+
+        date_match = date_first_re.match(line)
+        if not date_match:
+            continue
+        rest = date_match.group("rest").strip()
+        amounts = _money_values_with_spans(rest)
+        if not amounts:
+            continue
+        (start, end), _, amount = amounts[0]
+        description = re.sub(r"\s+", " ", f"{rest[:start]} {rest[end:]}").strip()
+        while True:
+            trailing_amounts = _money_values_with_spans(description)
+            if not trailing_amounts or trailing_amounts[-1][0][1] != len(description.rstrip()):
+                break
+            description = description[: trailing_amounts[-1][0][0]].strip()
+        if not description or _is_pdf_noise(description):
+            continue
+        if section_sign == -1 and amount > 0:
+            amount = -abs(amount)
+        elif section_sign == 1 and amount < 0:
+            amount = abs(amount)
+        rows.append([
+            _parse_any_date(date_match.group("date"), default_year),
+            description,
+            amount,
+        ])
     return rows
 
 
@@ -515,12 +566,14 @@ def _parse_generic_pdf_text(text):
         date_match = NUMERIC_DATE_RE.match(line)
         if date_match:
             rest = date_match.group("rest")
-            amount_match = re.search(r"(-?\(?[\d,]+\.\d{2}\)?)\s*$", rest)
-            if amount_match:
+            amount_matches = _money_values_with_spans(rest)
+            amount_match = amount_matches[-1] if amount_matches else None
+            if amount_match and amount_match[0][1] == len(rest.rstrip()):
                 if current:
                     rows.append(current)
-                description = rest[: amount_match.start()].strip()
-                current = [date_match.group("date"), description, amount_match.group(1)]
+                (start, end), amount_text, _ = amount_match
+                description = rest[:start].strip()
+                current = [date_match.group("date"), description, amount_text]
                 continue
 
         if current:

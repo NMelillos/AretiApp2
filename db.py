@@ -729,46 +729,52 @@ def import_memory_from_excel(uploaded_file):
         times_seen = int(raw_times_seen) if raw_times_seen is not None and not pd.isna(raw_times_seen) else 1
 
         cur.execute("""
-            SELECT id, times_seen
-            FROM transaction_memory
-            WHERE normalized_description = ? AND category = ? AND COALESCE(subcategory, '') = ?
-        """, (normalized, category, subcategory))
-        existing = cur.fetchone()
-        if existing:
-            memory_id, existing_times = existing
-            cur.execute("""
-                UPDATE transaction_memory
-                SET original_description = ?, beneficiary = ?, transaction_type = ?,
-                    first_seen = COALESCE(NULLIF(first_seen, ''), ?),
-                    last_seen = ?,
-                    times_seen = ?
-                WHERE id = ?
-            """, (
-                original,
-                beneficiary,
-                transaction_type,
-                first_seen,
-                last_seen,
-                max(int(existing_times or 0), times_seen),
-                memory_id,
-            ))
-        else:
-            cur.execute("""
-                INSERT INTO transaction_memory
-                (original_description, normalized_description, beneficiary, transaction_type,
-                 category, subcategory, first_seen, last_seen, times_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                original,
-                normalized,
-                beneficiary,
-                transaction_type,
-                category,
-                subcategory,
-                first_seen,
-                last_seen,
-                times_seen,
-            ))
+            INSERT INTO transaction_memory
+            (original_description, normalized_description, beneficiary, transaction_type,
+             category, subcategory, first_seen, last_seen, times_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(normalized_description, category, subcategory) DO UPDATE SET
+                original_description = CASE
+                    WHEN COALESCE(excluded.original_description, '') = ''
+                    THEN transaction_memory.original_description
+                    ELSE excluded.original_description
+                END,
+                beneficiary = CASE
+                    WHEN COALESCE(excluded.beneficiary, '') = ''
+                    THEN transaction_memory.beneficiary
+                    ELSE excluded.beneficiary
+                END,
+                transaction_type = CASE
+                    WHEN COALESCE(excluded.transaction_type, '') = ''
+                    THEN transaction_memory.transaction_type
+                    ELSE excluded.transaction_type
+                END,
+                first_seen = CASE
+                    WHEN COALESCE(transaction_memory.first_seen, '') = ''
+                    THEN excluded.first_seen
+                    ELSE transaction_memory.first_seen
+                END,
+                last_seen = CASE
+                    WHEN COALESCE(excluded.last_seen, '') = ''
+                    THEN transaction_memory.last_seen
+                    ELSE excluded.last_seen
+                END,
+                times_seen = CASE
+                    WHEN COALESCE(transaction_memory.times_seen, 0) > COALESCE(excluded.times_seen, 0)
+                    THEN transaction_memory.times_seen
+                    ELSE excluded.times_seen
+                END
+        """, (
+            original,
+            normalized,
+            beneficiary,
+            transaction_type,
+            category,
+            subcategory,
+            first_seen,
+            last_seen,
+            times_seen,
+        ))
         imported += 1
 
     conn.commit()

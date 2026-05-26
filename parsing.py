@@ -743,6 +743,7 @@ def extract_statement_balance_from_text(text, file_name=""):
             _find_first_amount(flat, [r"Paper deposits\s+(-?\$?\d[\d,]*\.\d{2})"]),
             _find_first_amount(flat, [r"Paper deposits\s+\d+\s+(-?\$?\d[\d,]*\.\d{2})"]),
             _find_first_amount(flat, [r"Paper\s*deposits\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"\bInterest\s+(-?\$?\d[\d,]*\.\d{2})"]),
         ]:
             if value is not None and all(abs(value - existing) > 0.005 for existing in deposits):
                 deposits.append(value)
@@ -934,11 +935,17 @@ def parse_pdf(uploaded_file):
         try:
             with pdfplumber.open(uploaded_file) as pdf:
                 text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+                text_upper = text.upper()
+                text_compact = re.sub(r"[^A-Z0-9]", "", text_upper)
                 if "Revolut Bank" in text or "Account transactions from" in text:
                     rows = _parse_revolut_pdf_text(text)
                 elif "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
                     rows = _parse_bank_of_cyprus_pdf_text(text)
-                elif "Comerica" in text or "Commercial Checking" in text:
+                elif (
+                    "COMERICA" in text_upper
+                    or "COMMERCIALCHECKING" in text_compact
+                    or "BUSINESSMONEYMARKETACCOUNT" in text_compact
+                ):
                     rows = _parse_comerica_pdf_text(text)
                 elif (
                     "CARDMEMBER SERVICE" in text

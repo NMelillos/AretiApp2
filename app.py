@@ -1421,10 +1421,20 @@ elif page == "Reports":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
         )
+        st.download_button(
+            "Download complete PDF report",
+            data=build_pdf_report(filtered_reviewed, categories_df),
+            file_name="all_categories_expenses_report.pdf",
+            mime="application/pdf",
+        )
         report_groups = get_report_groups(categories_df)
         if report_groups:
             pdf_zip = BytesIO()
             with zipfile.ZipFile(pdf_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(
+                    "all_categories_expenses_report.pdf",
+                    build_pdf_report(filtered_reviewed, categories_df),
+                )
                 for group in report_groups:
                     archive.writestr(
                         f"{safe_filename(group)}_expenses_report.pdf",

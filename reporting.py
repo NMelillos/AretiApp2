@@ -8,6 +8,19 @@ import pandas as pd
 REPORT_GROUP_COLUMN = "report_group"
 
 
+def _ordered_unique(values):
+    seen = set()
+    ordered = []
+    for value in values:
+        text = str(value).strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(text)
+    return ordered
+
+
 def get_report_groups(categories):
     if categories.empty or REPORT_GROUP_COLUMN not in categories.columns:
         return []
@@ -35,14 +48,14 @@ def _build_report_frame(transactions, categories, report_group=None):
     tx = transactions.copy()
     cat = _report_categories(categories.copy(), report_group)
 
-    category_order = (
+    setup_category_order = (
         cat["category"].dropna().astype(str).drop_duplicates().tolist()
         if not cat.empty and "category" in cat.columns
         else []
     )
 
     if tx.empty:
-        base = pd.DataFrame({"Category": category_order})
+        base = pd.DataFrame({"Category": setup_category_order})
         base["Total expenses for all months ever"] = 0.0
         base["Monthly average"] = 0.0
         base["% of category from total"] = 0.0
@@ -53,8 +66,8 @@ def _build_report_frame(transactions, categories, report_group=None):
     tx["report_amount"] = tx["report_amount"].fillna(pd.to_numeric(tx["amount"], errors="coerce")).fillna(0)
     tx = tx.dropna(subset=["txn_date"])
 
-    if report_group and category_order:
-        tx = tx[tx["category"].fillna("").astype(str).isin(category_order)].copy()
+    if report_group and setup_category_order:
+        tx = tx[tx["category"].fillna("").astype(str).isin(setup_category_order)].copy()
 
     expenses = tx[tx["report_amount"] < 0].copy()
     expenses = expenses[
@@ -72,8 +85,8 @@ def _build_report_frame(transactions, categories, report_group=None):
     month_keys = [str(month) for month in months]
     month_labels = {str(month): month.to_timestamp().strftime("%b-%y") for month in months}
 
-    if not category_order:
-        category_order = sorted(expenses["category"].dropna().astype(str).unique().tolist())
+    database_category_order = sorted(expenses["category"].dropna().astype(str).unique().tolist())
+    category_order = _ordered_unique(setup_category_order + database_category_order)
     category_order = [category for category in category_order if category.strip().casefold() != "own funds"]
 
     monthly = expenses.pivot_table(

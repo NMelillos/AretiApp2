@@ -740,15 +740,41 @@ def extract_statement_balance_from_text(text, file_name=""):
             _find_first_amount(flat, [r"Electronic deposits\s+(-?\$?\d[\d,]*\.\d{2})"]),
             _find_first_amount(flat, [r"Electronic deposits\s+\d+\s+(-?\$?\d[\d,]*\.\d{2})"]),
             _find_first_amount(flat, [r"Electronic\s*deposits\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Total\s*Electronic\s*Deposits\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"TotalElectronicDeposits\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
             _find_first_amount(flat, [r"Paper deposits\s+(-?\$?\d[\d,]*\.\d{2})"]),
             _find_first_amount(flat, [r"Paper deposits\s+\d+\s+(-?\$?\d[\d,]*\.\d{2})"]),
             _find_first_amount(flat, [r"Paper\s*deposits\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Total\s*Paper\s*Deposits\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"TotalPaperDeposits\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Total\s*Other\s*Deposits\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"TotalOtherDeposits\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
             _find_first_amount(flat, [r"\bInterest\s+(-?\$?\d[\d,]*\.\d{2})"]),
         ]:
             if value is not None and all(abs(value - existing) > 0.005 for existing in deposits):
                 deposits.append(value)
         if deposits:
             money_in = round(sum(deposits), 2)
+
+        withdrawals = []
+        for value in [
+            _find_first_amount(flat, [r"ATM/Debit\s*Card\s*withdrawals\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Total\s*ATM/Debit\s*Card\s*Withdrawals\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"ATM/DebitCardWithdrawals\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"TotalATM/DebitCardWithdrawals\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Electronic \(EFT\) withdrawals\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Electronic \(EFT\) withdrawals\s+\d+\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Electronic\s*\(EFT\)\s*withdrawals\s+(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"Total\s*Electronic\s*Withdrawals\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
+            _find_first_amount(flat, [r"TotalElectronicWithdrawals\s*:?\s*(-?\$?\d[\d,]*\.\d{2})"]),
+        ]:
+            if value is None:
+                continue
+            value = -abs(value)
+            if all(abs(value - existing) > 0.005 for existing in withdrawals):
+                withdrawals.append(value)
+        if withdrawals:
+            money_out = round(sum(withdrawals), 2)
 
     if opening is None:
         opening = _find_first_amount(flat, [

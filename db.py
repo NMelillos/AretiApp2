@@ -375,6 +375,15 @@ def _float_or_none(value):
     return float(number)
 
 
+def _bool_from_value(value):
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().casefold()
+    return text in {"1", "true", "yes", "y", "reviewed", "checked"}
+
+
 def _norm_col(name):
     return str(name).strip().lower().replace("_", " ")
 
@@ -1082,7 +1091,7 @@ def _dynamic_amex_account(row, default_account, accounts):
     card_member = _amex_member_label(row.get("card_member", ""))
     suffix_digits = _digits(row.get("source_account_number", ""))
     if not card_member and not suffix_digits:
-        return default_account
+        return _append_amex_card_member(default_account, "", remove_instruction=True)
 
     candidates = accounts.copy()
     if not candidates.empty and "bank" in candidates.columns:
@@ -1105,19 +1114,19 @@ def _dynamic_amex_account(row, default_account, accounts):
         else default_account
     )
     if not card_member:
-        return source_account
+        return _append_amex_card_member(source_account, "", remove_instruction=True)
 
     return _append_amex_card_member(source_account, card_member, remove_instruction=True)
 
 
 def _append_amex_card_member(account, card_member, remove_instruction=False):
-    if not card_member:
-        return account
-
     out = dict(account)
     account_number = _clean(out.get("account_number", ""))
     if remove_instruction:
         account_number = re.sub(r"\s*\[.*?\]\s*", "", account_number).strip()
+    if not card_member:
+        out["account_number"] = account_number
+        return out
     if card_member.casefold() not in account_number.casefold():
         account_number = f"{account_number} {card_member}".strip()
     out["account_number"] = account_number
@@ -1401,29 +1410,87 @@ def update_database_rows(df):
     conn = get_connection()
     cur = conn.cursor()
     updated = 0
+    text_columns = [
+        "txn_date",
+        "original_description",
+        "currency",
+        "rate_type",
+        "account_name",
+        "bank",
+        "account_number",
+        "category",
+        "subcategory",
+        "status",
+        "match_type",
+    ]
+    number_columns = ["amount", "fx_rate", "amount_usd", "confidence"]
+    bool_columns = ["reviewed", "dup_flag"]
+
     for _, row in df.iterrows():
-        reviewed = int(bool(row.get("reviewed", False)))
-        status = _clean(row.get("status")) or ("reviewed" if reviewed else "pending")
-        category = _clean(row.get("category"))
-        subcategory = _clean(row.get("subcategory"))
-        cur.execute("""
+        if "id" not in row or pd.isna(row.get("id")):
+            continue
+        row_id = int(row["id"])
+        assignments = []
+        params = []
+
+        reviewed_value = None
+        if "reviewed" in df.columns:
+            reviewed_value = int(_bool_from_value(row.get("reviewed")))
+
+        for column in text_columns:
+            if column not in df.columns:
+                continue
+            value = _clean(row.get(column))
+            if column == "status" and not value:
+                value = "reviewed" if reviewed_value else "pending"
+            elif column == "status" and value.casefold() in {"pending", "reviewed"}:
+                value = value.casefold()
+            assignments.append(f"{column} = ?")
+            params.append(value)
+
+        for column in number_columns:
+            if column not in df.columns:
+                continue
+            assignments.append(f"{column} = ?")
+            params.append(_float_or_none(row.get(column)))
+
+        for column in bool_columns:
+            if column not in df.columns:
+                continue
+            value = int(_bool_from_value(row.get(column)))
+            assignments.append(f"{column} = ?")
+            params.append(value)
+
+        if "status" not in df.columns and reviewed_value is not None:
+            assignments.append("status = ?")
+            params.append("reviewed" if reviewed_value else "pending")
+
+        category = _clean(row.get("category")) if "category" in df.columns else ""
+        subcategory = _clean(row.get("subcategory")) if "subcategory" in df.columns else ""
+        status = _clean(row.get("status")).casefold() if "status" in df.columns else ""
+        if reviewed_value or status == "reviewed":
+            assignments.append("reviewed_at = ?")
+            params.append(_now())
+
+        if not assignments:
+            continue
+
+        params.append(row_id)
+        cur.execute(
+            f"""
             UPDATE classified_transactions
-            SET category = ?, subcategory = ?, status = ?, reviewed = ?
+            SET {', '.join(assignments)}
             WHERE id = ?
-        """, (
-            category,
-            subcategory,
-            status,
-            reviewed,
-            int(row["id"]),
-        ))
-        updated += 1
-        if reviewed or status == "reviewed":
+            """,
+            params,
+        )
+        updated += cur.rowcount
+        if reviewed_value or status == "reviewed":
             cur.execute("""
                 SELECT original_description, normalized_description, beneficiary, transaction_type
                 FROM classified_transactions
                 WHERE id = ?
-            """, (int(row["id"]),))
+            """, (row_id,))
             stored = cur.fetchone()
             if stored and category:
                 _remember_transaction_with_cursor(
@@ -1438,6 +1505,80 @@ def update_database_rows(df):
     conn.commit()
     conn.close()
     return updated
+
+
+def import_database_updates_from_excel(uploaded_file):
+    df = _read_excel(uploaded_file)
+    if df.empty:
+        return 0
+
+    column_map = {}
+    aliases = {
+        "id": "id",
+        "transaction id": "id",
+        "txn id": "id",
+        "date": "txn_date",
+        "txn date": "txn_date",
+        "transaction date": "txn_date",
+        "status": "status",
+        "reviewed": "reviewed",
+        "reviewed box": "reviewed",
+        "account": "account_name",
+        "account name": "account_name",
+        "bank": "bank",
+        "account number": "account_number",
+        "currency": "currency",
+        "amount": "amount",
+        "statement amount": "amount",
+        "usd amount": "amount_usd",
+        "amount usd": "amount_usd",
+        "usd equivalent": "amount_usd",
+        "fx rate": "fx_rate",
+        "rate": "fx_rate",
+        "rate type": "rate_type",
+        "full statement description": "original_description",
+        "statement description": "original_description",
+        "original description": "original_description",
+        "category": "category",
+        "sub category": "subcategory",
+        "subcategory": "subcategory",
+        "match type": "match_type",
+        "confidence": "confidence",
+        "duplicate": "dup_flag",
+        "dup flag": "dup_flag",
+    }
+
+    for column in df.columns:
+        normalized = _norm_col(column)
+        if normalized in aliases:
+            column_map[column] = aliases[normalized]
+
+    df = df.rename(columns=column_map)
+    if "id" not in df.columns:
+        raise ValueError("The uploaded Excel must include the ID column from the database export.")
+
+    allowed = [
+        "id",
+        "txn_date",
+        "status",
+        "reviewed",
+        "account_name",
+        "bank",
+        "account_number",
+        "currency",
+        "amount",
+        "amount_usd",
+        "fx_rate",
+        "rate_type",
+        "original_description",
+        "category",
+        "subcategory",
+        "match_type",
+        "confidence",
+        "dup_flag",
+    ]
+    usable = [column for column in allowed if column in df.columns]
+    return update_database_rows(df[usable].copy())
 
 
 def insert_manual_transaction(txn_date, description, amount, category, subcategory, account):

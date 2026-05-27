@@ -38,6 +38,7 @@ from db import (
     get_statement_account,
     get_statement_balances,
     get_subcategories,
+    import_database_updates_from_excel,
     import_memory_from_excel,
     init_db,
     insert_manual_transaction,
@@ -650,6 +651,20 @@ def guess_account_index(file_bytes, file_name, accounts, labels):
     searchable = f"{file_name} {sample}".upper()
     digits = re.sub(r"\D", "", searchable)
 
+    if "CARD MEMBER" in searchable and ("AMEX" in searchable or "AMERICAN EXPRESS" in searchable):
+        first_amex_index = None
+        for idx, (_, row) in enumerate(accounts.iterrows()):
+            bank = str(row.get("bank", "")).upper()
+            account_number_text = str(row.get("account_number", ""))
+            if "AMEX" not in bank and "AMERICAN EXPRESS" not in bank:
+                continue
+            if first_amex_index is None:
+                first_amex_index = idx
+            if "append" in account_number_text.casefold():
+                return idx
+        if first_amex_index is not None:
+            return first_amex_index
+
     best_index = 0
     best_score = -1
     for idx, (_, row) in enumerate(accounts.iterrows()):
@@ -667,6 +682,11 @@ def guess_account_index(file_bytes, file_name, accounts, labels):
             best_index = idx
             best_score = score
     return best_index
+
+
+def is_amex_cardholder_statement(file_bytes, file_name):
+    sample = file_bytes[:250000].decode("latin-1", errors="ignore").upper()
+    return "CARD MEMBER" in sample and ("AMEX" in sample or "AMERICAN EXPRESS" in sample or file_name.lower().endswith(".csv"))
 
 
 def editable_pending_table(df, categories, subcategories, key):
@@ -988,6 +1008,11 @@ if page == "Import":
         default_account_index = guess_account_index(file_bytes, uploaded_statement.name, accounts, labels)
         selected_label = st.selectbox("Account", labels, index=default_account_index)
         selected_account = lookup[selected_label]
+        if is_amex_cardholder_statement(file_bytes, uploaded_statement.name):
+            st.info(
+                "AMEX cardholder CSV detected. Use the AMEX parent account; the app will append "
+                "the cardholder name from the CSV to each imported AMEX account number."
+            )
         balance_info = parse_statement_balance(file_bytes, uploaded_statement.name)
 
         try:
@@ -1256,6 +1281,20 @@ elif page == "Database":
             st.success(f"Updated {count} rows.")
             st.cache_data.clear()
             st.rerun()
+
+        corrected_upload = st.file_uploader(
+            "Upload corrected database Excel",
+            type=["xlsx", "xls"],
+            key="database_corrections_upload",
+        )
+        if st.button("Import corrected Excel updates", disabled=corrected_upload is None):
+            try:
+                count = import_database_updates_from_excel(corrected_upload)
+                st.success(f"Imported updates for {count} existing rows.")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
 
         st.download_button(
             "Download filtered database Excel",

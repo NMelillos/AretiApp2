@@ -17,7 +17,6 @@ require_login()
 # Keep heavy data/reporting imports after the login gate so the first screen appears quickly.
 import pandas as pd
 
-from classification import classify_transactions
 from db import (
     DB_PATH,
     USING_POSTGRES,
@@ -55,8 +54,6 @@ from db import (
     update_database_rows,
     update_statement_balance_rows,
 )
-from parsing import extract_statement_balance, parse_csv, parse_excel, parse_pdf
-from reporting import build_pdf_report, build_sample_expenses_report, get_report_groups, safe_filename
 from utils import format_currency
 
 
@@ -510,6 +507,8 @@ SHARED_SETUP_FILES = {
 
 @st.cache_data(show_spinner=False)
 def parse_statement(file_bytes, file_name):
+    from parsing import parse_csv, parse_excel, parse_pdf
+
     handle = BytesIO(file_bytes)
     lower_name = file_name.lower()
     if lower_name.endswith(".pdf"):
@@ -521,11 +520,19 @@ def parse_statement(file_bytes, file_name):
 
 @st.cache_data(show_spinner=False)
 def parse_statement_balance(file_bytes, file_name):
+    from parsing import extract_statement_balance
+
     handle = BytesIO(file_bytes)
     try:
         return extract_statement_balance(handle, file_name)
     except Exception:
         return {}
+
+
+def classify_statement_rows(parsed, memory):
+    from classification import classify_transactions
+
+    return classify_transactions(parsed, memory)
 
 
 def display_money(value, currency=""):
@@ -1025,7 +1032,7 @@ if page == "Import":
             parsed = parse_statement(file_bytes, uploaded_statement.name)
             parsed = flag_duplicates(parsed)
             parsed = apply_account_and_rates(parsed, selected_account)
-            classified = classify_transactions(parsed, get_memory())
+            classified = classify_statement_rows(parsed, get_memory())
             progress_slot.empty()
 
             st.success(f"Prepared {len(classified)} transactions for review.")
@@ -1430,6 +1437,8 @@ elif page == "Memory":
 
 
 elif page == "Reports":
+    from reporting import build_pdf_report, build_sample_expenses_report, get_report_groups, safe_filename
+
     st.subheader("Sample Expenses Report")
     reviewed = get_saved_transactions()
     categories_df = get_categories(include_subcategories=True)

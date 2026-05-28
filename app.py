@@ -1437,7 +1437,13 @@ elif page == "Memory":
 
 
 elif page == "Reports":
-    from reporting import build_pdf_report, build_sample_expenses_report, get_report_groups, safe_filename
+    from reporting import (
+        build_pdf_report,
+        build_report_verification,
+        build_sample_expenses_report,
+        get_report_groups,
+        safe_filename,
+    )
 
     st.subheader("Sample Expenses Report")
     reviewed = get_saved_transactions()
@@ -1454,12 +1460,25 @@ elif page == "Reports":
         filtered_reviewed = filtered_reviewed.copy()
         filtered_reviewed["amount"] = pd.to_numeric(filtered_reviewed["amount"], errors="coerce").fillna(0)
         filtered_reviewed["amount_usd"] = pd.to_numeric(filtered_reviewed["amount_usd"], errors="coerce")
-        total_usd = filtered_reviewed["amount_usd"].fillna(filtered_reviewed["amount"]).sum()
+        verification_summary, verification_detail = build_report_verification(filtered_reviewed, categories_df)
 
-        r1, r2, r3 = st.columns(3)
-        r1.metric("Reviewed rows", len(filtered_reviewed))
-        r2.metric("Total USD movement", format_currency(total_usd))
-        r3.metric("Categories", filtered_reviewed["category"].replace("", pd.NA).dropna().nunique())
+        render_summary_strip([
+            ("Reviewed rows", len(filtered_reviewed)),
+            ("Expenses in report", format_currency(verification_summary["total_expenses"])),
+            ("Income / deposits", format_currency(verification_summary["total_deposits"])),
+            ("Net movement", format_currency(verification_summary["net_movement"])),
+            (
+                "Rows verified",
+                f"{verification_summary['represented_rows']} / {verification_summary['database_rows']}",
+            ),
+            ("Needs attention", verification_summary["rows_needing_attention"]),
+        ])
+        if verification_summary["rows_needing_attention"]:
+            st.warning(
+                f"{verification_summary['rows_needing_attention']} filtered database rows need attention before the report fully reconciles."
+            )
+        else:
+            st.success("Report verification is OK for the selected filters.")
 
         report_bytes = build_sample_expenses_report(filtered_reviewed, categories_df)
         st.download_button(
@@ -1474,6 +1493,25 @@ elif page == "Reports":
             data=build_pdf_report(filtered_reviewed, categories_df),
             file_name="all_categories_expenses_report.pdf",
             mime="application/pdf",
+        )
+        st.download_button(
+            "Download report verification Excel",
+            data=dataframe_to_excel_bytes({
+                "Report check": pd.DataFrame([
+                    {"Metric": "Database rows checked", "Value": verification_summary["database_rows"]},
+                    {"Metric": "Rows represented in workbook", "Value": verification_summary["represented_rows"]},
+                    {"Metric": "Expense rows included in expense totals", "Value": verification_summary["expense_rows_in_report"]},
+                    {"Metric": "Income/deposit rows shown separately", "Value": verification_summary["deposit_rows"]},
+                    {"Metric": "Own funds rows excluded from expense totals", "Value": verification_summary["own_funds_rows"]},
+                    {"Metric": "Rows needing attention", "Value": verification_summary["rows_needing_attention"]},
+                    {"Metric": "Total expenses in report", "Value": verification_summary["total_expenses"]},
+                    {"Metric": "Total income/deposits", "Value": verification_summary["total_deposits"]},
+                    {"Metric": "Net movement", "Value": verification_summary["net_movement"]},
+                ]),
+                "Report verification": verification_detail,
+            }),
+            file_name="report_verification.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         report_groups = get_report_groups(categories_df)
         if report_groups:

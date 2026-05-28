@@ -21,6 +21,25 @@ def _is_own_funds(value):
     return _clean_text(value).casefold() == "own funds"
 
 
+def _looks_like_income_or_deposit(category, subcategory="", report_group=""):
+    text = " ".join([
+        _clean_text(category),
+        _clean_text(subcategory),
+        _clean_text(report_group),
+    ]).casefold()
+    if not text:
+        return False
+    income_markers = [
+        "income",
+        "deposit",
+        "deposits",
+        "revenue",
+        "interest earned",
+        "incoming",
+    ]
+    return any(marker in text for marker in income_markers)
+
+
 def _ordered_unique(values):
     seen = set()
     ordered = []
@@ -89,9 +108,22 @@ def _prepare_report_data(transactions, categories, report_group=None):
     tx["report_group"] = tx["category"].map(lambda value: group_map.get(str(value).casefold(), ""))
     tx["report_group"] = tx["report_group"].replace("", UNASSIGNED_GROUP)
 
-    expenses = tx[tx["report_amount"] < 0].copy()
-    expenses = expenses[
-        expenses["category"].str.strip().str.casefold() != "own funds"
+    positive_amount = tx["report_amount"] > 0
+    income_like = tx.apply(
+        lambda row: _looks_like_income_or_deposit(
+            row.get("category", ""),
+            row.get("subcategory", ""),
+            row.get("report_group", ""),
+        ),
+        axis=1,
+    )
+    expense_mask = (
+        (tx["report_amount"] < 0)
+        | (positive_amount & ~income_like & tx["report_group"].ne(UNASSIGNED_GROUP))
+    )
+    expenses = tx[
+        expense_mask
+        & (tx["category"].str.strip().str.casefold() != "own funds")
     ].copy()
     expenses["expense_usd"] = expenses["report_amount"].abs()
     expenses["month"] = expenses["txn_date"].dt.to_period("M")
@@ -396,19 +428,48 @@ def _prepare_verification_data(transactions, categories, report_group=None):
     tx["valid_for_report"] = tx["parsed_date"].notna() & (
         tx["amount_usd_numeric"].notna() | tx["statement_amount_numeric"].notna()
     )
-    tx["is_expense"] = tx["report_amount"] < 0
-    tx["is_deposit"] = tx["report_amount"] > 0
     tx["is_own_funds"] = tx["category"].map(_is_own_funds)
+    tx["income_like_category"] = tx.apply(
+        lambda row: _looks_like_income_or_deposit(
+            row.get("category", ""),
+            row.get("subcategory", ""),
+            row.get("report_group", ""),
+        ),
+        axis=1,
+    )
+    tx["is_income_or_deposit"] = (
+        (tx["report_amount"] > 0)
+        & ~tx["is_own_funds"]
+        & (
+            tx["income_like_category"]
+            | tx["report_group"].eq(UNASSIGNED_GROUP)
+        )
+    )
+    tx["is_expense"] = (
+        ~tx["is_own_funds"]
+        & (
+            (tx["report_amount"] < 0)
+            | (
+                (tx["report_amount"] > 0)
+                & ~tx["is_income_or_deposit"]
+                & tx["report_group"].ne(UNASSIGNED_GROUP)
+            )
+        )
+    )
     tx["expense_report_included"] = (
         tx["in_report_group_scope"]
         & tx["valid_for_report"]
         & tx["is_expense"]
-        & ~tx["is_own_funds"]
     )
     tx["income_deposit_included"] = (
         tx["in_report_group_scope"]
         & tx["valid_for_report"]
-        & tx["is_deposit"]
+        & tx["is_income_or_deposit"]
+    )
+    tx["own_funds_included"] = (
+        tx["in_report_group_scope"]
+        & tx["valid_for_report"]
+        & tx["is_own_funds"]
     )
     tx["represented_in_workbook"] = tx["in_report_group_scope"] & tx["valid_for_report"]
 
@@ -423,8 +484,8 @@ def _prepare_verification_data(transactions, categories, report_group=None):
             return "Included in expense report"
         if row["income_deposit_included"]:
             return "Shown in Income deposits sheet"
-        if row["is_own_funds"]:
-            return "Shown in verification only - Own funds excluded from expense totals"
+        if row["own_funds_included"]:
+            return "Shown in Own funds sheet - excluded from expense totals"
         return "Shown in verification only - zero amount"
 
     def section(row):
@@ -432,6 +493,8 @@ def _prepare_verification_data(transactions, categories, report_group=None):
             return row["report_group"]
         if row["income_deposit_included"]:
             return "Income deposits"
+        if row["own_funds_included"]:
+            return "Own funds"
         return "Report verification"
 
     tx["report_status"] = tx.apply(status, axis=1)
@@ -446,6 +509,7 @@ def build_report_verification(transactions, categories, report_group=None):
 
     expense_mask = tx["expense_report_included"] if not tx.empty else pd.Series(dtype=bool)
     deposit_mask = tx["income_deposit_included"] if not tx.empty else pd.Series(dtype=bool)
+    own_funds_mask = tx["own_funds_included"] if not tx.empty else pd.Series(dtype=bool)
     represented_mask = tx["represented_in_workbook"] if not tx.empty else pd.Series(dtype=bool)
     attention_mask = in_scope & ~tx["valid_for_report"] if not tx.empty else pd.Series(dtype=bool)
 
@@ -454,10 +518,11 @@ def build_report_verification(transactions, categories, report_group=None):
         "represented_rows": int(represented_mask.sum()) if not tx.empty else 0,
         "expense_rows_in_report": int(expense_mask.sum()) if not tx.empty else 0,
         "deposit_rows": int(deposit_mask.sum()) if not tx.empty else 0,
-        "own_funds_rows": int((in_scope & tx["is_own_funds"]).sum()) if not tx.empty else 0,
+        "own_funds_rows": int(own_funds_mask.sum()) if not tx.empty else 0,
         "rows_needing_attention": int(attention_mask.sum()) if not tx.empty else 0,
         "total_expenses": round(float(tx.loc[expense_mask, "report_amount"].abs().sum()), 2) if not tx.empty else 0.0,
         "total_deposits": round(float(tx.loc[deposit_mask, "report_amount"].sum()), 2) if not tx.empty else 0.0,
+        "total_own_funds": round(float(tx.loc[own_funds_mask, "report_amount"].sum()), 2) if not tx.empty else 0.0,
         "net_movement": round(float(tx.loc[valid_in_scope, "report_amount"].sum()), 2) if not tx.empty else 0.0,
     }
 
@@ -536,16 +601,65 @@ def _build_income_deposits_frame(verification_detail):
     return pd.concat([income, pd.DataFrame([total_row])], ignore_index=True)
 
 
+def _build_own_funds_frame(verification_detail):
+    if verification_detail.empty:
+        return pd.DataFrame(columns=[
+            "Date",
+            "Account",
+            "Bank",
+            "Category",
+            "Subcategory",
+            "USD equivalent",
+            "Full statement description",
+        ])
+
+    own_funds = verification_detail[
+        verification_detail["Report status"].eq("Shown in Own funds sheet - excluded from expense totals")
+    ].copy()
+    if own_funds.empty:
+        return pd.DataFrame([{
+            "Date": "",
+            "Account": "",
+            "Bank": "",
+            "Category": "No own funds rows in the selected report data",
+            "Subcategory": "",
+            "USD equivalent": 0.0,
+            "Full statement description": "",
+        }])
+
+    own_funds = own_funds[[
+        "Date",
+        "Account",
+        "Bank",
+        "Category",
+        "Subcategory",
+        "USD amount used in report",
+        "Full statement description",
+    ]].rename(columns={"USD amount used in report": "USD equivalent"})
+    total = round(float(pd.to_numeric(own_funds["USD equivalent"], errors="coerce").fillna(0).sum()), 2)
+    total_row = {
+        "Date": "",
+        "Account": "",
+        "Bank": "",
+        "Category": "TOTAL OWN FUNDS",
+        "Subcategory": "",
+        "USD equivalent": total,
+        "Full statement description": "",
+    }
+    return pd.concat([own_funds, pd.DataFrame([total_row])], ignore_index=True)
+
+
 def _verification_summary_frame(summary):
     return pd.DataFrame([
         {"Metric": "Database rows checked", "Value": summary["database_rows"]},
         {"Metric": "Rows represented in workbook", "Value": summary["represented_rows"]},
         {"Metric": "Expense rows included in expense totals", "Value": summary["expense_rows_in_report"]},
         {"Metric": "Income/deposit rows shown separately", "Value": summary["deposit_rows"]},
-        {"Metric": "Own funds rows excluded from expense totals", "Value": summary["own_funds_rows"]},
+        {"Metric": "Own funds rows shown separately", "Value": summary["own_funds_rows"]},
         {"Metric": "Rows needing attention", "Value": summary["rows_needing_attention"]},
         {"Metric": "Total expenses in report", "Value": summary["total_expenses"]},
         {"Metric": "Total income/deposits", "Value": summary["total_deposits"]},
+        {"Metric": "Total own funds", "Value": summary["total_own_funds"]},
         {"Metric": "Net movement", "Value": summary["net_movement"]},
     ])
 
@@ -582,16 +696,18 @@ def build_sample_expenses_report(transactions, categories, report_group=None):
     prepared_tx, sections, summary_rows, months, month_labels = _build_sections(transactions, categories, report_group)
     verification_summary, verification_detail = build_report_verification(transactions, categories, report_group)
     income_deposits = _build_income_deposits_frame(verification_detail)
+    own_funds = _build_own_funds_frame(verification_detail)
     title = "Sample expenses report" if not report_group else f"Sample expenses report - {report_group}"
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         prepared_tx.to_excel(writer, index=False, sheet_name="Reviewed transactions")
         income_deposits.to_excel(writer, index=False, sheet_name="Income deposits")
+        own_funds.to_excel(writer, index=False, sheet_name="Own funds")
         _verification_summary_frame(verification_summary).to_excel(writer, index=False, sheet_name="Report check")
         verification_detail.to_excel(writer, index=False, sheet_name="Report verification")
         ws = writer.book.create_sheet("Sample expenses report", 0)
         _write_report_sheet(ws, title, sections, summary_rows, months, month_labels)
-        for sheet_name in ["Reviewed transactions", "Income deposits", "Report check", "Report verification"]:
+        for sheet_name in ["Reviewed transactions", "Income deposits", "Own funds", "Report check", "Report verification"]:
             if sheet_name in writer.book.sheetnames:
                 _style_table_sheet(
                     writer.book[sheet_name],
@@ -750,6 +866,7 @@ def build_pdf_report(transactions, categories, report_group=None):
         f"Database rows checked: {verification_summary['database_rows']}",
         f"Rows represented in workbook: {verification_summary['represented_rows']}",
         f"Income/deposit rows shown separately: {verification_summary['deposit_rows']}",
+        f"Own funds rows shown separately: {verification_summary['own_funds_rows']}",
         f"Rows needing attention: {verification_summary['rows_needing_attention']}",
     ])
     return _minimal_pdf(lines)

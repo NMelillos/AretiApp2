@@ -1294,10 +1294,14 @@ elif page == "Database":
             type=["xlsx", "xls"],
             key="database_corrections_upload",
         )
-        if st.button("Import corrected Excel updates", disabled=corrected_upload is None):
+        st.info(
+            "For corrected database Excel files, do not Clear or Full reset first. "
+            "This import updates existing transactions by the ID column only and does not create new transactions."
+        )
+        if st.button("Import corrected Excel updates (existing IDs only)", disabled=corrected_upload is None):
             try:
                 count = import_database_updates_from_excel(corrected_upload)
-                st.success(f"Imported updates for {count} existing rows.")
+                st.success(f"Imported updates for {count} existing rows. No new transactions were created.")
                 st.cache_data.clear()
                 st.rerun()
             except Exception as exc:
@@ -1466,6 +1470,7 @@ elif page == "Reports":
             ("Reviewed rows", len(filtered_reviewed)),
             ("Expenses in report", format_currency(verification_summary["total_expenses"])),
             ("Income / deposits", format_currency(verification_summary["total_deposits"])),
+            ("Own funds", verification_summary["own_funds_rows"]),
             ("Net movement", format_currency(verification_summary["net_movement"])),
             (
                 "Rows verified",
@@ -1502,10 +1507,11 @@ elif page == "Reports":
                     {"Metric": "Rows represented in workbook", "Value": verification_summary["represented_rows"]},
                     {"Metric": "Expense rows included in expense totals", "Value": verification_summary["expense_rows_in_report"]},
                     {"Metric": "Income/deposit rows shown separately", "Value": verification_summary["deposit_rows"]},
-                    {"Metric": "Own funds rows excluded from expense totals", "Value": verification_summary["own_funds_rows"]},
+                    {"Metric": "Own funds rows shown separately", "Value": verification_summary["own_funds_rows"]},
                     {"Metric": "Rows needing attention", "Value": verification_summary["rows_needing_attention"]},
                     {"Metric": "Total expenses in report", "Value": verification_summary["total_expenses"]},
                     {"Metric": "Total income/deposits", "Value": verification_summary["total_deposits"]},
+                    {"Metric": "Total own funds", "Value": verification_summary["total_own_funds"]},
                     {"Metric": "Net movement", "Value": verification_summary["net_movement"]},
                 ]),
                 "Report verification": verification_detail,

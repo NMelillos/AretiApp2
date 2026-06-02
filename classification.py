@@ -84,7 +84,22 @@ def conservative_rule_category(normalized_description, categories, amount=0, tra
         return "Interest paid (including Credit Line)", "rule", 0.95
     bank_charge = _active_category("Interest, fees and charges", categories)
     if bank_charge and any(
-        token in text for token in ["BANK FEE", "ACCOUNT FEE", "COMMISSION", "PLAN FEE", "ULTRA PLAN FEE"]
+        token in text
+        for token in [
+            "BANK FEE",
+            "ACCOUNT FEE",
+            "PROCESSING FEE",
+            "PROCESSING FEES",
+            "TRANSFER COMMISSION",
+            "EXCHANGE COMMISSION",
+            "COMMISSION",
+            "MAINTENANCE FEE",
+            "MAINTENANCE FEES",
+            "PLAN FEE",
+            "ULTRA PLAN FEE",
+            " FEES",
+            " FEE",
+        ]
     ):
         return bank_charge, "rule", 0.95
     return None, None, 0.0
@@ -93,7 +108,7 @@ def conservative_rule_category(normalized_description, categories, amount=0, tra
 def keyword_category_guess(normalized_description, beneficiary, categories):
     text = f"{normalized_description} {beneficiary}".upper()
     rules = {
-        "Subscriptions": ["NETFLIX", "SPOTIFY", "DISNEY", "SUBSCRIPTION", "YOUTUBE"],
+        "Subscriptions": ["NETFLIX", "SPOTIFY", "DISNEY", "SUBSCRIPTION", "YOUTUBE", "REPLIT"],
         "Food, Groceries, Wine, Coffee": ["COFFEE", "CAFE", "SUPERMARKET", "GROCERY", "BAKERY", "RESTAURANT"],
         "Transportation": ["UBER", "BOLT", "TAXI", "PETROL", "FUEL", "PARKING", "BUS", "TRAIN"],
         "Bills (EAC, Water, Internet, Telephony)": ["EAC", "ELECTRIC", "WATER", "CYTA", "TELEPHONE", "INTERNET"],

@@ -83,6 +83,7 @@ class PostgresConnection:
     def __init__(self, connection, pool=None):
         self._connection = connection
         self._pool = pool
+        self._closed = False
 
     def cursor(self):
         return PostgresCursor(self._connection.cursor())
@@ -93,7 +94,22 @@ class PostgresConnection:
     def rollback(self):
         self._connection.rollback()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         if self._pool is not None:
             try:
                 if not self._connection.closed:
@@ -111,12 +127,22 @@ class PostgresConnection:
         self._connection.close()
 
 
+def _reset_postgres_pool():
+    global _POSTGRES_POOL
+    if _POSTGRES_POOL is not None:
+        try:
+            _POSTGRES_POOL.closeall()
+        except Exception:
+            pass
+    _POSTGRES_POOL = None
+
+
 def _get_postgres_pool():
     global _POSTGRES_POOL
     if _POSTGRES_POOL is None:
         import psycopg2.pool
 
-        pool_size = max(1, int(os.getenv("POSTGRES_POOL_SIZE", "4")))
+        pool_size = max(4, int(os.getenv("POSTGRES_POOL_SIZE", "12")))
         _POSTGRES_POOL = psycopg2.pool.SimpleConnectionPool(
             1,
             pool_size,
@@ -130,7 +156,14 @@ def _get_postgres_pool():
 def get_connection():
     if USING_POSTGRES:
         pool = _get_postgres_pool()
-        connection = pool.getconn()
+        try:
+            connection = pool.getconn()
+        except Exception as exc:
+            if "connection pool exhausted" not in str(exc).lower():
+                raise
+            _reset_postgres_pool()
+            pool = _get_postgres_pool()
+            connection = pool.getconn()
         if connection.closed:
             pool.putconn(connection, close=True)
             connection = pool.getconn()
@@ -531,41 +564,43 @@ def replace_rates_from_excel(uploaded_file):
 
 def get_categories(include_subcategories=False):
     conn = get_connection()
-    if include_subcategories:
-        df = pd.read_sql_query("""
-            SELECT category,
-                   COALESCE(subcategory, '') AS subcategory,
-                   COALESCE(report_group, '') AS report_group
-            FROM category_list
-            ORDER BY category, subcategory
-        """, conn)
+    try:
+        if include_subcategories:
+            return pd.read_sql_query("""
+                SELECT category,
+                       COALESCE(subcategory, '') AS subcategory,
+                       COALESCE(report_group, '') AS report_group
+                FROM category_list
+                ORDER BY category, subcategory
+            """, conn)
+        df = pd.read_sql_query(
+            "SELECT DISTINCT category FROM category_list ORDER BY category ASC",
+            conn,
+        )
+    finally:
         conn.close()
-        return df
-    df = pd.read_sql_query(
-        "SELECT DISTINCT category FROM category_list ORDER BY category ASC",
-        conn,
-    )
-    conn.close()
     return df["category"].dropna().astype(str).tolist()
 
 
 def get_subcategories(category=None):
     conn = get_connection()
-    if category:
-        df = pd.read_sql_query("""
-            SELECT DISTINCT subcategory
-            FROM category_list
-            WHERE category = ? AND COALESCE(subcategory, '') <> ''
-            ORDER BY subcategory
-        """, conn, params=(category,))
-    else:
-        df = pd.read_sql_query("""
-            SELECT DISTINCT subcategory
-            FROM category_list
-            WHERE COALESCE(subcategory, '') <> ''
-            ORDER BY subcategory
-        """, conn)
-    conn.close()
+    try:
+        if category:
+            df = pd.read_sql_query("""
+                SELECT DISTINCT subcategory
+                FROM category_list
+                WHERE category = ? AND COALESCE(subcategory, '') <> ''
+                ORDER BY subcategory
+            """, conn, params=(category,))
+        else:
+            df = pd.read_sql_query("""
+                SELECT DISTINCT subcategory
+                FROM category_list
+                WHERE COALESCE(subcategory, '') <> ''
+                ORDER BY subcategory
+            """, conn)
+    finally:
+        conn.close()
     return df["subcategory"].dropna().astype(str).tolist()
 
 
@@ -586,23 +621,27 @@ def add_category(category, subcategory=""):
 
 def get_accounts():
     conn = get_connection()
-    df = pd.read_sql_query("""
-        SELECT id, account_name, bank, account_number, currency, rate_type
-        FROM account_list
-        ORDER BY account_name, bank, account_number
-    """, conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query("""
+            SELECT id, account_name, bank, account_number, currency, rate_type
+            FROM account_list
+            ORDER BY account_name, bank, account_number
+        """, conn)
+    finally:
+        conn.close()
     return df
 
 
 def get_rates():
     conn = get_connection()
-    df = pd.read_sql_query("""
-        SELECT rate_month, rate_type, rate_value
-        FROM rates
-        ORDER BY rate_month DESC, rate_type
-    """, conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query("""
+            SELECT rate_month, rate_type, rate_value
+            FROM rates
+            ORDER BY rate_month DESC, rate_type
+        """, conn)
+    finally:
+        conn.close()
     return df
 
 
@@ -614,23 +653,25 @@ def get_latest_rate(rate_type, txn_date=None):
     month_key = month.to_period("M").to_timestamp().strftime("%Y-%m-%d") if not pd.isna(month) else None
 
     conn = get_connection()
-    if month_key:
-        df = pd.read_sql_query("""
-            SELECT rate_value
-            FROM rates
-            WHERE rate_type = ? AND rate_month <= ?
-            ORDER BY rate_month DESC
-            LIMIT 1
-        """, conn, params=(rate_type, month_key))
-    else:
-        df = pd.read_sql_query("""
-            SELECT rate_value
-            FROM rates
-            WHERE rate_type = ?
-            ORDER BY rate_month DESC
-            LIMIT 1
-        """, conn, params=(rate_type,))
-    conn.close()
+    try:
+        if month_key:
+            df = pd.read_sql_query("""
+                SELECT rate_value
+                FROM rates
+                WHERE rate_type = ? AND rate_month <= ?
+                ORDER BY rate_month DESC
+                LIMIT 1
+            """, conn, params=(rate_type, month_key))
+        else:
+            df = pd.read_sql_query("""
+                SELECT rate_value
+                FROM rates
+                WHERE rate_type = ?
+                ORDER BY rate_month DESC
+                LIMIT 1
+            """, conn, params=(rate_type,))
+    finally:
+        conn.close()
     if df.empty:
         return 1.0 if rate_type == "USD/USD" else None
     return float(df["rate_value"].iloc[0])
@@ -688,13 +729,15 @@ def remember_transaction(original_description, normalized_description, beneficia
 
 def get_memory():
     conn = get_connection()
-    df = pd.read_sql_query("""
-        SELECT id, original_description, normalized_description, beneficiary,
-               transaction_type, category, subcategory, first_seen, last_seen, times_seen
-        FROM transaction_memory
-        ORDER BY times_seen DESC, last_seen DESC
-    """, conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query("""
+            SELECT id, original_description, normalized_description, beneficiary,
+                   transaction_type, category, subcategory, first_seen, last_seen, times_seen
+            FROM transaction_memory
+            ORDER BY times_seen DESC, last_seen DESC
+        """, conn)
+    finally:
+        conn.close()
     return df
 
 
@@ -856,8 +899,8 @@ def save_statement_balance(statement_hash, statement_name, balance, account=None
         "statement_hash": statement_hash,
         "statement_name": statement_name,
         "account_name": _clean(account.get("account_name", "")),
-        "bank": _clean(balance.get("bank") or account.get("bank", "")),
-        "account_number": _clean(balance.get("account_number") or account.get("account_number", "")),
+        "bank": _clean(account.get("bank", "") or balance.get("bank", "")),
+        "account_number": _clean(account.get("account_number", "") or balance.get("account_number", "")),
         "currency": _clean(balance.get("currency") or account.get("currency", "")),
         "period_start": _clean(balance.get("period_start", "")),
         "period_end": _clean(balance.get("period_end", "")),
@@ -981,57 +1024,61 @@ def _apply_balance_reconciliation(df):
 
 def get_statement_balances():
     conn = get_connection()
-    df = pd.read_sql_query("""
-        SELECT id, statement_name, account_name, bank, account_number, currency,
-               period_start, period_end, opening_balance, money_out, money_in,
-               closing_balance, source, notes, imported_at, updated_at, statement_hash
-        FROM statement_balances
-        ORDER BY COALESCE(period_end, '') DESC, imported_at DESC, id DESC
-    """, conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query("""
+            SELECT id, statement_name, account_name, bank, account_number, currency,
+                   period_start, period_end, opening_balance, money_out, money_in,
+                   closing_balance, source, notes, imported_at, updated_at, statement_hash
+            FROM statement_balances
+            ORDER BY COALESCE(period_end, '') DESC, imported_at DESC, id DESC
+        """, conn)
+    finally:
+        conn.close()
     return _apply_balance_reconciliation(df)
 
 
 def get_import_history():
     conn = get_connection()
-    df = pd.read_sql_query("""
-        WITH first_tx AS (
-            SELECT statement_hash,
-                   MIN(account_name) AS account_name,
-                   MIN(bank) AS bank,
-                   MIN(account_number) AS account_number,
-                   MIN(currency) AS currency
-            FROM classified_transactions
-            GROUP BY statement_hash
-        )
-        SELECT si.id,
-               si.statement_name,
-               si.imported_at,
-               si.transaction_count,
-               COALESCE(ft.account_name, sb.account_name, '') AS account_name,
-               COALESCE(ft.bank, sb.bank, '') AS bank,
-               COALESCE(ft.account_number, sb.account_number, '') AS account_number,
-               COALESCE(ft.currency, sb.currency, '') AS currency,
-               sb.period_start,
-               sb.period_end,
-               sb.opening_balance,
-               sb.money_in,
-               sb.money_out,
-               sb.closing_balance,
-               COALESCE(si.duplicate_attempts, 0) AS duplicate_attempts,
-               si.last_duplicate_at,
-               CASE
-                   WHEN COALESCE(si.duplicate_attempts, 0) > 0
-                       THEN 'Duplicate blocked (' || CAST(COALESCE(si.duplicate_attempts, 0) AS TEXT) || ')'
-                   ELSE 'Imported'
-               END AS duplicate_status,
-               si.statement_hash
-        FROM statement_imports si
-        LEFT JOIN first_tx ft ON ft.statement_hash = si.statement_hash
-        LEFT JOIN statement_balances sb ON sb.statement_hash = si.statement_hash
-        ORDER BY si.imported_at DESC, si.id DESC
-    """, conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query("""
+            WITH first_tx AS (
+                SELECT statement_hash,
+                       MIN(account_name) AS account_name,
+                       MIN(bank) AS bank,
+                       MIN(account_number) AS account_number,
+                       MIN(currency) AS currency
+                FROM classified_transactions
+                GROUP BY statement_hash
+            )
+            SELECT si.id,
+                   si.statement_name,
+                   si.imported_at,
+                   si.transaction_count,
+                   COALESCE(ft.account_name, sb.account_name, '') AS account_name,
+                   COALESCE(ft.bank, sb.bank, '') AS bank,
+                   COALESCE(ft.account_number, sb.account_number, '') AS account_number,
+                   COALESCE(ft.currency, sb.currency, '') AS currency,
+                   sb.period_start,
+                   sb.period_end,
+                   sb.opening_balance,
+                   sb.money_in,
+                   sb.money_out,
+                   sb.closing_balance,
+                   COALESCE(si.duplicate_attempts, 0) AS duplicate_attempts,
+                   si.last_duplicate_at,
+                   CASE
+                       WHEN COALESCE(si.duplicate_attempts, 0) > 0
+                           THEN 'Duplicate blocked (' || CAST(COALESCE(si.duplicate_attempts, 0) AS TEXT) || ')'
+                       ELSE 'Imported'
+                   END AS duplicate_status,
+                   si.statement_hash
+            FROM statement_imports si
+            LEFT JOIN first_tx ft ON ft.statement_hash = si.statement_hash
+            LEFT JOIN statement_balances sb ON sb.statement_hash = si.statement_hash
+            ORDER BY si.imported_at DESC, si.id DESC
+        """, conn)
+    finally:
+        conn.close()
     df = _apply_balance_reconciliation(df)
     if not df.empty:
         df["balance_status"] = df["reconciliation_status"].fillna("Missing data")
@@ -1135,12 +1182,14 @@ def _append_amex_card_member(account, card_member, remove_instruction=False):
 
 def _load_rate_lookup():
     conn = get_connection()
-    rates = pd.read_sql_query("""
-        SELECT rate_month, rate_type, rate_value
-        FROM rates
-        ORDER BY rate_type, rate_month DESC
-    """, conn)
-    conn.close()
+    try:
+        rates = pd.read_sql_query("""
+            SELECT rate_month, rate_type, rate_value
+            FROM rates
+            ORDER BY rate_type, rate_month DESC
+        """, conn)
+    finally:
+        conn.close()
     if rates.empty:
         return {}
     rates["rate_type"] = rates["rate_type"].fillna("").astype(str).str.upper()
@@ -1169,6 +1218,16 @@ def _lookup_rate(rate_lookup, rate_type, txn_date=None):
     if candidates.empty:
         return float(frame["rate_value"].iloc[-1])
     return float(candidates["rate_value"].iloc[0])
+
+
+def _usd_from_amount(amount, rate):
+    if rate is None or rate == 0:
+        return None
+    parsed_amount = _float_or_none(amount)
+    parsed_rate = _float_or_none(rate)
+    if parsed_amount is None or parsed_rate is None or parsed_rate == 0:
+        return None
+    return round(parsed_amount * parsed_rate, 2)
 
 
 def _rate_type_from_account(account):
@@ -1210,7 +1269,7 @@ def apply_account_and_rates(df, account):
             usd_values.append(None)
         else:
             fx_rates.append(rate)
-            usd_values.append(round(amount / rate, 2))
+            usd_values.append(_usd_from_amount(amount, rate))
 
     out["account_name"] = account_names
     out["bank"] = banks
@@ -1297,64 +1356,72 @@ def save_pending_transactions(df, statement_name, statement_hash):
 
 def get_pending_transactions():
     conn = get_connection()
-    df = pd.read_sql_query("""
-        SELECT *
-        FROM classified_transactions
-        WHERE COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
-        ORDER BY txn_date, id
-    """, conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query("""
+            SELECT *
+            FROM classified_transactions
+            WHERE COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+            ORDER BY txn_date, id
+        """, conn)
+    finally:
+        conn.close()
     return df
 
 
 def get_saved_transactions():
     conn = get_connection()
-    df = pd.read_sql_query("""
-        SELECT *
-        FROM classified_transactions
-        WHERE COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
-        ORDER BY txn_date DESC, id DESC
-    """, conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query("""
+            SELECT *
+            FROM classified_transactions
+            WHERE COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
+            ORDER BY txn_date DESC, id DESC
+        """, conn)
+    finally:
+        conn.close()
     return df
 
 
 def get_all_transactions():
     conn = get_connection()
-    df = pd.read_sql_query("""
-        SELECT *
-        FROM classified_transactions
-        ORDER BY id DESC
-    """, conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query("""
+            SELECT *
+            FROM classified_transactions
+            ORDER BY id DESC
+        """, conn)
+    finally:
+        conn.close()
     return df
 
 
 def get_dashboard_counts():
     conn = get_connection()
-    cur = conn.cursor()
-    counts = {}
-    queries = {
-        "categories": "SELECT COUNT(*) FROM category_list",
-        "accounts": "SELECT COUNT(*) FROM account_list",
-        "rates": "SELECT COUNT(*) FROM rates",
-        "pending": """
-            SELECT COUNT(*)
-            FROM classified_transactions
-            WHERE COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
-        """,
-        "reviewed": """
-            SELECT COUNT(*)
-            FROM classified_transactions
-            WHERE COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
-        """,
-        "memory": "SELECT COUNT(*) FROM transaction_memory",
-        "statements": "SELECT COUNT(*) FROM statement_imports",
-    }
-    for key, query in queries.items():
-        cur.execute(query)
-        counts[key] = int(cur.fetchone()[0])
-    conn.close()
+    try:
+        cur = conn.cursor()
+        counts = {}
+        queries = {
+            "categories": "SELECT COUNT(*) FROM category_list",
+            "accounts": "SELECT COUNT(*) FROM account_list",
+            "rates": "SELECT COUNT(*) FROM rates",
+            "pending": """
+                SELECT COUNT(*)
+                FROM classified_transactions
+                WHERE COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+            """,
+            "reviewed": """
+                SELECT COUNT(*)
+                FROM classified_transactions
+                WHERE COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
+            """,
+            "memory": "SELECT COUNT(*) FROM transaction_memory",
+            "statements": "SELECT COUNT(*) FROM statement_imports",
+        }
+        for key, query in queries.items():
+            cur.execute(query)
+            counts[key] = int(cur.fetchone()[0])
+    finally:
+        conn.close()
     return counts
 
 
@@ -1507,6 +1574,55 @@ def update_database_rows(df):
     return updated
 
 
+def backfill_missing_usd_amounts():
+    conn = get_connection()
+    try:
+        rates = pd.read_sql_query("""
+            SELECT rate_month, rate_type, rate_value
+            FROM rates
+            ORDER BY rate_type, rate_month DESC
+        """, conn)
+        tx = pd.read_sql_query("""
+            SELECT id, txn_date, amount, rate_type, fx_rate
+            FROM classified_transactions
+            WHERE amount IS NOT NULL
+              AND (amount_usd IS NULL OR CAST(amount_usd AS TEXT) = '')
+        """, conn)
+        if tx.empty:
+            return 0
+
+        if rates.empty:
+            rate_lookup = {}
+        else:
+            rates["rate_type"] = rates["rate_type"].fillna("").astype(str).str.upper()
+            rates["rate_month"] = pd.to_datetime(rates["rate_month"], errors="coerce")
+            rate_lookup = {
+                rate_type: frame.sort_values("rate_month", ascending=False).reset_index(drop=True)
+                for rate_type, frame in rates.groupby("rate_type")
+                if rate_type
+            }
+
+        cur = conn.cursor()
+        updated = 0
+        for _, row in tx.iterrows():
+            fx_rate = _float_or_none(row.get("fx_rate"))
+            if fx_rate is None:
+                fx_rate = _lookup_rate(rate_lookup, row.get("rate_type", ""), row.get("txn_date"))
+            amount_usd = _usd_from_amount(row.get("amount"), fx_rate)
+            if amount_usd is None:
+                continue
+            cur.execute("""
+                UPDATE classified_transactions
+                SET fx_rate = ?, amount_usd = ?
+                WHERE id = ?
+            """, (fx_rate, amount_usd, int(row["id"])))
+            updated += cur.rowcount
+        conn.commit()
+        return updated
+    finally:
+        conn.close()
+
+
 def import_database_updates_from_excel(uploaded_file):
     df = _read_excel(uploaded_file)
     if df.empty:
@@ -1599,7 +1715,7 @@ def insert_manual_transaction(txn_date, description, amount, category, subcatego
     transaction_type = infer_transaction_type(description, amount)
     rate_type = _clean(account.get("rate_type", "")).upper()
     fx_rate = get_latest_rate(rate_type, date_text)
-    amount_usd = round(amount / fx_rate, 2) if fx_rate else None
+    amount_usd = _usd_from_amount(amount, fx_rate)
     now = _now()
 
     row_hash_src = "|".join([

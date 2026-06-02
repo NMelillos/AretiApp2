@@ -22,6 +22,7 @@ from db import (
     USING_POSTGRES,
     add_category,
     apply_account_and_rates,
+    backfill_missing_usd_amounts,
     build_statement_hash,
     dataframe_to_excel_bytes,
     full_reset_database,
@@ -282,6 +283,57 @@ st.markdown(
         margin-top: 6px;
         color: var(--text-main);
         font-size: 20px;
+        font-weight: 800;
+    }
+    .executive-note {
+        color: var(--text-muted);
+        font-size: 13px;
+        margin: -4px 0 14px;
+    }
+    .executive-table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(16, 32, 51, 0.05);
+    }
+    .executive-table th,
+    .executive-table td {
+        border-bottom: 1px solid var(--border);
+        padding: 10px 12px;
+        text-align: right;
+        vertical-align: top;
+        font-size: 13px;
+    }
+    .executive-table th:first-child,
+    .executive-table td:first-child {
+        text-align: left;
+    }
+    .executive-table th {
+        background: #e8eef6;
+        color: var(--text-main);
+        font-weight: 800;
+        text-transform: uppercase;
+        font-size: 11px;
+    }
+    .executive-table tr:last-child td {
+        border-bottom: 0;
+    }
+    .trend-up {
+        background: #fff1f2;
+        color: #b42318;
+        font-weight: 800;
+    }
+    .trend-down {
+        background: #ecfdf3;
+        color: #067647;
+        font-weight: 800;
+    }
+    .trend-flat {
+        background: #f8fafc;
+        color: var(--text-muted);
         font-weight: 800;
     }
     .soft-panel {
@@ -831,7 +883,11 @@ def render_app_header():
 
 
 def render_status_bar():
-    counts = get_dashboard_counts()
+    try:
+        counts = get_dashboard_counts()
+    except Exception as exc:
+        st.warning(f"Dashboard counts are temporarily unavailable: {exc}")
+        return
     cards = [
         ("Categories", counts["categories"]),
         ("Accounts", counts["accounts"]),
@@ -935,6 +991,135 @@ def render_setup_loader(key_prefix):
             st.success(f"Loaded {count} monthly rates.")
             st.cache_data.clear()
             st.rerun()
+
+
+EXECUTIVE_REPORT_PAGE = "Executive Summary"
+
+
+def is_executive_report_request():
+    return st.query_params.get("page") in {EXECUTIVE_REPORT_PAGE, "Boss Report", "Read Only Report"}
+
+
+def _money(value):
+    return format_currency(value)
+
+
+def _percent(value):
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{float(value):.1f}%"
+
+
+def _executive_row_html(group, current_amount, previous_amount, change):
+    if abs(change) <= 0.005:
+        trend_class = "trend-flat"
+        trend_text = "No change"
+    elif change > 0:
+        trend_class = "trend-up"
+        trend_text = "Increasing"
+    else:
+        trend_class = "trend-down"
+        trend_text = "Decreasing"
+    change_pct = None if abs(previous_amount) <= 0.005 else (change / previous_amount) * 100
+    return (
+        "<tr>"
+        f"<td>{escape(str(group))}</td>"
+        f"<td>{_money(current_amount)}</td>"
+        f"<td>{_money(previous_amount)}</td>"
+        f"<td class=\"{trend_class}\">{_money(change)}</td>"
+        f"<td class=\"{trend_class}\">{_percent(change_pct)}</td>"
+        f"<td class=\"{trend_class}\">{trend_text}</td>"
+        "</tr>"
+    )
+
+
+def render_executive_report():
+    from reporting import _prepare_report_data
+
+    st.subheader("Executive Summary")
+    st.markdown(
+        "<div class=\"executive-note\">Read-only report view. This page has no import, edit, clear, or reset controls.</div>",
+        unsafe_allow_html=True,
+    )
+
+    reviewed = get_saved_transactions()
+    categories_df = get_categories(include_subcategories=True)
+    if reviewed.empty:
+        st.info("No reviewed transactions are available for the executive report yet.")
+        return
+
+    date_values = pd.to_datetime(reviewed.get("txn_date"), errors="coerce").dropna()
+    default_end = date_values.max().date() if not date_values.empty else datetime.now().date()
+    requested_end = st.query_params.get("to")
+    if requested_end:
+        parsed_requested_end = pd.to_datetime(requested_end, errors="coerce")
+        if not pd.isna(parsed_requested_end):
+            default_end = parsed_requested_end.date()
+
+    cutoff = st.date_input("Report until", value=default_end, key="executive_report_until")
+    cutoff_ts = pd.Timestamp(cutoff)
+    reviewed = reviewed.copy()
+    reviewed["txn_date"] = pd.to_datetime(reviewed["txn_date"], errors="coerce")
+    filtered = reviewed[reviewed["txn_date"].notna() & (reviewed["txn_date"] <= cutoff_ts)].copy()
+    if filtered.empty:
+        st.warning("No reviewed transactions exist up to the selected date.")
+        return
+
+    _, expenses, _, _ = _prepare_report_data(filtered, categories_df)
+    if expenses.empty:
+        st.info("No reviewed expense rows match the selected period.")
+        return
+
+    current_month = cutoff_ts.to_period("M")
+    previous_month = current_month - 1
+    month_label = current_month.to_timestamp().strftime("%B %Y")
+    previous_label = previous_month.to_timestamp().strftime("%B %Y")
+
+    current_total = float(expenses.loc[expenses["month"] == current_month, "expense_usd"].sum())
+    previous_total = float(expenses.loc[expenses["month"] == previous_month, "expense_usd"].sum())
+    all_total = float(expenses["expense_usd"].sum())
+    current_change = current_total - previous_total
+
+    render_summary_strip([
+        ("Report until", cutoff_ts.strftime("%d %b %Y")),
+        (f"{month_label} expenses", _money(current_total)),
+        (f"{previous_label} expenses", _money(previous_total)),
+        ("Movement", _money(current_change)),
+        ("Total to date", _money(all_total)),
+        ("Groups", expenses["report_group"].nunique()),
+        ("Reviewed rows", len(filtered)),
+        ("Expense rows", len(expenses)),
+    ])
+
+    groups = sorted(expenses["report_group"].dropna().astype(str).unique().tolist())
+    rows = []
+    for group in groups:
+        group_expenses = expenses[expenses["report_group"] == group].copy()
+        current_amount = float(group_expenses.loc[group_expenses["month"] == current_month, "expense_usd"].sum())
+        previous_amount = float(group_expenses.loc[group_expenses["month"] == previous_month, "expense_usd"].sum())
+        rows.append((group, current_amount, previous_amount, current_amount - previous_amount))
+    rows.sort(key=lambda item: abs(item[3]), reverse=True)
+
+    header = (
+        "<table class=\"executive-table\">"
+        "<thead><tr>"
+        "<th>Reporting group</th>"
+        f"<th>{escape(month_label)}</th>"
+        f"<th>{escape(previous_label)}</th>"
+        "<th>Change</th>"
+        "<th>% change</th>"
+        "<th>Status</th>"
+        "</tr></thead><tbody>"
+    )
+    body = "".join(_executive_row_html(*row) for row in rows)
+    st.markdown(header + body + "</tbody></table>", unsafe_allow_html=True)
+
+
+if is_executive_report_request():
+    render_app_header()
+    render_session_line()
+    render_executive_report()
+    st.stop()
 
 
 render_app_header()
@@ -1052,9 +1237,9 @@ if page == "Import":
                     ("Closing balance", display_money(balance_info.get("closing_balance"), currency)),
                 ])
                 balance_preview = pd.DataFrame([{
-                    "Bank": balance_info.get("bank") or selected_account.get("bank", ""),
+                    "Bank": selected_account.get("bank", "") or balance_info.get("bank", ""),
                     "Account": selected_account.get("account_name", ""),
-                    "Account number": balance_info.get("account_number") or selected_account.get("account_number", ""),
+                    "Account number": selected_account.get("account_number", "") or balance_info.get("account_number", ""),
                     "Currency": currency,
                     "Period start": balance_info.get("period_start", ""),
                     "Period end": balance_info.get("period_end", ""),
@@ -1289,6 +1474,15 @@ elif page == "Database":
             st.cache_data.clear()
             st.rerun()
 
+        if st.button("Fill missing USD equivalents"):
+            count = backfill_missing_usd_amounts()
+            if count:
+                st.success(f"Calculated USD equivalents for {count} rows.")
+            else:
+                st.info("No rows needed USD equivalent backfill.")
+            st.cache_data.clear()
+            st.rerun()
+
         corrected_upload = st.file_uploader(
             "Upload corrected database Excel",
             type=["xlsx", "xls"],
@@ -1301,7 +1495,11 @@ elif page == "Database":
         if st.button("Import corrected Excel updates (existing IDs only)", disabled=corrected_upload is None):
             try:
                 count = import_database_updates_from_excel(corrected_upload)
-                st.success(f"Imported updates for {count} existing rows. No new transactions were created.")
+                backfilled = backfill_missing_usd_amounts()
+                message = f"Imported updates for {count} existing rows. No new transactions were created."
+                if backfilled:
+                    message += f" Filled missing USD equivalents for {backfilled} rows."
+                st.success(message)
                 st.cache_data.clear()
                 st.rerun()
             except Exception as exc:

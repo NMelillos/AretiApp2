@@ -592,15 +592,18 @@ def _bank_of_cyprus_transaction_amount(description, fallback_amount):
     amount = abs(amounts[0][1])
     upper = re.sub(r"\s+", " ", str(description or "").upper())
     incoming_tokens = [
+        "INWARD",
         "TRANSFER-INTERNET-CREDIT",
         "CREDIT TRANSFER",
         "CREDIT",
+        "CREDIT ADVICE",
         "DEPOSIT",
         "REFUND",
         "REVERSAL",
         "TIPS IN",
     ]
     outgoing_tokens = [
+        "OUTWARD",
         "TRANSFER-INTERNET-DEBIT",
         "TIPS OUT",
         "CASH WITHDRAWAL",

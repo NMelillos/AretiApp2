@@ -1,4 +1,5 @@
 from difflib import SequenceMatcher, get_close_matches
+import re
 
 import pandas as pd
 
@@ -24,6 +25,75 @@ def _active_category(category, categories):
         return ""
     lookup = _category_lookup(categories)
     return lookup.get(str(category).strip().casefold(), "")
+
+
+MERCHANT_SIGNATURE_STOP_WORDS = {
+    "ACCOUNT",
+    "ATM",
+    "AUTH",
+    "BANK",
+    "CARD",
+    "CASH",
+    "COMMISSION",
+    "CONTINUE",
+    "CREDIT",
+    "CY",
+    "DEBIT",
+    "EUR",
+    "FEE",
+    "FEES",
+    "FROM",
+    "GBP",
+    "IBANK",
+    "INTERNET",
+    "INWARD",
+    "MAINTENANCE",
+    "OUR",
+    "OUT",
+    "OUTWARD",
+    "PAGE",
+    "PAYMENT",
+    "POS",
+    "PROCESSING",
+    "PURCHASE",
+    "REF",
+    "STATEMENT",
+    "TIPS",
+    "TO",
+    "TRACE",
+    "TRANSFER",
+    "USD",
+    "WITHDRAWAL",
+}
+MERCHANT_BRANDS = {
+    "AMBER AND JOE": "AMBER JOE",
+    "AMBER JOE": "AMBER JOE",
+    "BOLT": "BOLT",
+    "REPLIT": "REPLIT",
+    "WOLT": "WOLT",
+}
+
+
+def _merchant_signature(description):
+    text = re.sub(r"[^A-Z0-9\s&]", " ", str(description or "").upper())
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    for brand, signature in MERCHANT_BRANDS.items():
+        if brand in text:
+            return signature
+    tokens = []
+    for token in text.split():
+        if token in MERCHANT_SIGNATURE_STOP_WORDS:
+            continue
+        if any(char.isdigit() for char in token):
+            continue
+        if len(token) < 3:
+            continue
+        tokens.append(token)
+        if len(tokens) == 3:
+            break
+    return " ".join(tokens)
 
 
 def exact_match(memory_df, normalized_description):
@@ -109,7 +179,7 @@ def keyword_category_guess(normalized_description, beneficiary, categories):
     text = f"{normalized_description} {beneficiary}".upper()
     rules = {
         "Subscriptions": ["NETFLIX", "SPOTIFY", "DISNEY", "SUBSCRIPTION", "YOUTUBE", "REPLIT"],
-        "Food, Groceries, Wine, Coffee": ["COFFEE", "CAFE", "SUPERMARKET", "GROCERY", "BAKERY", "RESTAURANT"],
+        "Food, Groceries, Wine, Coffee": ["COFFEE", "CAFE", "SUPERMARKET", "GROCERY", "BAKERY", "RESTAURANT", "WOLT", "AMBER JOE"],
         "Transportation": ["UBER", "BOLT", "TAXI", "PETROL", "FUEL", "PARKING", "BUS", "TRAIN"],
         "Bills (EAC, Water, Internet, Telephony)": ["EAC", "ELECTRIC", "WATER", "CYTA", "TELEPHONE", "INTERNET"],
         "Medical, insurance and healthcare": ["DOCTOR", "PHARMACY", "MEDICAL", "HOSPITAL", "CLINIC"],
@@ -136,7 +206,7 @@ def keyword_category_guess(normalized_description, beneficiary, categories):
 
 def _memory_indexes(memory_df):
     if memory_df.empty:
-        return {}, {}, {}, []
+        return {}, {}, {}, [], {}
 
     memory = memory_df.copy()
     for column in [
@@ -162,21 +232,25 @@ def _memory_indexes(memory_df):
     best_by_type_desc = {}
     descriptions_by_type = {}
     all_descriptions = []
+    best_by_signature = {}
 
     for _, row in memory.iterrows():
         item = row.to_dict()
         desc = item["normalized_description"]
         tx_type = item.get("transaction_type", "")
+        signature = _merchant_signature(desc)
         if desc not in exact:
             exact[desc] = item
             all_descriptions.append(desc)
+        if signature and signature not in best_by_signature:
+            best_by_signature[signature] = item
         best_by_type_desc.setdefault(tx_type, {})
         descriptions_by_type.setdefault(tx_type, [])
         if desc not in best_by_type_desc[tx_type]:
             best_by_type_desc[tx_type][desc] = item
             descriptions_by_type[tx_type].append(desc)
 
-    return exact, best_by_type_desc, descriptions_by_type, all_descriptions
+    return exact, best_by_type_desc, descriptions_by_type, all_descriptions, best_by_signature
 
 
 def _similar_from_index(
@@ -212,7 +286,7 @@ def _similar_from_index(
 def classify_transactions(df, memory_df):
     categories = get_categories()
     category_lookup = _category_lookup(categories)
-    exact_index, best_by_type_desc, descriptions_by_type, all_descriptions = _memory_indexes(memory_df)
+    exact_index, best_by_type_desc, descriptions_by_type, all_descriptions, best_by_signature = _memory_indexes(memory_df)
     suggestions = []
 
     def active_category(category):
@@ -235,6 +309,19 @@ def classify_transactions(df, memory_df):
                 "match_type": "exact",
                 "matched_reference": exact.get("original_description") or exact["normalized_description"],
                 "confidence": 1.0,
+            })
+            continue
+
+        merchant_signature = _merchant_signature(normalized)
+        merchant = best_by_signature.get(merchant_signature) if merchant_signature else None
+        merchant_category = active_category(merchant.get("category", "")) if merchant else ""
+        if merchant and merchant_category:
+            suggestions.append({
+                "suggested_category": merchant_category,
+                "suggested_subcategory": merchant.get("subcategory", ""),
+                "match_type": "similar",
+                "matched_reference": merchant.get("original_description") or merchant["normalized_description"],
+                "confidence": 0.88,
             })
             continue
 

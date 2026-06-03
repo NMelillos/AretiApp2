@@ -695,6 +695,24 @@ def account_options(accounts):
     return labels, lookup
 
 
+def statement_currency_hint(text):
+    head = str(text or "").upper()[:12000]
+    if "EUR STATEMENT" in head or "€" in head:
+        return "EUR"
+    if "USD STATEMENT" in head or "$" in head:
+        return "USD"
+    if "GBP STATEMENT" in head or "£" in head:
+        return "GBP"
+    eur_pos = head.find(" EUR ")
+    usd_pos = head.find(" USD ")
+    gbp_pos = head.find(" GBP ")
+    positions = [(pos, code) for pos, code in [(eur_pos, "EUR"), (usd_pos, "USD"), (gbp_pos, "GBP")] if pos >= 0]
+    if positions:
+        positions.sort()
+        return positions[0][1]
+    return ""
+
+
 def guess_account_index(file_bytes, file_name, accounts, labels):
     if accounts.empty or not labels:
         return 0
@@ -708,6 +726,7 @@ def guess_account_index(file_bytes, file_name, accounts, labels):
         except Exception:
             pass
     searchable = f"{file_name} {sample}".upper()
+    currency_hint = statement_currency_hint(searchable)
     digits = re.sub(r"\D", "", searchable)
 
     if "CARD MEMBER" in searchable and ("AMEX" in searchable or "AMERICAN EXPRESS" in searchable):
@@ -737,6 +756,9 @@ def guess_account_index(file_bytes, file_name, accounts, labels):
             value = str(row.get(field, "")).strip().upper()
             if value and value in searchable:
                 score += 2
+        row_currency = str(row.get("currency", "")).strip().upper()
+        if currency_hint and row_currency:
+            score += 7 if row_currency == currency_hint else -4
         if score > best_score:
             best_index = idx
             best_score = score

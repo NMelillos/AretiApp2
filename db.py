@@ -408,6 +408,101 @@ def _float_or_none(value):
     return float(number)
 
 
+def _canonical_date(value):
+    parsed = pd.to_datetime(value, errors="coerce")
+    if not pd.isna(parsed):
+        return parsed.strftime("%Y-%m-%d")
+    return _clean(value)
+
+
+def _canonical_text(value):
+    return re.sub(r"\s+", " ", _clean(value)).strip().upper()
+
+
+def _canonical_account_number(value):
+    text = _canonical_text(value)
+    compact = re.sub(r"[^A-Z0-9]", "", text)
+    return compact or text
+
+
+def _transaction_line_key(row):
+    date_value = _canonical_date(row.get("Date", row.get("txn_date", "")))
+    amount = _float_or_none(row.get("Amount", row.get("amount", None)))
+    normalized = _canonical_text(row.get("normalized_description", ""))
+    if not normalized:
+        normalized = _canonical_text(normalize_description(row.get("Description", row.get("original_description", ""))))
+    if not date_value or amount is None or not normalized:
+        return None
+
+    account_number = _canonical_account_number(row.get("account_number", ""))
+    account_identity = account_number or _canonical_text(row.get("account_name", ""))
+    return (
+        date_value,
+        f"{round(float(amount), 2):.2f}",
+        normalized,
+        _canonical_text(row.get("currency", "")),
+        _canonical_text(row.get("bank", "")),
+        account_identity,
+    )
+
+
+def _existing_transaction_line_keys(cur):
+    cur.execute("""
+        SELECT txn_date, original_description, normalized_description, amount,
+               currency, bank, account_number, account_name
+        FROM classified_transactions
+        WHERE amount IS NOT NULL
+    """)
+    columns = [desc[0] for desc in cur.description]
+    keys = set()
+    for values in cur.fetchall():
+        row = dict(zip(columns, values))
+        key = _transaction_line_key(row)
+        if key:
+            keys.add(key)
+    return keys
+
+
+def mark_duplicate_transactions(df):
+    out = df.copy()
+    if out.empty:
+        out["dup_flag"] = False
+        out["duplicate_reason"] = ""
+        return out
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        existing_keys = _existing_transaction_line_keys(cur)
+    finally:
+        conn.close()
+
+    seen_in_upload = set()
+    flags = []
+    reasons = []
+    for _, row in out.iterrows():
+        key = _transaction_line_key(row)
+        if not key:
+            flags.append(False)
+            reasons.append("")
+            continue
+        if key in existing_keys:
+            flags.append(True)
+            reasons.append("Already imported")
+            continue
+        if key in seen_in_upload:
+            flags.append(True)
+            reasons.append("Repeated in this upload")
+            continue
+        seen_in_upload.add(key)
+        flags.append(False)
+        reasons.append("")
+
+    out["dup_flag"] = flags
+    out["duplicate_reason"] = reasons
+    return out
+
+
 def _bool_from_value(value):
     if value is None or pd.isna(value):
         return False
@@ -1293,14 +1388,24 @@ def build_statement_hash(file_bytes):
 def save_pending_transactions(df, statement_name, statement_hash):
     if statement_already_imported(statement_hash):
         record_duplicate_statement_attempt(statement_hash)
-        return 0, True
+        return 0, True, 0
 
     conn = get_connection()
     cur = conn.cursor()
     now = _now()
     inserted = 0
+    duplicate_lines = 0
+    existing_keys = _existing_transaction_line_keys(cur)
+    new_keys = set()
 
     for idx, row in df.reset_index(drop=True).iterrows():
+        transaction_key = _transaction_line_key(row)
+        if bool(row.get("dup_flag", False)) or (
+            transaction_key and (transaction_key in existing_keys or transaction_key in new_keys)
+        ):
+            duplicate_lines += 1
+            continue
+
         row_hash_src = "|".join([
             statement_hash,
             str(idx),
@@ -1348,6 +1453,9 @@ def save_pending_transactions(df, statement_name, statement_hash):
             now,
         ))
         inserted += 1
+        if transaction_key:
+            existing_keys.add(transaction_key)
+            new_keys.add(transaction_key)
 
     cur.execute("""
         INSERT OR IGNORE INTO statement_imports
@@ -1356,7 +1464,7 @@ def save_pending_transactions(df, statement_name, statement_hash):
     """, (statement_hash, statement_name, now, inserted))
     conn.commit()
     conn.close()
-    return inserted, False
+    return inserted, False, duplicate_lines
 
 
 def get_pending_transactions():

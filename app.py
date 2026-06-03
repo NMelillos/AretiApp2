@@ -42,6 +42,7 @@ from db import (
     import_memory_from_excel,
     init_db,
     insert_manual_transaction,
+    mark_duplicate_transactions,
     replace_accounts_from_excel,
     replace_categories_from_excel,
     replace_rates_from_excel,
@@ -674,10 +675,7 @@ def transaction_filter_controls(df, key_prefix):
 
 
 def flag_duplicates(df):
-    out = df.copy()
-    subset = [col for col in ["Date", "Amount", "normalized_description"] if col in out.columns]
-    out["dup_flag"] = out.duplicated(subset=subset, keep=False) if subset else False
-    return out
+    return mark_duplicate_transactions(df)
 
 
 def account_options(accounts):
@@ -1237,18 +1235,26 @@ if page == "Import":
                 unsafe_allow_html=True,
             )
             parsed = parse_statement(file_bytes, uploaded_statement.name)
-            parsed = flag_duplicates(parsed)
             parsed = apply_account_and_rates(parsed, selected_account)
+            parsed = flag_duplicates(parsed)
             classified = classify_statement_rows(parsed, get_memory())
             progress_slot.empty()
 
             st.success(f"Prepared {len(classified)} transactions for review.")
 
-            c1, c2, c3, c4 = st.columns(4)
+            duplicate_lines = int(classified["dup_flag"].fillna(False).astype(bool).sum()) if "dup_flag" in classified else 0
+            c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Rows", len(classified))
             c2.metric("Exact matches", int((classified["match_type"] == "exact").sum()))
             c3.metric("Similar matches", int((classified["match_type"] == "similar").sum()))
             c4.metric("Needs review", int((classified["match_type"].isin(["new", "suggestion", "rule"])).sum()))
+            c5.metric("Duplicate lines", duplicate_lines)
+
+            if duplicate_lines:
+                st.warning(
+                    f"{duplicate_lines} duplicate transaction line(s) were detected from existing/overlapping "
+                    "statements and will be skipped when importing."
+                )
 
             row_currencies = []
             if "currency" in classified.columns:
@@ -1294,6 +1300,7 @@ if page == "Import":
                 "match_type",
                 "confidence",
                 "dup_flag",
+                "duplicate_reason",
             ]
             st.dataframe(
                 classified[[col for col in preview_cols if col in classified.columns]],
@@ -1302,7 +1309,7 @@ if page == "Import":
             )
 
             if st.button("Import to pending review", type="primary"):
-                inserted, duplicate_statement = save_pending_transactions(
+                inserted, duplicate_statement, skipped_duplicates = save_pending_transactions(
                     classified,
                     uploaded_statement.name,
                     statement_hash,
@@ -1317,6 +1324,8 @@ if page == "Import":
                         selected_account,
                     )
                     st.success(f"Imported {inserted} transactions to pending review.")
+                    if skipped_duplicates:
+                        st.info(f"Skipped {skipped_duplicates} duplicate transaction line(s).")
                     st.cache_data.clear()
         except Exception as exc:
             st.error(str(exc))

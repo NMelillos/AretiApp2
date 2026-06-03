@@ -1254,14 +1254,19 @@ def apply_account_and_rates(df, account):
 
     for _, row in out.iterrows():
         row_account = _dynamic_amex_account(row, account, accounts)
-        rate_type = _rate_type_from_account(row_account)
+        row_currency = _clean(
+            row.get("statement_currency", "")
+            or row.get("currency", "")
+            or row_account.get("currency", "")
+        ).upper()
+        rate_type = f"{row_currency}/USD" if row_currency else _rate_type_from_account(row_account)
         rate = _lookup_rate(rate_lookup, rate_type, row.get("Date"))
         amount = float(row.get("Amount", 0) or 0)
 
         account_names.append(row_account.get("account_name", ""))
         banks.append(row_account.get("bank", ""))
         account_numbers.append(row_account.get("account_number", ""))
-        currencies.append(row_account.get("currency", ""))
+        currencies.append(row_currency)
         rate_types.append(rate_type)
 
         if rate is None or rate == 0:

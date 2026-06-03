@@ -1250,6 +1250,18 @@ if page == "Import":
             c3.metric("Similar matches", int((classified["match_type"] == "similar").sum()))
             c4.metric("Needs review", int((classified["match_type"].isin(["new", "suggestion", "rule"])).sum()))
 
+            row_currencies = []
+            if "currency" in classified.columns:
+                row_currencies = sorted(
+                    value for value in classified["currency"].fillna("").astype(str).str.upper().unique() if value
+                )
+            if len(row_currencies) > 1:
+                st.info(
+                    "Multi-currency statement detected: "
+                    + ", ".join(row_currencies)
+                    + ". Each transaction will use the currency shown on its own statement row."
+                )
+
             if balance_has_values(balance_info):
                 currency = balance_info.get("currency") or selected_account.get("currency", "")
                 render_summary_strip([

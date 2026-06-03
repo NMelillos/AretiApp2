@@ -246,6 +246,17 @@ def _money_values_with_spans(text):
     return [(match.span(), match.group(0), _parse_amount(match.group(0))) for match in MONEY_RE.finditer(text)]
 
 
+def _currency_from_money_text(value):
+    text = str(value or "").upper()
+    if "$" in text or "USD" in text:
+        return "USD"
+    if "€" in text or "EUR" in text:
+        return "EUR"
+    if "£" in text or "GBP" in text:
+        return "GBP"
+    return ""
+
+
 def _is_pdf_noise(line):
     if not line:
         return True
@@ -270,55 +281,70 @@ def _parse_revolut_pdf_text(text):
     lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
     rows = []
     current = None
-    previous_balance = None
+    section_currency = ""
+
+    def add_current():
+        nonlocal current
+        if not current or not current["amounts"]:
+            current = None
+            return
+
+        token_text, amount = current["amounts"][0]
+        currency = _currency_from_money_text(token_text) or current.get("currency", "")
+        description = current["description"].strip()
+        if description and amount != 0:
+            rows.append([current["date"], description, amount, currency])
+        current = None
 
     for line in lines:
         if not line:
             continue
 
-        summary_match = re.search(r"Account \(Current Account\)\s+(.+)", line)
-        if summary_match and previous_balance is None:
-            amounts = _money_values(summary_match.group(1))
-            if amounts:
-                previous_balance = amounts[0][1]
+        section_match = re.search(r"Personal Account\s*\((EUR|USD|GBP)\)", line, re.IGNORECASE)
+        if section_match:
+            add_current()
+            section_currency = section_match.group(1).upper()
             continue
 
         date_match = MONTH_DATE_RE.match(line)
         if date_match:
-            if current:
-                rows.append(current)
+            add_current()
 
             date_value = _parse_pdf_date(date_match.group("date"))
             rest = date_match.group("rest")
-            amounts = _money_values(rest)
-            if len(amounts) < 2:
-                current = None
-                continue
+            amounts = _money_values_with_spans(rest)
+            description = rest
+            money_values = []
+            if amounts:
+                first_span, token_text, amount = amounts[0]
+                description = rest[: first_span[0]].strip()
+                money_values.append((token_text, amount))
 
-            txn_abs = abs(amounts[-2][1])
-            new_balance = amounts[-1][1]
-            description = rest[: amounts[-2][0].start()].strip()
-
-            amount = None
-            if previous_balance is not None:
-                delta = round(new_balance - previous_balance, 2)
-                if abs(abs(delta) - txn_abs) <= 0.02:
-                    amount = delta
-
-            if amount is None:
-                upper_desc = description.upper()
-                incoming_hint = any(token in upper_desc for token in ["TRANSFER FROM", "TOP-UP", "REFUND"])
-                amount = txn_abs if incoming_hint else -txn_abs
-
-            previous_balance = new_balance
-            current = [date_value, description, amount]
+            current = {
+                "date": date_value,
+                "description": description,
+                "amounts": money_values,
+                "currency": section_currency,
+            }
             continue
 
         if current:
-            current[1] = _append_detail(current[1], line)
+            if line.lower().startswith("total "):
+                add_current()
+                continue
 
-    if current:
-        rows.append(current)
+            amounts = _money_values_with_spans(line)
+            if amounts:
+                first_span, token_text, amount = amounts[0]
+                prefix = line[: first_span[0]].strip()
+                if prefix:
+                    current["description"] = _append_detail(current["description"], prefix)
+                current["amounts"].append((token_text, amount))
+                continue
+
+            current["description"] = _append_detail(current["description"], line)
+
+    add_current()
 
     return rows
 
@@ -944,10 +970,15 @@ def parse_excel(uploaded_file):
 
 
 def _frame_from_pdf_rows(rows):
-    df = pd.DataFrame(rows, columns=["Date", "Description", "Amount"])
+    if rows and len(rows[0]) >= 4:
+        df = pd.DataFrame(rows, columns=["Date", "Description", "Amount", "statement_currency"])
+    else:
+        df = pd.DataFrame(rows, columns=["Date", "Description", "Amount"])
     df["Date"] = df["Date"].apply(_parse_pdf_date)
     df["Amount"] = df["Amount"].apply(_parse_amount)
     df["Description"] = df["Description"].fillna("").astype(str)
+    if "statement_currency" in df.columns:
+        df["statement_currency"] = df["statement_currency"].fillna("").astype(str).str.upper()
     df["normalized_description"] = df["Description"].apply(normalize_description).apply(simplify_merchant)
     df["beneficiary"] = df["Description"].apply(extract_beneficiary)
     df["transaction_type"] = df.apply(

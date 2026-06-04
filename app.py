@@ -4,6 +4,7 @@ from io import BytesIO
 import os
 from pathlib import Path
 import re
+from zoneinfo import ZoneInfo
 import zipfile
 
 import streamlit as st
@@ -71,6 +72,11 @@ _db_get_rates = get_rates
 _db_get_saved_transactions = get_saved_transactions
 _db_get_statement_balances = get_statement_balances
 _db_get_subcategories = get_subcategories
+APP_TIMEZONE = ZoneInfo("Asia/Nicosia")
+
+
+def app_now():
+    return datetime.now(APP_TIMEZONE)
 
 
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
@@ -884,7 +890,7 @@ def render_manual_transaction_form(categories, subcategories):
 
 
 def render_app_header():
-    today_at = "Today, " + datetime.now().strftime("%d %b %Y, %H:%M")
+    today_at = "Today, " + app_now().strftime("%d %b %Y, %H:%M")
     st.markdown(
         f"""
         <div class="app-header">
@@ -1069,7 +1075,7 @@ def render_executive_report():
         return
 
     date_values = pd.to_datetime(reviewed.get("txn_date"), errors="coerce").dropna()
-    default_end = date_values.max().date() if not date_values.empty else datetime.now().date()
+    default_end = date_values.max().date() if not date_values.empty else app_now().date()
     requested_end = st.query_params.get("to")
     if requested_end:
         parsed_requested_end = pd.to_datetime(requested_end, errors="coerce")

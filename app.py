@@ -980,13 +980,29 @@ def missing_setup_items(categories=None, accounts=None, rates=None):
     rates = get_rates() if rates is None else rates
 
     missing = []
-    if not categories:
+    categories_empty = categories.empty if isinstance(categories, pd.DataFrame) else not categories
+    if categories_empty:
         missing.append("expense categories")
     if accounts.empty:
         missing.append("account details")
     if rates.empty:
         missing.append("monthly rates")
     return missing
+
+
+def missing_account_rate_types(accounts=None, rates=None):
+    accounts = get_accounts() if accounts is None else accounts
+    rates = get_rates() if rates is None else rates
+    if accounts.empty:
+        return []
+
+    account_currencies = accounts.get("currency", pd.Series(dtype=str)).fillna("").astype(str).str.upper()
+    required = sorted({f"{currency}/USD" for currency in account_currencies if currency and currency != "USD"})
+    if not required:
+        return []
+
+    loaded = set(rates.get("rate_type", pd.Series(dtype=str)).fillna("").astype(str).str.upper())
+    return [rate_type for rate_type in required if rate_type not in loaded]
 
 
 def render_setup_loader(key_prefix):
@@ -1346,10 +1362,28 @@ if page == "Import":
             if "amount_usd" in classified.columns:
                 missing_usd = int(classified["amount_usd"].isna().sum())
                 if missing_usd:
-                    st.warning(
-                        f"{missing_usd} transaction(s) do not have a USD equivalent yet. "
-                        "Check that the matching exchange rate exists in Setup > Rates."
+                    missing_usd_rows = classified[classified["amount_usd"].isna()]
+                    missing_rate_types = sorted(
+                        value
+                        for value in missing_usd_rows.get("rate_type", pd.Series(dtype=str))
+                        .fillna("")
+                        .astype(str)
+                        .str.upper()
+                        .unique()
+                        if value and value != "USD/USD"
                     )
+                    if missing_rate_types:
+                        st.error(
+                            f"{missing_usd} transaction(s) do not have a USD equivalent because "
+                            f"these exchange rate(s) are missing in Setup > Rates: {', '.join(missing_rate_types)}. "
+                            "The selected account can still be correct; load/update the Rates workbook before importing "
+                            "if USD equivalents are required."
+                        )
+                    else:
+                        st.warning(
+                            f"{missing_usd} transaction(s) do not have a USD equivalent yet. "
+                            "Check that the matching exchange rate exists in Setup > Rates."
+                        )
 
             if balance_has_values(balance_info):
                 currency = balance_info.get("currency") or selected_account.get("currency", "")
@@ -1898,7 +1932,11 @@ elif page == "Reports":
 elif page == "Setup":
     st.subheader("Setup")
 
-    setup_missing = missing_setup_items()
+    setup_categories = get_categories(include_subcategories=True)
+    setup_accounts = get_accounts()
+    setup_rates = get_rates()
+    setup_missing = missing_setup_items(setup_categories, setup_accounts, setup_rates)
+    setup_missing_rates = missing_account_rate_types(setup_accounts, setup_rates)
     missing_shared = [
         label for label, path in SHARED_SETUP_FILES.items()
         if not path.exists()
@@ -1940,11 +1978,18 @@ elif page == "Setup":
             st.cache_data.clear()
             st.rerun()
 
+    if setup_missing_rates:
+        st.warning(
+            "Missing exchange rates needed by the current accounts: "
+            + ", ".join(setup_missing_rates)
+            + ". Replace the Rates workbook before importing statements for those currencies."
+        )
+
     st.markdown("### Current Setup")
     setup_left, setup_middle, setup_right = st.columns(3)
     with setup_left:
         st.markdown("Categories")
-        st.dataframe(get_categories(include_subcategories=True), use_container_width=True, height=260)
+        st.dataframe(setup_categories, use_container_width=True, height=260)
         new_category = st.text_input("Add category")
         new_subcategory = st.text_input("Add subcategory")
         if st.button("Add category row"):
@@ -1953,10 +1998,10 @@ elif page == "Setup":
             st.rerun()
     with setup_middle:
         st.markdown("Accounts")
-        st.dataframe(get_accounts(), use_container_width=True, height=330)
+        st.dataframe(setup_accounts, use_container_width=True, height=330)
     with setup_right:
         st.markdown("Rates")
-        st.dataframe(get_rates(), use_container_width=True, height=330)
+        st.dataframe(setup_rates, use_container_width=True, height=330)
 
     st.markdown("### Maintenance")
     m1, m2 = st.columns(2)

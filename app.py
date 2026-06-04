@@ -1,10 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from html import escape
 from io import BytesIO
 import os
 from pathlib import Path
 import re
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import zipfile
 
 import streamlit as st
@@ -72,11 +72,25 @@ _db_get_rates = get_rates
 _db_get_saved_transactions = get_saved_transactions
 _db_get_statement_balances = get_statement_balances
 _db_get_subcategories = get_subcategories
-APP_TIMEZONE = ZoneInfo("Asia/Nicosia")
+
+
+def _last_sunday(year, month):
+    day = datetime(year, month + 1, 1, tzinfo=timezone.utc) - timedelta(days=1)
+    return day - timedelta(days=(day.weekday() + 1) % 7)
+
+
+def _cyprus_offset_hours(utc_now):
+    dst_start = _last_sunday(utc_now.year, 3).replace(hour=1, minute=0, second=0, microsecond=0)
+    dst_end = _last_sunday(utc_now.year, 10).replace(hour=1, minute=0, second=0, microsecond=0)
+    return 3 if dst_start <= utc_now < dst_end else 2
 
 
 def app_now():
-    return datetime.now(APP_TIMEZONE)
+    utc_now = datetime.now(timezone.utc)
+    try:
+        return utc_now.astimezone(ZoneInfo("Asia/Nicosia"))
+    except ZoneInfoNotFoundError:
+        return utc_now.astimezone(timezone(timedelta(hours=_cyprus_offset_hours(utc_now)), "Asia/Nicosia"))
 
 
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)

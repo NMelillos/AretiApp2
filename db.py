@@ -447,20 +447,27 @@ def _transaction_line_key(row):
 
 
 def _existing_transaction_line_keys(cur):
+    return set(_existing_transaction_line_lookup(cur))
+
+
+def _existing_transaction_line_lookup(cur):
     cur.execute("""
-        SELECT txn_date, original_description, normalized_description, amount,
-               currency, bank, account_number, account_name
+        SELECT id, statement_name, txn_date, original_description, normalized_description,
+               amount, currency, bank, account_number, account_name
         FROM classified_transactions
         WHERE amount IS NOT NULL
     """)
     columns = [desc[0] for desc in cur.description]
-    keys = set()
+    lookup = {}
     for values in cur.fetchall():
         row = dict(zip(columns, values))
         key = _transaction_line_key(row)
-        if key:
-            keys.add(key)
-    return keys
+        if key and key not in lookup:
+            lookup[key] = {
+                "duplicate_source_id": row.get("id", ""),
+                "duplicate_source_statement": row.get("statement_name", ""),
+            }
+    return lookup
 
 
 def mark_duplicate_transactions(df):
@@ -468,38 +475,45 @@ def mark_duplicate_transactions(df):
     if out.empty:
         out["dup_flag"] = False
         out["duplicate_reason"] = ""
+        out["duplicate_source_statement"] = ""
+        out["duplicate_source_id"] = ""
         return out
 
     conn = get_connection()
     cur = conn.cursor()
     try:
-        existing_keys = _existing_transaction_line_keys(cur)
+        existing_lookup = _existing_transaction_line_lookup(cur)
     finally:
         conn.close()
 
-    seen_in_upload = set()
     flags = []
     reasons = []
+    source_statements = []
+    source_ids = []
     for _, row in out.iterrows():
         key = _transaction_line_key(row)
         if not key:
             flags.append(False)
             reasons.append("")
+            source_statements.append("")
+            source_ids.append("")
             continue
-        if key in existing_keys:
+        existing_match = existing_lookup.get(key)
+        if existing_match:
             flags.append(True)
             reasons.append("Already imported")
+            source_statements.append(existing_match.get("duplicate_source_statement", ""))
+            source_ids.append(existing_match.get("duplicate_source_id", ""))
             continue
-        if key in seen_in_upload:
-            flags.append(True)
-            reasons.append("Repeated in this upload")
-            continue
-        seen_in_upload.add(key)
         flags.append(False)
         reasons.append("")
+        source_statements.append("")
+        source_ids.append("")
 
     out["dup_flag"] = flags
     out["duplicate_reason"] = reasons
+    out["duplicate_source_statement"] = source_statements
+    out["duplicate_source_id"] = source_ids
     return out
 
 
@@ -1396,13 +1410,10 @@ def save_pending_transactions(df, statement_name, statement_hash):
     inserted = 0
     duplicate_lines = 0
     existing_keys = _existing_transaction_line_keys(cur)
-    new_keys = set()
 
     for idx, row in df.reset_index(drop=True).iterrows():
         transaction_key = _transaction_line_key(row)
-        if bool(row.get("dup_flag", False)) or (
-            transaction_key and (transaction_key in existing_keys or transaction_key in new_keys)
-        ):
+        if bool(row.get("dup_flag", False)) or (transaction_key and transaction_key in existing_keys):
             duplicate_lines += 1
             continue
 
@@ -1453,9 +1464,6 @@ def save_pending_transactions(df, statement_name, statement_hash):
             now,
         ))
         inserted += 1
-        if transaction_key:
-            existing_keys.add(transaction_key)
-            new_keys.add(transaction_key)
 
     cur.execute("""
         INSERT OR IGNORE INTO statement_imports
@@ -1696,7 +1704,7 @@ def backfill_missing_usd_amounts():
             ORDER BY rate_type, rate_month DESC
         """, conn)
         tx = pd.read_sql_query("""
-            SELECT id, txn_date, amount, rate_type, fx_rate
+            SELECT id, txn_date, amount, currency, rate_type, fx_rate
             FROM classified_transactions
             WHERE amount IS NOT NULL
               AND (amount_usd IS NULL OR CAST(amount_usd AS TEXT) = '')
@@ -1718,17 +1726,19 @@ def backfill_missing_usd_amounts():
         cur = conn.cursor()
         updated = 0
         for _, row in tx.iterrows():
+            currency = _clean(row.get("currency", "")).upper()
+            rate_type = f"{currency}/USD" if currency else _clean(row.get("rate_type", "")).upper()
             fx_rate = _float_or_none(row.get("fx_rate"))
             if fx_rate is None:
-                fx_rate = _lookup_rate(rate_lookup, row.get("rate_type", ""), row.get("txn_date"))
+                fx_rate = _lookup_rate(rate_lookup, rate_type, row.get("txn_date"))
             amount_usd = _usd_from_amount(row.get("amount"), fx_rate)
             if amount_usd is None:
                 continue
             cur.execute("""
                 UPDATE classified_transactions
-                SET fx_rate = ?, amount_usd = ?
+                SET rate_type = ?, fx_rate = ?, amount_usd = ?
                 WHERE id = ?
-            """, (fx_rate, amount_usd, int(row["id"])))
+            """, (rate_type, fx_rate, amount_usd, int(row["id"])))
             updated += cur.rowcount
         conn.commit()
         return updated

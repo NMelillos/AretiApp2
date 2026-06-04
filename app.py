@@ -1255,6 +1255,25 @@ if page == "Import":
                     f"{duplicate_lines} duplicate transaction line(s) were detected from existing/overlapping "
                     "statements and will be skipped when importing."
                 )
+                duplicate_cols = [
+                    "Date",
+                    "Description",
+                    "Amount",
+                    "currency",
+                    "amount_usd",
+                    "account_name",
+                    "account_number",
+                    "duplicate_reason",
+                    "duplicate_source_statement",
+                    "duplicate_source_id",
+                ]
+                duplicate_preview = classified[classified["dup_flag"].fillna(False).astype(bool)]
+                with st.expander("View duplicate transaction lines", expanded=True):
+                    st.dataframe(
+                        duplicate_preview[[col for col in duplicate_cols if col in duplicate_preview.columns]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
             row_currencies = []
             if "currency" in classified.columns:
@@ -1267,6 +1286,13 @@ if page == "Import":
                     + ", ".join(row_currencies)
                     + ". Each transaction will use the currency shown on its own statement row."
                 )
+            if "amount_usd" in classified.columns:
+                missing_usd = int(classified["amount_usd"].isna().sum())
+                if missing_usd:
+                    st.warning(
+                        f"{missing_usd} transaction(s) do not have a USD equivalent yet. "
+                        "Check that the matching exchange rate exists in Setup > Rates."
+                    )
 
             if balance_has_values(balance_info):
                 currency = balance_info.get("currency") or selected_account.get("currency", "")
@@ -1326,6 +1352,9 @@ if page == "Import":
                     st.success(f"Imported {inserted} transactions to pending review.")
                     if skipped_duplicates:
                         st.info(f"Skipped {skipped_duplicates} duplicate transaction line(s).")
+                    backfilled = backfill_missing_usd_amounts()
+                    if backfilled:
+                        st.info(f"Filled missing USD equivalents for {backfilled} imported transaction(s).")
                     st.cache_data.clear()
         except Exception as exc:
             st.error(str(exc))

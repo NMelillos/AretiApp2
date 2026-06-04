@@ -1598,6 +1598,21 @@ def update_database_rows(df):
     conn = get_connection()
     cur = conn.cursor()
     updated = 0
+    rates = pd.read_sql_query("""
+        SELECT rate_month, rate_type, rate_value
+        FROM rates
+        ORDER BY rate_type, rate_month DESC
+    """, conn)
+    if rates.empty:
+        rate_lookup = {}
+    else:
+        rates["rate_type"] = rates["rate_type"].fillna("").astype(str).str.upper()
+        rates["rate_month"] = pd.to_datetime(rates["rate_month"], errors="coerce")
+        rate_lookup = {
+            rate_type: frame.sort_values("rate_month", ascending=False).reset_index(drop=True)
+            for rate_type, frame in rates.groupby("rate_type")
+            if rate_type
+        }
     text_columns = [
         "txn_date",
         "original_description",
@@ -1613,13 +1628,35 @@ def update_database_rows(df):
     ]
     number_columns = ["amount", "fx_rate", "amount_usd", "confidence"]
     bool_columns = ["reviewed", "dup_flag"]
+    account_update_columns = {"txn_date", "amount", "currency", "account_name", "bank", "account_number"}
+    affected_statement_hashes = set()
 
     for _, row in df.iterrows():
         if "id" not in row or pd.isna(row.get("id")):
             continue
         row_id = int(row["id"])
+        cur.execute("""
+            SELECT statement_hash, txn_date, amount, currency, rate_type,
+                   account_name, bank, account_number
+            FROM classified_transactions
+            WHERE id = ?
+        """, (row_id,))
+        existing = cur.fetchone()
+        if not existing:
+            continue
+        existing_row = {
+            "statement_hash": existing[0],
+            "txn_date": existing[1],
+            "amount": existing[2],
+            "currency": existing[3],
+            "rate_type": existing[4],
+            "account_name": existing[5],
+            "bank": existing[6],
+            "account_number": existing[7],
+        }
         assignments = []
         params = []
+        recalculate_fx = any(column in df.columns for column in account_update_columns)
 
         reviewed_value = None
         if "reviewed" in df.columns:
@@ -1628,7 +1665,11 @@ def update_database_rows(df):
         for column in text_columns:
             if column not in df.columns:
                 continue
+            if recalculate_fx and column == "rate_type":
+                continue
             value = _clean(row.get(column))
+            if column in {"currency", "rate_type"}:
+                value = value.upper()
             if column == "status" and not value:
                 value = "reviewed" if reviewed_value else "pending"
             elif column == "status" and value.casefold() in {"pending", "reviewed"}:
@@ -1638,6 +1679,8 @@ def update_database_rows(df):
 
         for column in number_columns:
             if column not in df.columns:
+                continue
+            if recalculate_fx and column in {"fx_rate", "amount_usd"}:
                 continue
             assignments.append(f"{column} = ?")
             params.append(_float_or_none(row.get(column)))
@@ -1652,6 +1695,20 @@ def update_database_rows(df):
         if "status" not in df.columns and reviewed_value is not None:
             assignments.append("status = ?")
             params.append("reviewed" if reviewed_value else "pending")
+
+        if recalculate_fx:
+            merged_date = row.get("txn_date") if "txn_date" in df.columns else existing_row.get("txn_date")
+            merged_amount = row.get("amount") if "amount" in df.columns else existing_row.get("amount")
+            merged_currency = (
+                _clean(row.get("currency")).upper()
+                if "currency" in df.columns
+                else _clean(existing_row.get("currency")).upper()
+            )
+            merged_rate_type = f"{merged_currency}/USD" if merged_currency else _clean(existing_row.get("rate_type")).upper()
+            merged_fx_rate = _lookup_rate(rate_lookup, merged_rate_type, merged_date)
+            merged_amount_usd = _usd_from_amount(merged_amount, merged_fx_rate)
+            assignments.extend(["rate_type = ?", "fx_rate = ?", "amount_usd = ?"])
+            params.extend([merged_rate_type, merged_fx_rate, merged_amount_usd])
 
         category = _clean(row.get("category")) if "category" in df.columns else ""
         subcategory = _clean(row.get("subcategory")) if "subcategory" in df.columns else ""
@@ -1673,6 +1730,8 @@ def update_database_rows(df):
             params,
         )
         updated += cur.rowcount
+        if recalculate_fx and existing_row.get("statement_hash"):
+            affected_statement_hashes.add(existing_row["statement_hash"])
         if reviewed_value or status == "reviewed":
             cur.execute("""
                 SELECT original_description, normalized_description, beneficiary, transaction_type
@@ -1690,6 +1749,30 @@ def update_database_rows(df):
                     category,
                     subcategory,
                 )
+    for statement_hash in affected_statement_hashes:
+        cur.execute("""
+            SELECT account_name, bank, account_number, currency
+            FROM classified_transactions
+            WHERE statement_hash = ?
+              AND COALESCE(account_name, '') <> ''
+            GROUP BY account_name, bank, account_number, currency
+            ORDER BY COUNT(*) DESC, MIN(id)
+            LIMIT 1
+        """, (statement_hash,))
+        account_row = cur.fetchone()
+        if account_row:
+            cur.execute("""
+                UPDATE statement_balances
+                SET account_name = ?, bank = ?, account_number = ?, currency = ?, updated_at = ?
+                WHERE statement_hash = ?
+            """, (
+                account_row[0] or "",
+                account_row[1] or "",
+                account_row[2] or "",
+                account_row[3] or "",
+                _now(),
+                statement_hash,
+            ))
     conn.commit()
     conn.close()
     return updated
@@ -1764,8 +1847,15 @@ def import_database_updates_from_excel(uploaded_file):
         "reviewed box": "reviewed",
         "account": "account_name",
         "account name": "account_name",
+        "company": "account_name",
+        "entity": "account_name",
+        "name": "account_name",
+        "owner": "account_name",
+        "who made the expense": "account_name",
         "bank": "bank",
+        "bank name": "bank",
         "account number": "account_number",
+        "iban": "account_number",
         "currency": "currency",
         "amount": "amount",
         "statement amount": "amount",

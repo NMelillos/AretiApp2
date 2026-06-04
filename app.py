@@ -731,9 +731,10 @@ def statement_currency_hint(text):
     return ""
 
 
-def guess_account_index(file_bytes, file_name, accounts, labels):
+def guess_account_index(file_bytes, file_name, accounts, labels, balance_info=None):
     if accounts.empty or not labels:
         return 0
+    balance_info = balance_info or {}
     sample = file_bytes[:250000].decode("latin-1", errors="ignore")
     if file_name.lower().endswith(".pdf"):
         try:
@@ -745,6 +746,11 @@ def guess_account_index(file_bytes, file_name, accounts, labels):
             pass
     searchable = f"{file_name} {sample}".upper()
     currency_hint = statement_currency_hint(searchable)
+    balance_currency_hint = str(balance_info.get("currency") or "").strip().upper()
+    if balance_currency_hint:
+        currency_hint = balance_currency_hint
+    balance_bank_hint = str(balance_info.get("bank") or "").strip().upper()
+    balance_account_digits = re.sub(r"\D", "", str(balance_info.get("account_number", "")))
     digits = re.sub(r"\D", "", searchable)
 
     if "CARD MEMBER" in searchable and ("AMEX" in searchable or "AMERICAN EXPRESS" in searchable):
@@ -766,10 +772,18 @@ def guess_account_index(file_bytes, file_name, accounts, labels):
     for idx, (_, row) in enumerate(accounts.iterrows()):
         score = 0
         account_number = re.sub(r"\D", "", str(row.get("account_number", "")))
+        if balance_account_digits and account_number:
+            if balance_account_digits in account_number or account_number in balance_account_digits:
+                score += 18
+            elif len(balance_account_digits) >= 4 and len(account_number) >= 4 and balance_account_digits[-4:] == account_number[-4:]:
+                score += 8
         if account_number and account_number in digits:
             score += 10
         elif account_number and len(account_number) >= 4 and account_number[-4:] in digits:
             score += 4
+        row_bank = str(row.get("bank", "")).strip().upper()
+        if balance_bank_hint and row_bank:
+            score += 6 if balance_bank_hint in row_bank or row_bank in balance_bank_hint else -2
         for field in ["account_name", "bank", "currency"]:
             value = str(row.get(field, "")).strip().upper()
             if value and value in searchable:
@@ -1236,16 +1250,39 @@ if page == "Import":
                     st.cache_data.clear()
             st.stop()
 
+        balance_info = parse_statement_balance(file_bytes, uploaded_statement.name)
         labels, lookup = account_options(accounts)
-        default_account_index = guess_account_index(file_bytes, uploaded_statement.name, accounts, labels)
+        default_account_index = guess_account_index(file_bytes, uploaded_statement.name, accounts, labels, balance_info)
         selected_label = st.selectbox("Account", labels, index=default_account_index)
         selected_account = lookup[selected_label]
+        st.caption("Check this account carefully before importing. It controls the company/name, bank, account number, currency, rate type, and USD conversion.")
+        statement_currency = str(balance_info.get("currency") or "").strip().upper()
+        selected_currency = str(selected_account.get("currency", "") or "").strip().upper()
+        if statement_currency and selected_currency and statement_currency != selected_currency:
+            st.warning(
+                f"The statement appears to be {statement_currency}, but the selected account is {selected_currency}. "
+                "Please change the Account dropdown before importing if this is not correct."
+            )
+        statement_account_digits = re.sub(r"\D", "", str(balance_info.get("account_number", "")))
+        selected_account_digits = re.sub(r"\D", "", str(selected_account.get("account_number", "")))
+        if (
+            statement_account_digits
+            and selected_account_digits
+            and not (
+                statement_account_digits in selected_account_digits
+                or selected_account_digits in statement_account_digits
+                or statement_account_digits[-4:] == selected_account_digits[-4:]
+            )
+        ):
+            st.warning(
+                "The statement account number does not appear to match the selected account. "
+                "Please verify the Account dropdown before importing."
+            )
         if is_amex_cardholder_statement(file_bytes, uploaded_statement.name):
             st.info(
                 "AMEX cardholder CSV detected. Use the AMEX parent account; the app will append "
                 "the cardholder name from the CSV to each imported AMEX account number."
             )
-        balance_info = parse_statement_balance(file_bytes, uploaded_statement.name)
 
         try:
             progress_slot = st.empty()
@@ -1582,7 +1619,9 @@ elif page == "Database":
         )
         st.info(
             "For corrected database Excel files, do not Clear or Full reset first. "
-            "This import updates existing transactions by the ID column only and does not create new transactions."
+            "This import updates existing transactions by the ID column only and does not create new transactions. "
+            "Keep the ID column unchanged. If you correct Account/Company, Bank, Account number, Currency, Date, "
+            "or Amount, the app recalculates Rate type, FX rate, and USD amount automatically from Setup > Rates."
         )
         if st.button("Import corrected Excel updates (existing IDs only)", disabled=corrected_upload is None):
             try:

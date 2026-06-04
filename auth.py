@@ -148,11 +148,13 @@ def require_login():
             box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.14) !important;
         }}
         div[data-testid="stTextInput"] input,
-        div[data-testid="stFormSubmitButton"] button {{
+        div[data-testid="stFormSubmitButton"] button,
+        div[data-testid="stButton"] button {{
             min-height: 38px !important;
             border-radius: 4px !important;
         }}
-        div[data-testid="stFormSubmitButton"] button[kind="primary"] {{
+        div[data-testid="stFormSubmitButton"] button[kind="primary"],
+        div[data-testid="stButton"] button[kind="primary"] {{
             background: #0f766e !important;
             border-color: #0f766e !important;
         }}
@@ -169,10 +171,9 @@ def require_login():
         unsafe_allow_html=True,
     )
 
-    with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("Username", key="login_username")
-        password = st.text_input("Password", type="password", key="login_password")
-        submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
+    username = st.text_input("Username", key="login_username")
+    password = st.text_input("Password", type="password", key="login_password")
+    submitted = st.button("Sign in", type="primary", use_container_width=True)
 
     if submitted:
         if credentials_are_valid(username, password):

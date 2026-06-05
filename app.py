@@ -313,12 +313,18 @@ st.markdown(
     }
     .executive-table {
         width: 100%;
+        min-width: 980px;
         border-collapse: collapse;
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 8px;
         overflow: hidden;
         box-shadow: 0 2px 8px rgba(16, 32, 51, 0.05);
+    }
+    .executive-scroll, .drill-scroll {
+        width: 100%;
+        overflow-x: auto;
+        padding-bottom: 4px;
     }
     .executive-table th,
     .executive-table td {
@@ -346,16 +352,19 @@ st.markdown(
         background: #fff1f2;
         color: #b42318;
         font-weight: 800;
+        border-left: 3px solid #dc2626;
     }
     .trend-down {
         background: #ecfdf3;
         color: #067647;
         font-weight: 800;
+        border-left: 3px solid #16a34a;
     }
     .trend-flat {
         background: #f8fafc;
         color: var(--text-muted);
         font-weight: 800;
+        border-left: 3px solid #94a3b8;
     }
     .drill-header {
         display: grid;
@@ -446,7 +455,8 @@ st.markdown(
         border-radius: 6px;
         overflow: hidden;
     }
-    div[data-testid="stDataEditor"] [role="gridcell"] {
+    div[data-testid="stDataEditor"] [role="gridcell"],
+    div[data-testid="stDataFrame"] [role="gridcell"] {
         white-space: normal !important;
         line-height: 1.35 !important;
     }
@@ -897,12 +907,8 @@ def editable_pending_table(df, categories, subcategories, key):
             "original_description": st.column_config.TextColumn("Full statement description", disabled=True, width="large"),
             "match_type": st.column_config.TextColumn("Match", disabled=True, width="small"),
             "confidence": st.column_config.NumberColumn("Confidence", format="%.2f", disabled=True, width="small"),
-            "category": st.column_config.SelectboxColumn("Category", options=[""] + categories, required=False),
-            "subcategory": st.column_config.SelectboxColumn(
-                "Subcategory",
-                options=[""] + subcategories,
-                required=False,
-            ),
+            "category": st.column_config.TextColumn("Category", disabled=True),
+            "subcategory": st.column_config.TextColumn("Subcategory", disabled=True),
         },
     )
 
@@ -923,6 +929,125 @@ def render_wrapped_descriptions(df):
         st.markdown("".join(rows), unsafe_allow_html=True)
 
 
+def _subcategory_options_for(category):
+    if not category:
+        return [""]
+    return [""] + get_subcategories(category=category)
+
+
+def _transaction_label(row):
+    tx_id = int(row.get("id")) if not pd.isna(row.get("id")) else ""
+    date_text = str(row.get("txn_date", "") or "")
+    amount_text = format_currency(row.get("amount", 0))
+    description = re.sub(r"\s+", " ", str(row.get("original_description", "") or "")).strip()
+    if len(description) > 95:
+        description = description[:92] + "..."
+    return f"{tx_id} | {date_text} | {amount_text} | {description}"
+
+
+def render_category_correction_panel(df, categories, key_prefix, title="Correct category / subcategory"):
+    if df.empty or "id" not in df.columns or not categories:
+        return
+    working = df.dropna(subset=["id"]).copy()
+    if working.empty:
+        return
+    working["id"] = working["id"].astype(int)
+    labels = {_transaction_label(row): int(row["id"]) for _, row in working.iterrows()}
+
+    with st.expander(title):
+        st.caption(
+            "Choose the transaction first, then choose the category. "
+            "The subcategory list is filtered to that category only."
+        )
+        selected_label = st.selectbox(
+            "Transaction",
+            list(labels.keys()),
+            key=f"{key_prefix}_transaction",
+        )
+        selected_id = labels[selected_label]
+        selected_row = working[working["id"] == selected_id].iloc[0]
+
+        category_options = [""] + categories
+        active_key = f"{key_prefix}_active_id"
+        category_key = f"{key_prefix}_category"
+        subcategory_key = f"{key_prefix}_subcategory"
+        if st.session_state.get(active_key) != selected_id:
+            current_category = str(selected_row.get("category", "") or "").strip()
+            st.session_state[category_key] = current_category if current_category in category_options else ""
+            st.session_state[active_key] = selected_id
+
+        category = st.selectbox("Category", category_options, key=category_key)
+        subcategory_options = _subcategory_options_for(category)
+        current_subcategory = str(selected_row.get("subcategory", "") or "").strip()
+        if st.session_state.get(subcategory_key) not in subcategory_options:
+            st.session_state[subcategory_key] = (
+                current_subcategory if current_subcategory in subcategory_options else ""
+            )
+        subcategory = st.selectbox("Subcategory", subcategory_options, key=subcategory_key)
+
+        st.text_area(
+            "Full statement description",
+            value=str(selected_row.get("original_description", "") or ""),
+            height=115,
+            disabled=True,
+            key=f"{key_prefix}_description_{selected_id}",
+        )
+        disabled = not category
+        if st.button("Update selected transaction", type="primary", disabled=disabled, key=f"{key_prefix}_apply"):
+            update_df = pd.DataFrame([{
+                "id": selected_id,
+                "category": category,
+                "subcategory": subcategory,
+                "reviewed": True,
+                "status": "reviewed",
+            }])
+            count = update_database_rows(update_df)
+            if count:
+                st.success("Transaction updated and marked as reviewed.")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.warning("No transaction was updated.")
+
+
+def render_bulk_categorise_panel(df, categories, key_prefix):
+    if df.empty or "id" not in df.columns or not categories:
+        return
+    with st.expander("Bulk categorise current filtered rows"):
+        st.caption(
+            "Use this after filtering, for example by description. "
+            "It applies one category/subcategory to all rows currently visible below."
+        )
+        category_options = [""] + categories
+        category = st.selectbox("Category", category_options, key=f"{key_prefix}_bulk_category")
+        subcategory = st.selectbox(
+            "Subcategory",
+            _subcategory_options_for(category),
+            key=f"{key_prefix}_bulk_subcategory",
+        )
+        disabled = not category
+        if st.button(
+            f"Apply to {len(df)} visible rows and mark reviewed",
+            type="primary",
+            disabled=disabled,
+            key=f"{key_prefix}_bulk_apply",
+        ):
+            update_df = pd.DataFrame({
+                "id": df["id"].dropna().astype(int),
+                "category": category,
+                "subcategory": subcategory,
+                "reviewed": True,
+                "status": "reviewed",
+            })
+            count = update_database_rows(update_df)
+            if count:
+                st.success(f"Updated {count} transactions.")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.warning("No transactions were updated.")
+
+
 def render_manual_transaction_form(categories, subcategories):
     with st.expander("Add manual transaction"):
         if not categories:
@@ -932,16 +1057,21 @@ def render_manual_transaction_form(categories, subcategories):
         manual_labels, manual_lookup = (
             account_options(manual_accounts) if not manual_accounts.empty else ([""], {"": {}})
         )
-        with st.form("manual_transaction_form", clear_on_submit=True):
-            mc1, mc2, mc3 = st.columns(3)
-            manual_date = mc1.date_input("Date")
-            manual_account_label = mc2.selectbox("Account", manual_labels)
-            manual_amount = mc3.number_input("Amount", value=0.0, step=1.0, format="%.2f")
-            manual_description = st.text_input("Full statement description")
-            manual_category = st.selectbox("Category", categories)
-            manual_subcategory = st.selectbox("Subcategory", [""] + subcategories)
-            submitted = st.form_submit_button("Save manual transaction", type="primary")
-        if submitted:
+        mc1, mc2, mc3 = st.columns(3)
+        manual_date = mc1.date_input("Date", key="manual_date")
+        manual_account_label = mc2.selectbox("Account", manual_labels, key="manual_account")
+        manual_amount = mc3.number_input("Amount", value=0.0, step=1.0, format="%.2f", key="manual_amount")
+        manual_description = st.text_input("Full statement description", key="manual_description")
+        manual_category = st.selectbox("Category", categories, key="manual_category")
+        manual_subcategory_options = _subcategory_options_for(manual_category)
+        if st.session_state.get("manual_subcategory") not in manual_subcategory_options:
+            st.session_state["manual_subcategory"] = ""
+        manual_subcategory = st.selectbox(
+            "Subcategory",
+            manual_subcategory_options,
+            key="manual_subcategory",
+        )
+        if st.button("Save manual transaction", type="primary", key="manual_save"):
             inserted = insert_manual_transaction(
                 manual_date,
                 manual_description,
@@ -1121,25 +1251,28 @@ def _percent(value):
     return f"{float(value):.1f}%"
 
 
-def _executive_row_html(group, current_amount, previous_amount, change):
-    if abs(change) <= 0.005:
-        trend_class = "trend-flat"
-        trend_text = "No change"
-    elif change > 0:
-        trend_class = "trend-up"
-        trend_text = "Increasing"
-    else:
-        trend_class = "trend-down"
-        trend_text = "Decreasing"
-    change_pct = None if abs(previous_amount) <= 0.005 else (change / previous_amount) * 100
+def _executive_month_window(cutoff_month):
+    start_month = pd.Period(year=cutoff_month.year, month=1, freq="M")
+    return list(pd.period_range(start=start_month, end=cutoff_month, freq="M"))
+
+
+def _executive_month_labels(months):
+    return {month: month.to_timestamp().strftime("%B %Y") for month in months}
+
+
+def _executive_row_html(group, metrics, months):
+    month_cells = "".join(
+        f"<td>{_money(metrics['months'].get(month, 0.0))}</td>"
+        for month in months
+    )
     return (
         "<tr>"
         f"<td>{escape(str(group))}</td>"
-        f"<td>{_money(current_amount)}</td>"
-        f"<td>{_money(previous_amount)}</td>"
-        f"<td class=\"{trend_class}\">{_money(change)}</td>"
-        f"<td class=\"{trend_class}\">{_percent(change_pct)}</td>"
-        f"<td class=\"{trend_class}\">{trend_text}</td>"
+        f"{month_cells}"
+        f"<td>{_money(metrics['average'])}</td>"
+        f"<td class=\"{metrics['trend_class']}\">{_money(metrics['change'])}</td>"
+        f"<td class=\"{metrics['trend_class']}\">{_percent(metrics['change_pct'])}</td>"
+        f"<td class=\"{metrics['trend_class']}\">{metrics['trend_text']}</td>"
         "</tr>"
     )
 
@@ -1158,14 +1291,22 @@ def _executive_change_pct(change, previous_amount):
     return (change / previous_amount) * 100
 
 
-def _executive_metric_values(frame, current_month, previous_month):
-    current_amount = float(frame.loc[frame["month"] == current_month, "expense_usd"].sum())
-    previous_amount = float(frame.loc[frame["month"] == previous_month, "expense_usd"].sum())
+def _executive_metric_values(frame, months):
+    month_values = {
+        month: float(frame.loc[frame["month"] == month, "expense_usd"].sum())
+        for month in months
+    }
+    current_month = months[-1] if months else None
+    previous_month = months[-2] if len(months) > 1 else None
+    current_amount = month_values.get(current_month, 0.0)
+    previous_amount = month_values.get(previous_month, 0.0)
     change = current_amount - previous_amount
     trend_class, trend_text = _executive_trend(change)
     return {
+        "months": month_values,
         "current": current_amount,
         "previous": previous_amount,
+        "average": (sum(month_values.values()) / len(month_values)) if month_values else 0.0,
         "change": change,
         "change_pct": _executive_change_pct(change, previous_amount),
         "trend_class": trend_class,
@@ -1173,7 +1314,7 @@ def _executive_metric_values(frame, current_month, previous_month):
     }
 
 
-def _executive_level_rows(expenses, level_column, current_month, previous_month):
+def _executive_level_rows(expenses, level_column, months):
     rows = []
     if expenses.empty or level_column not in expenses.columns:
         return rows
@@ -1186,7 +1327,7 @@ def _executive_level_rows(expenses, level_column, current_month, previous_month)
         frame = expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
         if frame.empty:
             continue
-        metrics = _executive_metric_values(frame, current_month, previous_month)
+        metrics = _executive_metric_values(frame, months)
         metrics["label"] = label or "No subcategory"
         metrics["value"] = label
         rows.append(metrics)
@@ -1210,37 +1351,45 @@ def _valid_executive_selection(expenses, column, value):
     return value if str(value).strip() in values else None
 
 
-def _render_executive_click_rows(title, rows, level, month_label, previous_label):
+def _render_executive_click_rows(title, rows, level, months, month_labels):
     st.markdown(f"#### {title}")
     if not rows:
         st.info("No rows available for this level.")
         return
-    st.markdown(
-        "<div class=\"drill-header\">"
-        "<div>Open</div>"
-        f"<div>{escape(month_label)}</div>"
-        f"<div>{escape(previous_label)}</div>"
-        "<div>Change</div><div>% change</div><div>Status</div>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
+    widths = [2.4] + [1 for _ in months] + [1, 1, 0.85, 1]
+    header_cols = st.columns(widths)
+    header_cols[0].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
+    for idx, month in enumerate(months, start=1):
+        header_cols[idx].markdown(
+            f"<div class=\"summary-label\">{escape(month_labels[month])}</div>",
+            unsafe_allow_html=True,
+        )
+    tail_labels = ["Average", "Change", "% change", "Status"]
+    for idx, label in enumerate(tail_labels, start=1 + len(months)):
+        header_cols[idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
+
     for idx, row in enumerate(rows):
-        cols = st.columns([2.4, 1, 1, 1, 0.85, 1])
+        cols = st.columns(widths)
         with cols[0]:
             if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
                 _set_executive_selection(level, row["value"])
                 st.rerun()
-        cols[1].markdown(f"<div class=\"drill-cell\">{_money(row['current'])}</div>", unsafe_allow_html=True)
-        cols[2].markdown(f"<div class=\"drill-cell\">{_money(row['previous'])}</div>", unsafe_allow_html=True)
-        cols[3].markdown(
+        for month_index, month in enumerate(months, start=1):
+            cols[month_index].markdown(
+                f"<div class=\"drill-cell\">{_money(row['months'].get(month, 0.0))}</div>",
+                unsafe_allow_html=True,
+            )
+        avg_index = 1 + len(months)
+        cols[avg_index].markdown(f"<div class=\"drill-cell\">{_money(row['average'])}</div>", unsafe_allow_html=True)
+        cols[avg_index + 1].markdown(
             f"<div class=\"drill-cell {row['trend_class']}\">{_money(row['change'])}</div>",
             unsafe_allow_html=True,
         )
-        cols[4].markdown(
+        cols[avg_index + 2].markdown(
             f"<div class=\"drill-cell {row['trend_class']}\">{_percent(row['change_pct'])}</div>",
             unsafe_allow_html=True,
         )
-        cols[5].markdown(
+        cols[avg_index + 3].markdown(
             f"<div class=\"drill-cell {row['trend_class']}\">{row['trend_text']}</div>",
             unsafe_allow_html=True,
         )
@@ -1258,6 +1407,7 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
     detail["txn_date"] = pd.to_datetime(detail["txn_date"], errors="coerce").dt.strftime("%Y-%m-%d")
     detail = detail.sort_values(["txn_date", "expense_usd"], ascending=[False, False])
     display_cols = [
+        "id",
         "txn_date",
         "account_name",
         "bank",
@@ -1284,6 +1434,12 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         hide_index=True,
         height=min(640, 130 + max(len(visible), 4) * 34),
     )
+    render_category_correction_panel(
+        detail,
+        get_categories(),
+        "executive_detail",
+        "Correct selected transaction category / subcategory",
+    )
     st.download_button(
         "Download selected transactions Excel",
         data=dataframe_to_excel_bytes({"Transactions": visible}),
@@ -1292,7 +1448,7 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
     )
 
 
-def _render_executive_drilldown(expenses, current_month, previous_month, month_label, previous_label):
+def _render_executive_drilldown(expenses, months, month_labels):
     st.markdown("### Drill-down")
     selected_group = _valid_executive_selection(
         expenses,
@@ -1332,22 +1488,22 @@ def _render_executive_drilldown(expenses, current_month, previous_month, month_l
             trail += f" / Subcategory: {selected_subcategory or 'No subcategory'}"
         st.markdown(f"<div class=\"drill-breadcrumb\">{escape(trail)}</div>", unsafe_allow_html=True)
 
-    group_rows = _executive_level_rows(expenses, "report_group", current_month, previous_month)
-    _render_executive_click_rows("1. Reporting Groups", group_rows, "group", month_label, previous_label)
+    group_rows = _executive_level_rows(expenses, "report_group", months)
+    _render_executive_click_rows("1. Reporting Groups", group_rows, "group", months, month_labels)
 
     if not selected_group:
         return
     group_expenses = expenses[expenses["report_group"].fillna("").astype(str).str.strip() == selected_group].copy()
-    category_rows = _executive_level_rows(group_expenses, "category", current_month, previous_month)
-    _render_executive_click_rows("2. Categories", category_rows, "category", month_label, previous_label)
+    category_rows = _executive_level_rows(group_expenses, "category", months)
+    _render_executive_click_rows("2. Categories", category_rows, "category", months, month_labels)
 
     if not selected_category:
         return
     category_expenses = group_expenses[
         group_expenses["category"].fillna("").astype(str).str.strip() == selected_category
     ].copy()
-    subcategory_rows = _executive_level_rows(category_expenses, "subcategory", current_month, previous_month)
-    _render_executive_click_rows("3. Subcategories", subcategory_rows, "subcategory", month_label, previous_label)
+    subcategory_rows = _executive_level_rows(category_expenses, "subcategory", months)
+    _render_executive_click_rows("3. Subcategories", subcategory_rows, "subcategory", months, month_labels)
 
     if selected_subcategory is None:
         return
@@ -1359,7 +1515,7 @@ def render_executive_report():
 
     st.subheader("Executive Summary")
     st.markdown(
-        "<div class=\"executive-note\">Read-only report view. This page has no import, edit, clear, or reset controls.</div>",
+        "<div class=\"executive-note\">Focused report view. Import, clear, reset, memory, and setup controls stay hidden. Category corrections are available only inside Transaction Detail.</div>",
         unsafe_allow_html=True,
     )
 
@@ -1393,6 +1549,8 @@ def render_executive_report():
 
     current_month = cutoff_ts.to_period("M")
     previous_month = current_month - 1
+    month_window = _executive_month_window(current_month)
+    month_labels = _executive_month_labels(month_window)
     month_label = current_month.to_timestamp().strftime("%B %Y")
     previous_label = previous_month.to_timestamp().strftime("%B %Y")
 
@@ -1400,11 +1558,17 @@ def render_executive_report():
     previous_total = float(expenses.loc[expenses["month"] == previous_month, "expense_usd"].sum())
     all_total = float(expenses["expense_usd"].sum())
     current_change = current_total - previous_total
+    month_total_map = {
+        month: float(expenses.loc[expenses["month"] == month, "expense_usd"].sum())
+        for month in month_window
+    }
+    average_total = (sum(month_total_map.values()) / len(month_total_map)) if month_total_map else 0.0
 
     render_summary_strip([
         ("Report until", cutoff_ts.strftime("%d %b %Y")),
         (f"{month_label} expenses", _money(current_total)),
         (f"{previous_label} expenses", _money(previous_total)),
+        ("Average monthly", _money(average_total)),
         ("Movement", _money(current_change)),
         ("Total to date", _money(all_total)),
         ("Groups", expenses["report_group"].nunique()),
@@ -1416,25 +1580,26 @@ def render_executive_report():
     rows = []
     for group in groups:
         group_expenses = expenses[expenses["report_group"] == group].copy()
-        current_amount = float(group_expenses.loc[group_expenses["month"] == current_month, "expense_usd"].sum())
-        previous_amount = float(group_expenses.loc[group_expenses["month"] == previous_month, "expense_usd"].sum())
-        rows.append((group, current_amount, previous_amount, current_amount - previous_amount))
-    rows.sort(key=lambda item: abs(item[3]), reverse=True)
+        metrics = _executive_metric_values(group_expenses, month_window)
+        rows.append((group, metrics))
+    rows.sort(key=lambda item: abs(item[1]["change"]), reverse=True)
 
+    month_headers = "".join(f"<th>{escape(month_labels[month])}</th>" for month in month_window)
     header = (
+        "<div class=\"executive-scroll\">"
         "<table class=\"executive-table\">"
         "<thead><tr>"
         "<th>Reporting group</th>"
-        f"<th>{escape(month_label)}</th>"
-        f"<th>{escape(previous_label)}</th>"
+        f"{month_headers}"
+        "<th>Average</th>"
         "<th>Change</th>"
         "<th>% change</th>"
         "<th>Status</th>"
         "</tr></thead><tbody>"
     )
-    body = "".join(_executive_row_html(*row) for row in rows)
-    st.markdown(header + body + "</tbody></table>", unsafe_allow_html=True)
-    _render_executive_drilldown(expenses, current_month, previous_month, month_label, previous_label)
+    body = "".join(_executive_row_html(group, metrics, month_window) for group, metrics in rows)
+    st.markdown(header + body + "</tbody></table></div>", unsafe_allow_html=True)
+    _render_executive_drilldown(expenses, month_window, month_labels)
 
 
 if is_executive_report_request():
@@ -1813,6 +1978,13 @@ elif page == "Pending Review":
             st.stop()
 
         render_wrapped_descriptions(pending_view)
+        render_bulk_categorise_panel(pending_view, categories, "pending")
+        render_category_correction_panel(
+            pending_view,
+            categories,
+            "pending_single",
+            "Correct one pending transaction with filtered subcategories",
+        )
         top_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_top")
         edited_pending = editable_pending_table(pending_view, categories, subcategories, "pending_editor")
         bottom_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_bottom")
@@ -1853,6 +2025,12 @@ elif page == "Database":
             ("Pending", int((db_view["status"].fillna("pending") == "pending").sum()) if "status" in db_view else 0),
             ("Reviewed", int((db_view["status"].fillna("") == "reviewed").sum()) if "status" in db_view else 0),
         ])
+        render_category_correction_panel(
+            db_view,
+            categories,
+            "database_single",
+            "Correct one database transaction with filtered subcategories",
+        )
         editable_cols = [
             "id",
             "status",
@@ -1878,8 +2056,13 @@ elif page == "Database":
                 "id": st.column_config.NumberColumn("ID", disabled=True),
                 "status": st.column_config.SelectboxColumn("Status", options=["pending", "reviewed"]),
                 "reviewed": st.column_config.CheckboxColumn("Reviewed"),
-                "category": st.column_config.SelectboxColumn("Category", options=categories),
-                "subcategory": st.column_config.SelectboxColumn("Subcategory", options=[""] + subcategories),
+                "original_description": st.column_config.TextColumn(
+                    "Full statement description",
+                    disabled=True,
+                    width="large",
+                ),
+                "category": st.column_config.TextColumn("Category", disabled=True),
+                "subcategory": st.column_config.TextColumn("Subcategory", disabled=True),
             },
             key="database_editor",
         )

@@ -907,8 +907,16 @@ def editable_pending_table(df, categories, subcategories, key):
             "original_description": st.column_config.TextColumn("Full statement description", disabled=True, width="large"),
             "match_type": st.column_config.TextColumn("Match", disabled=True, width="small"),
             "confidence": st.column_config.NumberColumn("Confidence", format="%.2f", disabled=True, width="small"),
-            "category": st.column_config.TextColumn("Category", disabled=True),
-            "subcategory": st.column_config.TextColumn("Subcategory", disabled=True),
+            "category": st.column_config.SelectboxColumn(
+                "Category",
+                options=[""] + categories,
+                required=False,
+            ),
+            "subcategory": st.column_config.SelectboxColumn(
+                "Subcategory",
+                options=[""] + subcategories,
+                required=False,
+            ),
         },
     )
 
@@ -1420,26 +1428,67 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         "subcategory",
         "original_description",
     ]
-    visible = detail[[col for col in display_cols if col in detail.columns]].copy()
     st.markdown("#### Transaction Detail")
+    detail_search = st.text_input(
+        "Search transaction detail",
+        placeholder="e.g. replit",
+        key="executive_detail_search",
+    )
+    detail_view = detail.copy()
+    if detail_search:
+        mask = detail_view.astype(str).apply(
+            lambda col: col.str.contains(detail_search, case=False, na=False)
+        ).any(axis=1)
+        detail_view = detail_view[mask].copy()
+
+    if detail_view.empty:
+        st.warning("No transactions match the current transaction detail search.")
+        return
+
+    visible = detail_view[[col for col in display_cols if col in detail_view.columns]].copy()
+    categories = get_categories()
+    subcategories = get_subcategories()
     render_summary_strip([
         ("Rows", len(visible)),
-        ("Total", _money(detail["expense_usd"].sum())),
+        ("Total", _money(detail_view["expense_usd"].sum())),
         ("Category", selected_category),
         ("Subcategory", selected_subcategory or "No subcategory"),
     ])
-    st.dataframe(
+    render_bulk_categorise_panel(detail_view, categories, "executive_detail")
+    edited_detail = st.data_editor(
         visible,
         use_container_width=True,
         hide_index=True,
         height=min(640, 130 + max(len(visible), 4) * 34),
+        column_config={
+            "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+            "txn_date": st.column_config.TextColumn("Date", disabled=True),
+            "account_name": st.column_config.TextColumn("Account", disabled=True),
+            "bank": st.column_config.TextColumn("Bank", disabled=True),
+            "account_number": st.column_config.TextColumn("Account number", disabled=True),
+            "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
+            "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
+            "amount_usd": st.column_config.NumberColumn("USD amount", format="%.2f", disabled=True),
+            "expense_usd": st.column_config.NumberColumn("Expense USD", format="%.2f", disabled=True),
+            "category": st.column_config.SelectboxColumn("Category", options=[""] + categories, required=False),
+            "subcategory": st.column_config.SelectboxColumn("Subcategory", options=[""] + subcategories, required=False),
+            "original_description": st.column_config.TextColumn(
+                "Full statement description",
+                disabled=True,
+                width="large",
+            ),
+        },
+        key="executive_detail_editor",
     )
-    render_category_correction_panel(
-        detail,
-        get_categories(),
-        "executive_detail",
-        "Correct selected transaction category / subcategory",
-    )
+    if st.button("Apply transaction detail edits", type="primary", key="executive_detail_apply"):
+        save_cols = [col for col in ["id", "category", "subcategory"] if col in edited_detail.columns]
+        save_df = edited_detail[save_cols].copy()
+        save_df["reviewed"] = True
+        save_df["status"] = "reviewed"
+        count = update_database_rows(save_df)
+        st.success(f"Updated {count} visible transactions.")
+        st.cache_data.clear()
+        st.rerun()
     st.download_button(
         "Download selected transactions Excel",
         data=dataframe_to_excel_bytes({"Transactions": visible}),
@@ -2025,6 +2074,7 @@ elif page == "Database":
             ("Pending", int((db_view["status"].fillna("pending") == "pending").sum()) if "status" in db_view else 0),
             ("Reviewed", int((db_view["status"].fillna("") == "reviewed").sum()) if "status" in db_view else 0),
         ])
+        render_bulk_categorise_panel(db_view, categories, "database")
         render_category_correction_panel(
             db_view,
             categories,
@@ -2061,8 +2111,16 @@ elif page == "Database":
                     disabled=True,
                     width="large",
                 ),
-                "category": st.column_config.TextColumn("Category", disabled=True),
-                "subcategory": st.column_config.TextColumn("Subcategory", disabled=True),
+                "category": st.column_config.SelectboxColumn(
+                    "Category",
+                    options=[""] + categories,
+                    required=False,
+                ),
+                "subcategory": st.column_config.SelectboxColumn(
+                    "Subcategory",
+                    options=[""] + subcategories,
+                    required=False,
+                ),
             },
             key="database_editor",
         )

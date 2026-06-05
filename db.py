@@ -425,6 +425,43 @@ def _canonical_account_number(value):
     return compact or text
 
 
+_RATE_TYPE_TOKENS = [
+    ("EUR", ("EUR", "EURO")),
+    ("GBP", ("GBP", "POUND", "STERLING")),
+    ("ILS", ("ILS", "SHEKEL", "SHEKELS")),
+    ("KZT", ("KZT", "TENGE")),
+    ("RUB", ("RUB", "RUBLE", "ROUBLE")),
+    ("USD", ("USD", "DOLLAR")),
+]
+
+
+def _rate_type_for_currency(currency):
+    currency = _clean(currency).upper()
+    if not currency:
+        return ""
+    return "USD/USD" if currency == "USD" else f"{currency}/USD"
+
+
+def _normalize_rate_type(rate_type, currency=""):
+    text = _clean(rate_type).upper()
+    if not text:
+        return _rate_type_for_currency(currency)
+
+    compact = re.sub(r"[^A-Z]", "", text)
+    found = []
+    for code, tokens in _RATE_TYPE_TOKENS:
+        if any(token in compact for token in tokens):
+            found.append(code)
+
+    non_usd = [code for code in found if code != "USD"]
+    if non_usd:
+        return f"{non_usd[0]}/USD"
+    if "USD" in found:
+        return "USD/USD"
+
+    return text.replace(" ", "")
+
+
 def _transaction_line_key(row):
     date_value = _canonical_date(row.get("Date", row.get("txn_date", "")))
     amount = _float_or_none(row.get("Amount", row.get("amount", None)))
@@ -591,9 +628,7 @@ def replace_accounts_from_excel(uploaded_file):
         if not account_name:
             continue
         currency = _clean(row.get(currency_col)).upper() if currency_col else ""
-        rate_type = _clean(row.get(rate_col)).upper() if rate_col else ""
-        if not rate_type and currency:
-            rate_type = f"{currency}/USD"
+        rate_type = _normalize_rate_type(row.get(rate_col) if rate_col else "", currency)
         rows.append((
             account_name,
             _clean(row.get(bank_col)) if bank_col else "",
@@ -617,21 +652,7 @@ def replace_accounts_from_excel(uploaded_file):
 
 
 def _rate_type_from_label(label):
-    text = str(label).strip().lower()
-    mapping = {
-        "euro": "EUR",
-        "eur": "EUR",
-        "gbp": "GBP",
-        "ils": "ILS",
-        "kzt": "KZT",
-        "rub": "RUB",
-        "dollar": "USD",
-        "usd": "USD",
-    }
-    for key, code in mapping.items():
-        if key in text:
-            return f"{code}/USD"
-    return str(label).strip().upper().replace(" ", "")
+    return _normalize_rate_type(label)
 
 
 def replace_rates_from_excel(uploaded_file):
@@ -738,6 +759,11 @@ def get_accounts():
         """, conn)
     finally:
         conn.close()
+    if not df.empty:
+        df["rate_type"] = df.apply(
+            lambda row: _normalize_rate_type(row.get("rate_type", ""), row.get("currency", "")),
+            axis=1,
+        )
     return df
 
 
@@ -751,39 +777,16 @@ def get_rates():
         """, conn)
     finally:
         conn.close()
+    if not df.empty:
+        df["rate_type"] = df["rate_type"].apply(_normalize_rate_type)
     return df
 
 
 def get_latest_rate(rate_type, txn_date=None):
-    rate_type = _clean(rate_type).upper()
+    rate_type = _normalize_rate_type(rate_type)
     if not rate_type:
         return None
-    month = pd.to_datetime(txn_date, errors="coerce")
-    month_key = month.to_period("M").to_timestamp().strftime("%Y-%m-%d") if not pd.isna(month) else None
-
-    conn = get_connection()
-    try:
-        if month_key:
-            df = pd.read_sql_query("""
-                SELECT rate_value
-                FROM rates
-                WHERE rate_type = ? AND rate_month <= ?
-                ORDER BY rate_month DESC
-                LIMIT 1
-            """, conn, params=(rate_type, month_key))
-        else:
-            df = pd.read_sql_query("""
-                SELECT rate_value
-                FROM rates
-                WHERE rate_type = ?
-                ORDER BY rate_month DESC
-                LIMIT 1
-            """, conn, params=(rate_type,))
-    finally:
-        conn.close()
-    if df.empty:
-        return 1.0 if rate_type == "USD/USD" else None
-    return float(df["rate_value"].iloc[0])
+    return _lookup_rate(_load_rate_lookup(), rate_type, txn_date)
 
 
 def _remember_transaction_with_cursor(cur, original_description, normalized_description, beneficiary, transaction_type, category, subcategory=""):
@@ -1301,7 +1304,7 @@ def _load_rate_lookup():
         conn.close()
     if rates.empty:
         return {}
-    rates["rate_type"] = rates["rate_type"].fillna("").astype(str).str.upper()
+    rates["rate_type"] = rates["rate_type"].apply(_normalize_rate_type)
     rates["rate_month"] = pd.to_datetime(rates["rate_month"], errors="coerce")
     return {
         rate_type: frame.sort_values("rate_month", ascending=False).reset_index(drop=True)
@@ -1311,7 +1314,7 @@ def _load_rate_lookup():
 
 
 def _lookup_rate(rate_lookup, rate_type, txn_date=None):
-    rate_type = _clean(rate_type).upper()
+    rate_type = _normalize_rate_type(rate_type)
     if not rate_type:
         return None
     if rate_type == "USD/USD":
@@ -1340,11 +1343,10 @@ def _usd_from_amount(amount, rate):
 
 
 def _rate_type_from_account(account):
-    rate_type = _clean(account.get("rate_type", "")).upper()
+    rate_type = _normalize_rate_type(account.get("rate_type", ""), account.get("currency", ""))
     if rate_type:
         return rate_type
-    currency = _clean(account.get("currency", "")).upper()
-    return f"{currency}/USD" if currency else ""
+    return ""
 
 
 def apply_account_and_rates(df, account):
@@ -1368,7 +1370,7 @@ def apply_account_and_rates(df, account):
             or row.get("currency", "")
             or row_account.get("currency", "")
         ).upper()
-        rate_type = f"{row_currency}/USD" if row_currency else _rate_type_from_account(row_account)
+        rate_type = _rate_type_for_currency(row_currency) if row_currency else _rate_type_from_account(row_account)
         rate = _lookup_rate(rate_lookup, rate_type, row.get("Date"))
         amount = float(row.get("Amount", 0) or 0)
 
@@ -1598,21 +1600,7 @@ def update_database_rows(df):
     conn = get_connection()
     cur = conn.cursor()
     updated = 0
-    rates = pd.read_sql_query("""
-        SELECT rate_month, rate_type, rate_value
-        FROM rates
-        ORDER BY rate_type, rate_month DESC
-    """, conn)
-    if rates.empty:
-        rate_lookup = {}
-    else:
-        rates["rate_type"] = rates["rate_type"].fillna("").astype(str).str.upper()
-        rates["rate_month"] = pd.to_datetime(rates["rate_month"], errors="coerce")
-        rate_lookup = {
-            rate_type: frame.sort_values("rate_month", ascending=False).reset_index(drop=True)
-            for rate_type, frame in rates.groupby("rate_type")
-            if rate_type
-        }
+    rate_lookup = _load_rate_lookup()
     text_columns = [
         "txn_date",
         "original_description",
@@ -1628,7 +1616,7 @@ def update_database_rows(df):
     ]
     number_columns = ["amount", "fx_rate", "amount_usd", "confidence"]
     bool_columns = ["reviewed", "dup_flag"]
-    account_update_columns = {"txn_date", "amount", "currency", "account_name", "bank", "account_number"}
+    account_update_columns = {"txn_date", "amount", "currency", "rate_type", "account_name", "bank", "account_number"}
     affected_statement_hashes = set()
 
     for _, row in df.iterrows():
@@ -1670,6 +1658,8 @@ def update_database_rows(df):
             value = _clean(row.get(column))
             if column in {"currency", "rate_type"}:
                 value = value.upper()
+            if column == "rate_type":
+                value = _normalize_rate_type(value, row.get("currency", existing_row.get("currency", "")))
             if column == "status" and not value:
                 value = "reviewed" if reviewed_value else "pending"
             elif column == "status" and value.casefold() in {"pending", "reviewed"}:
@@ -1704,7 +1694,10 @@ def update_database_rows(df):
                 if "currency" in df.columns
                 else _clean(existing_row.get("currency")).upper()
             )
-            merged_rate_type = f"{merged_currency}/USD" if merged_currency else _clean(existing_row.get("rate_type")).upper()
+            merged_rate_type = _normalize_rate_type(
+                row.get("rate_type") if "rate_type" in df.columns else existing_row.get("rate_type"),
+                merged_currency,
+            )
             merged_fx_rate = _lookup_rate(rate_lookup, merged_rate_type, merged_date)
             merged_amount_usd = _usd_from_amount(merged_amount, merged_fx_rate)
             assignments.extend(["rate_type = ?", "fx_rate = ?", "amount_usd = ?"])
@@ -1781,11 +1774,7 @@ def update_database_rows(df):
 def backfill_missing_usd_amounts():
     conn = get_connection()
     try:
-        rates = pd.read_sql_query("""
-            SELECT rate_month, rate_type, rate_value
-            FROM rates
-            ORDER BY rate_type, rate_month DESC
-        """, conn)
+        rate_lookup = _load_rate_lookup()
         tx = pd.read_sql_query("""
             SELECT id, txn_date, amount, currency, rate_type, fx_rate
             FROM classified_transactions
@@ -1795,22 +1784,11 @@ def backfill_missing_usd_amounts():
         if tx.empty:
             return 0
 
-        if rates.empty:
-            rate_lookup = {}
-        else:
-            rates["rate_type"] = rates["rate_type"].fillna("").astype(str).str.upper()
-            rates["rate_month"] = pd.to_datetime(rates["rate_month"], errors="coerce")
-            rate_lookup = {
-                rate_type: frame.sort_values("rate_month", ascending=False).reset_index(drop=True)
-                for rate_type, frame in rates.groupby("rate_type")
-                if rate_type
-            }
-
         cur = conn.cursor()
         updated = 0
         for _, row in tx.iterrows():
             currency = _clean(row.get("currency", "")).upper()
-            rate_type = f"{currency}/USD" if currency else _clean(row.get("rate_type", "")).upper()
+            rate_type = _normalize_rate_type(row.get("rate_type", ""), currency)
             fx_rate = _float_or_none(row.get("fx_rate"))
             if fx_rate is None:
                 fx_rate = _lookup_rate(rate_lookup, rate_type, row.get("txn_date"))
@@ -1926,7 +1904,7 @@ def insert_manual_transaction(txn_date, description, amount, category, subcatego
     normalized = simplify_merchant(normalize_description(description))
     beneficiary = extract_beneficiary(description)
     transaction_type = infer_transaction_type(description, amount)
-    rate_type = _clean(account.get("rate_type", "")).upper()
+    rate_type = _normalize_rate_type(account.get("rate_type", ""), account.get("currency", ""))
     fx_rate = get_latest_rate(rate_type, date_text)
     amount_usd = _usd_from_amount(amount, fx_rate)
     now = _now()

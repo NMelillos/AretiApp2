@@ -8,7 +8,7 @@ import streamlit as st
 DEFAULT_USERNAME = "Areti"
 DEFAULT_PASSWORD_SALT = "aretiapp-login-v1"
 DEFAULT_PASSWORD_HASH = "99cd9990ece838f798db50d75308cc7f75c4309be343063329772bc8998aad16"
-AUTH_BUILD_MARKER = "auth-clean-20260525"
+AUTH_BUILD_MARKER = "auth-clean-20260605"
 
 
 def _hash_password(password, salt):
@@ -22,8 +22,12 @@ def _hash_password(password, salt):
 
 def _password_candidates(password):
     raw = str(password)
-    trimmed = raw.strip()
-    return [raw] if raw == trimmed else [raw, trimmed]
+    normalized = raw
+    for invisible in ("\ufeff", "\u200b", "\u200c", "\u200d"):
+        normalized = normalized.replace(invisible, "")
+    trimmed = normalized.strip()
+    candidates = [raw, normalized, trimmed]
+    return list(dict.fromkeys(candidates))
 
 
 def _username_matches(username):

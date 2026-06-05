@@ -357,6 +357,47 @@ st.markdown(
         color: var(--text-muted);
         font-weight: 800;
     }
+    .drill-header {
+        display: grid;
+        grid-template-columns: minmax(220px, 2.4fr) repeat(5, minmax(92px, 1fr));
+        gap: 8px;
+        align-items: stretch;
+        margin-top: 10px;
+        color: var(--text-muted);
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+    }
+    .drill-row {
+        display: grid;
+        grid-template-columns: minmax(220px, 2.4fr) repeat(5, minmax(92px, 1fr));
+        gap: 8px;
+        align-items: stretch;
+        margin-top: 8px;
+    }
+    .drill-cell {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        min-height: 38px;
+        padding: 8px 10px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        text-align: right;
+        font-size: 13px;
+        font-weight: 700;
+    }
+    .drill-cell:first-child {
+        justify-content: flex-start;
+        text-align: left;
+        color: var(--text-main);
+    }
+    .drill-breadcrumb {
+        color: var(--text-muted);
+        font-size: 13px;
+        margin: 8px 0 4px;
+    }
     .soft-panel {
         background: var(--panel);
         border: 1px solid var(--border);
@@ -1103,6 +1144,216 @@ def _executive_row_html(group, current_amount, previous_amount, change):
     )
 
 
+def _executive_trend(change):
+    if abs(change) <= 0.005:
+        return "trend-flat", "No change"
+    if change > 0:
+        return "trend-up", "Increasing"
+    return "trend-down", "Decreasing"
+
+
+def _executive_change_pct(change, previous_amount):
+    if abs(previous_amount) <= 0.005:
+        return None
+    return (change / previous_amount) * 100
+
+
+def _executive_metric_values(frame, current_month, previous_month):
+    current_amount = float(frame.loc[frame["month"] == current_month, "expense_usd"].sum())
+    previous_amount = float(frame.loc[frame["month"] == previous_month, "expense_usd"].sum())
+    change = current_amount - previous_amount
+    trend_class, trend_text = _executive_trend(change)
+    return {
+        "current": current_amount,
+        "previous": previous_amount,
+        "change": change,
+        "change_pct": _executive_change_pct(change, previous_amount),
+        "trend_class": trend_class,
+        "trend_text": trend_text,
+    }
+
+
+def _executive_level_rows(expenses, level_column, current_month, previous_month):
+    rows = []
+    if expenses.empty or level_column not in expenses.columns:
+        return rows
+    raw_labels = expenses[level_column].fillna("").astype(str).str.strip().unique().tolist()
+    if level_column == "subcategory":
+        labels = sorted(raw_labels, key=lambda value: (value == "", value.casefold()))
+    else:
+        labels = sorted(value for value in raw_labels if value)
+    for label in labels:
+        frame = expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
+        if frame.empty:
+            continue
+        metrics = _executive_metric_values(frame, current_month, previous_month)
+        metrics["label"] = label or "No subcategory"
+        metrics["value"] = label
+        rows.append(metrics)
+    rows.sort(key=lambda row: abs(row["change"]), reverse=True)
+    return rows
+
+
+def _set_executive_selection(level, value):
+    st.session_state[f"executive_{level}"] = value
+    if level == "group":
+        st.session_state.pop("executive_category", None)
+        st.session_state.pop("executive_subcategory", None)
+    elif level == "category":
+        st.session_state.pop("executive_subcategory", None)
+
+
+def _valid_executive_selection(expenses, column, value):
+    if value is None or column not in expenses.columns:
+        return None
+    values = set(expenses[column].fillna("").astype(str).str.strip().tolist())
+    return value if str(value).strip() in values else None
+
+
+def _render_executive_click_rows(title, rows, level, month_label, previous_label):
+    st.markdown(f"#### {title}")
+    if not rows:
+        st.info("No rows available for this level.")
+        return
+    st.markdown(
+        "<div class=\"drill-header\">"
+        "<div>Open</div>"
+        f"<div>{escape(month_label)}</div>"
+        f"<div>{escape(previous_label)}</div>"
+        "<div>Change</div><div>% change</div><div>Status</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    for idx, row in enumerate(rows):
+        cols = st.columns([2.4, 1, 1, 1, 0.85, 1])
+        with cols[0]:
+            if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
+                _set_executive_selection(level, row["value"])
+                st.rerun()
+        cols[1].markdown(f"<div class=\"drill-cell\">{_money(row['current'])}</div>", unsafe_allow_html=True)
+        cols[2].markdown(f"<div class=\"drill-cell\">{_money(row['previous'])}</div>", unsafe_allow_html=True)
+        cols[3].markdown(
+            f"<div class=\"drill-cell {row['trend_class']}\">{_money(row['change'])}</div>",
+            unsafe_allow_html=True,
+        )
+        cols[4].markdown(
+            f"<div class=\"drill-cell {row['trend_class']}\">{_percent(row['change_pct'])}</div>",
+            unsafe_allow_html=True,
+        )
+        cols[5].markdown(
+            f"<div class=\"drill-cell {row['trend_class']}\">{row['trend_text']}</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory):
+    detail = expenses[
+        (expenses["report_group"].fillna("").astype(str).str.strip() == selected_group)
+        & (expenses["category"].fillna("").astype(str).str.strip() == selected_category)
+        & (expenses["subcategory"].fillna("").astype(str).str.strip() == selected_subcategory)
+    ].copy()
+    if detail.empty:
+        st.info("No transactions found for the selected subcategory.")
+        return
+    detail["txn_date"] = pd.to_datetime(detail["txn_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    detail = detail.sort_values(["txn_date", "expense_usd"], ascending=[False, False])
+    display_cols = [
+        "txn_date",
+        "account_name",
+        "bank",
+        "account_number",
+        "currency",
+        "amount",
+        "amount_usd",
+        "expense_usd",
+        "category",
+        "subcategory",
+        "original_description",
+    ]
+    visible = detail[[col for col in display_cols if col in detail.columns]].copy()
+    st.markdown("#### Transaction Detail")
+    render_summary_strip([
+        ("Rows", len(visible)),
+        ("Total", _money(detail["expense_usd"].sum())),
+        ("Category", selected_category),
+        ("Subcategory", selected_subcategory or "No subcategory"),
+    ])
+    st.dataframe(
+        visible,
+        use_container_width=True,
+        hide_index=True,
+        height=min(640, 130 + max(len(visible), 4) * 34),
+    )
+    st.download_button(
+        "Download selected transactions Excel",
+        data=dataframe_to_excel_bytes({"Transactions": visible}),
+        file_name="executive_selected_transactions.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def _render_executive_drilldown(expenses, current_month, previous_month, month_label, previous_label):
+    st.markdown("### Drill-down")
+    selected_group = _valid_executive_selection(
+        expenses,
+        "report_group",
+        st.session_state.get("executive_group"),
+    )
+    selected_category = _valid_executive_selection(
+        expenses[expenses["report_group"].fillna("").astype(str).str.strip() == selected_group] if selected_group else expenses.iloc[0:0],
+        "category",
+        st.session_state.get("executive_category"),
+    )
+    selected_subcategory = _valid_executive_selection(
+        expenses[
+            (expenses["report_group"].fillna("").astype(str).str.strip() == selected_group)
+            & (expenses["category"].fillna("").astype(str).str.strip() == selected_category)
+        ] if selected_group and selected_category else expenses.iloc[0:0],
+        "subcategory",
+        st.session_state.get("executive_subcategory"),
+    )
+    if selected_group != st.session_state.get("executive_group"):
+        st.session_state.pop("executive_group", None)
+    if selected_category != st.session_state.get("executive_category"):
+        st.session_state.pop("executive_category", None)
+    if selected_subcategory != st.session_state.get("executive_subcategory"):
+        st.session_state.pop("executive_subcategory", None)
+
+    if st.button("Clear drill-down selection"):
+        for key in ["executive_group", "executive_category", "executive_subcategory"]:
+            st.session_state.pop(key, None)
+        st.rerun()
+
+    if selected_group:
+        trail = f"Reporting group: {selected_group}"
+        if selected_category:
+            trail += f" / Category: {selected_category}"
+        if selected_subcategory is not None:
+            trail += f" / Subcategory: {selected_subcategory or 'No subcategory'}"
+        st.markdown(f"<div class=\"drill-breadcrumb\">{escape(trail)}</div>", unsafe_allow_html=True)
+
+    group_rows = _executive_level_rows(expenses, "report_group", current_month, previous_month)
+    _render_executive_click_rows("1. Reporting Groups", group_rows, "group", month_label, previous_label)
+
+    if not selected_group:
+        return
+    group_expenses = expenses[expenses["report_group"].fillna("").astype(str).str.strip() == selected_group].copy()
+    category_rows = _executive_level_rows(group_expenses, "category", current_month, previous_month)
+    _render_executive_click_rows("2. Categories", category_rows, "category", month_label, previous_label)
+
+    if not selected_category:
+        return
+    category_expenses = group_expenses[
+        group_expenses["category"].fillna("").astype(str).str.strip() == selected_category
+    ].copy()
+    subcategory_rows = _executive_level_rows(category_expenses, "subcategory", current_month, previous_month)
+    _render_executive_click_rows("3. Subcategories", subcategory_rows, "subcategory", month_label, previous_label)
+
+    if selected_subcategory is None:
+        return
+    _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory)
+
+
 def render_executive_report():
     from reporting import _prepare_report_data
 
@@ -1183,6 +1434,7 @@ def render_executive_report():
     )
     body = "".join(_executive_row_html(*row) for row in rows)
     st.markdown(header + body + "</tbody></table>", unsafe_allow_html=True)
+    _render_executive_drilldown(expenses, current_month, previous_month, month_label, previous_label)
 
 
 if is_executive_report_request():

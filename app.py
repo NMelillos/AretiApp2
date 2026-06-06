@@ -403,13 +403,13 @@ st.markdown(
         background: var(--panel);
         border: 1px solid var(--border);
         border-radius: 6px;
-        min-height: 38px;
-        padding: 8px 10px;
+        min-height: 30px;
+        padding: 4px 7px;
         display: flex;
         align-items: center;
         justify-content: flex-end;
         text-align: right;
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 700;
     }
     .drill-cell:first-child {

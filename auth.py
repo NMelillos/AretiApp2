@@ -7,8 +7,11 @@ import streamlit as st
 
 DEFAULT_USERNAME = "Areti"
 DEFAULT_PASSWORD_SALT = "aretiapp-login-v1"
-DEFAULT_PASSWORD_HASH = "99cd9990ece838f798db50d75308cc7f75c4309be343063329772bc8998aad16"
-AUTH_BUILD_MARKER = "auth-clean-20260605"
+DEFAULT_PASSWORD_HASH = "05bad6fd99f80a37b8277d0d66ba0d38415fcf3b2cbd194be8855349ec48121b"
+RETIRED_PASSWORD_HASHES = {
+    "99cd9990ece838f798db50d75308cc7f75c4309be343063329772bc8998aad16",
+}
+AUTH_BUILD_MARKER = "auth-rotated-20260606"
 
 
 def _hash_password(password, salt):
@@ -30,6 +33,17 @@ def _password_candidates(password):
     return list(dict.fromkeys(candidates))
 
 
+def _candidate_is_retired(candidate, configured_salt):
+    salts = [DEFAULT_PASSWORD_SALT]
+    if configured_salt and configured_salt != DEFAULT_PASSWORD_SALT:
+        salts.append(configured_salt)
+    return any(
+        hmac.compare_digest(_hash_password(candidate, salt), retired_hash)
+        for salt in salts
+        for retired_hash in RETIRED_PASSWORD_HASHES
+    )
+
+
 def _username_matches(username):
     entered = str(username).strip().casefold()
     configured = os.getenv("LOGIN_USERNAME", "").strip()
@@ -44,6 +58,9 @@ def _password_matches(password):
     configured_password = os.getenv("LOGIN_PASSWORD", "")
     configured_hash = os.getenv("LOGIN_PASSWORD_HASH", "")
     configured_salt = os.getenv("LOGIN_PASSWORD_SALT", DEFAULT_PASSWORD_SALT)
+
+    if any(_candidate_is_retired(candidate, configured_salt) for candidate in candidates):
+        return False
 
     if configured_password:
         for candidate in candidates:

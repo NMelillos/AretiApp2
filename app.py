@@ -2009,9 +2009,27 @@ elif page == "Pending Review":
             for value in pending.get("statement_name", pd.Series(dtype=str)).fillna("").astype(str).unique()
             if value
         )
+        statement_options = ["All pending statements"] + statement_values
+        default_statement_index = 0
+        pending_with_statement = pending[
+            pending.get("statement_name", pd.Series(dtype=str)).fillna("").astype(str).str.strip() != ""
+        ].copy()
+        if not pending_with_statement.empty:
+            if "id" in pending_with_statement.columns:
+                pending_with_statement["_sort_order"] = pd.to_numeric(pending_with_statement["id"], errors="coerce")
+            else:
+                pending_with_statement["_sort_order"] = pd.to_datetime(
+                    pending_with_statement.get("created_at", pd.Series(dtype=str)),
+                    errors="coerce",
+                )
+            pending_with_statement = pending_with_statement.sort_values("_sort_order", na_position="first")
+            latest_statement = str(pending_with_statement["statement_name"].iloc[-1])
+            if latest_statement in statement_options:
+                default_statement_index = statement_options.index(latest_statement)
         statement_filter = st.selectbox(
             "Statement",
-            ["All pending statements"] + statement_values,
+            statement_options,
+            index=default_statement_index,
             key="pending_statement_filter",
         )
         description_filter = st.text_input(

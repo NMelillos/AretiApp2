@@ -89,7 +89,7 @@ def _month_context(expenses):
 
 def _prepare_report_data(transactions, categories, report_group=None):
     tx = transactions.copy()
-    for column in ["txn_date", "amount", "amount_usd", "category", "subcategory"]:
+    for column in ["txn_date", "amount", "amount_usd", "currency", "category", "subcategory"]:
         if column not in tx.columns:
             tx[column] = ""
 
@@ -100,8 +100,13 @@ def _prepare_report_data(transactions, categories, report_group=None):
     tx["txn_date"] = pd.to_datetime(tx["txn_date"], errors="coerce")
     tx["category"] = tx["category"].fillna("").astype(str).str.strip()
     tx["subcategory"] = tx["subcategory"].fillna("").astype(str).str.strip()
-    tx["report_amount"] = pd.to_numeric(tx["amount_usd"], errors="coerce")
-    tx["report_amount"] = tx["report_amount"].fillna(pd.to_numeric(tx["amount"], errors="coerce")).fillna(0)
+    tx["currency"] = tx["currency"].fillna("").astype(str).str.upper().str.strip()
+    amount_numeric = pd.to_numeric(tx["amount"], errors="coerce")
+    amount_usd_numeric = pd.to_numeric(tx["amount_usd"], errors="coerce")
+    tx["report_amount"] = amount_usd_numeric
+    usd_fallback = tx["report_amount"].isna() & tx["currency"].eq("USD")
+    tx.loc[usd_fallback, "report_amount"] = amount_numeric.loc[usd_fallback]
+    tx["report_amount"] = tx["report_amount"].fillna(0)
     tx = tx.dropna(subset=["txn_date"]).copy()
 
     group_map = _category_group_map(categories)
@@ -412,11 +417,20 @@ def _prepare_verification_data(transactions, categories, report_group=None):
     tx["parsed_date"] = pd.to_datetime(tx["txn_date"], errors="coerce")
     tx["statement_amount_numeric"] = pd.to_numeric(tx["amount"], errors="coerce")
     tx["amount_usd_numeric"] = pd.to_numeric(tx["amount_usd"], errors="coerce")
-    tx["report_amount"] = tx["amount_usd_numeric"].combine_first(tx["statement_amount_numeric"])
-    tx["report_amount"] = tx["report_amount"].fillna(0)
+    tx["currency_normalized"] = tx["currency"].fillna("").astype(str).str.upper().str.strip()
+    tx["report_amount"] = tx["amount_usd_numeric"]
+    usd_fallback = tx["report_amount"].isna() & tx["currency_normalized"].eq("USD")
+    tx.loc[usd_fallback, "report_amount"] = tx.loc[usd_fallback, "statement_amount_numeric"]
     tx["amount_source"] = "missing"
-    tx.loc[tx["statement_amount_numeric"].notna(), "amount_source"] = "statement amount"
+    tx.loc[usd_fallback, "amount_source"] = "statement amount (USD)"
+    tx.loc[
+        tx["statement_amount_numeric"].notna()
+        & tx["amount_usd_numeric"].isna()
+        & ~tx["currency_normalized"].eq("USD"),
+        "amount_source",
+    ] = "missing USD equivalent"
     tx.loc[tx["amount_usd_numeric"].notna(), "amount_source"] = "USD equivalent"
+    tx["report_amount"] = tx["report_amount"].fillna(0)
 
     group_map = _category_group_map(categories)
     tx["category"] = tx["category"].fillna("").astype(str).str.strip()
@@ -426,7 +440,8 @@ def _prepare_verification_data(transactions, categories, report_group=None):
 
     tx["in_report_group_scope"] = True if not report_group else tx["report_group"].eq(report_group)
     tx["valid_for_report"] = tx["parsed_date"].notna() & (
-        tx["amount_usd_numeric"].notna() | tx["statement_amount_numeric"].notna()
+        tx["amount_usd_numeric"].notna()
+        | (tx["currency_normalized"].eq("USD") & tx["statement_amount_numeric"].notna())
     )
     tx["is_own_funds"] = tx["category"].map(_is_own_funds)
     tx["income_like_category"] = tx.apply(
@@ -479,7 +494,7 @@ def _prepare_verification_data(transactions, categories, report_group=None):
         if pd.isna(row["parsed_date"]):
             return "Needs attention - missing or invalid date"
         if not row["valid_for_report"]:
-            return "Needs attention - missing amount and USD equivalent"
+            return "Needs attention - missing USD equivalent/rate"
         if row["expense_report_included"]:
             return "Included in expense report"
         if row["income_deposit_included"]:

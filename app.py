@@ -34,11 +34,13 @@ from db import (
     get_import_history,
     get_memory,
     get_pending_transactions,
+    get_report_group_settings,
     get_rates,
     get_saved_transactions,
     get_statement_account,
     get_statement_balances,
     get_subcategories,
+    get_transaction_change_log,
     import_database_updates_from_excel,
     import_memory_from_excel,
     init_db,
@@ -46,6 +48,7 @@ from db import (
     mark_duplicate_transactions,
     replace_accounts_from_excel,
     replace_categories_from_excel,
+    replace_report_group_settings,
     replace_rates_from_excel,
     reset_runtime_data,
     record_duplicate_statement_attempt,
@@ -68,10 +71,12 @@ _db_get_dashboard_counts = get_dashboard_counts
 _db_get_import_history = get_import_history
 _db_get_memory = get_memory
 _db_get_pending_transactions = get_pending_transactions
+_db_get_report_group_settings = get_report_group_settings
 _db_get_rates = get_rates
 _db_get_saved_transactions = get_saved_transactions
 _db_get_statement_balances = get_statement_balances
 _db_get_subcategories = get_subcategories
+_db_get_transaction_change_log = get_transaction_change_log
 
 
 def _last_sunday(year, month):
@@ -129,6 +134,11 @@ def get_pending_transactions():
 
 
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_report_group_settings():
+    return _db_get_report_group_settings()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
 def get_rates():
     return _db_get_rates()
 
@@ -146,6 +156,11 @@ def get_statement_balances():
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
 def get_subcategories(category=None):
     return _db_get_subcategories(category=category)
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_transaction_change_log(limit=300):
+    return _db_get_transaction_change_log(limit=limit)
 
 st.markdown(
     """
@@ -714,6 +729,28 @@ def render_summary_strip(items):
     st.markdown(f"<div class=\"summary-strip\">{''.join(cards)}</div>", unsafe_allow_html=True)
 
 
+def category_report_group_map(categories_df):
+    if categories_df.empty or "category" not in categories_df.columns:
+        return {}
+    mapping = {}
+    for _, row in categories_df.iterrows():
+        category = str(row.get("category", "") or "").strip()
+        if not category:
+            continue
+        group = str(row.get("report_group", "") or "").strip() if "report_group" in categories_df.columns else ""
+        mapping.setdefault(category.casefold(), group)
+    return mapping
+
+
+def add_report_group_column(df, categories_df):
+    out = df.copy()
+    group_map = category_report_group_map(categories_df)
+    out["report_group"] = out.get("category", pd.Series(dtype=str)).fillna("").astype(str).map(
+        lambda value: group_map.get(value.strip().casefold(), "")
+    )
+    return out
+
+
 def transaction_filter_controls(df, key_prefix):
     filtered = df.copy()
     if filtered.empty:
@@ -882,6 +919,7 @@ def editable_pending_table(df, categories, subcategories, key):
         "account_name",
         "bank",
         "account_number",
+        "statement_name",
         "amount_usd",
         "match_type",
         "confidence",
@@ -901,6 +939,7 @@ def editable_pending_table(df, categories, subcategories, key):
             "account_name": st.column_config.TextColumn("Account", disabled=True),
             "bank": st.column_config.TextColumn("Bank", disabled=True),
             "account_number": st.column_config.TextColumn("Account number", disabled=True),
+            "statement_name": st.column_config.TextColumn("Statement", disabled=True, width="large"),
             "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
             "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
             "amount_usd": st.column_config.NumberColumn("USD amount", format="%.2f", disabled=True),
@@ -1422,10 +1461,10 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         "account_number",
         "currency",
         "amount",
-        "amount_usd",
         "expense_usd",
         "category",
         "subcategory",
+        "reviewed",
         "original_description",
     ]
     st.markdown("#### Transaction Detail")
@@ -1468,10 +1507,13 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
             "account_number": st.column_config.TextColumn("Account number", disabled=True),
             "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
             "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
-            "amount_usd": st.column_config.NumberColumn("USD amount", format="%.2f", disabled=True),
-            "expense_usd": st.column_config.NumberColumn("Expense USD", format="%.2f", disabled=True),
+            "expense_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
             "category": st.column_config.SelectboxColumn("Category", options=[""] + categories, required=False),
             "subcategory": st.column_config.SelectboxColumn("Subcategory", options=[""] + subcategories, required=False),
+            "reviewed": st.column_config.CheckboxColumn(
+                "Reviewed",
+                help="Untick to send the transaction back to Pending Review.",
+            ),
             "original_description": st.column_config.TextColumn(
                 "Full statement description",
                 disabled=True,
@@ -1481,10 +1523,11 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         key="executive_detail_editor",
     )
     if st.button("Apply transaction detail edits", type="primary", key="executive_detail_apply"):
-        save_cols = [col for col in ["id", "category", "subcategory"] if col in edited_detail.columns]
+        save_cols = [col for col in ["id", "category", "subcategory", "reviewed"] if col in edited_detail.columns]
         save_df = edited_detail[save_cols].copy()
-        save_df["reviewed"] = True
-        save_df["status"] = "reviewed"
+        if "reviewed" not in save_df.columns:
+            save_df["reviewed"] = True
+        save_df["status"] = save_df["reviewed"].map(lambda value: "reviewed" if bool(value) else "pending")
         count = update_database_rows(save_df)
         st.success(f"Updated {count} visible transactions.")
         st.cache_data.clear()
@@ -1563,10 +1606,6 @@ def render_executive_report():
     from reporting import _prepare_report_data
 
     st.subheader("Executive Summary")
-    st.markdown(
-        "<div class=\"executive-note\">Focused report view. Import, clear, reset, memory, and setup controls stay hidden. Category corrections are available only inside Transaction Detail.</div>",
-        unsafe_allow_html=True,
-    )
 
     reviewed = get_saved_transactions()
     categories_df = get_categories(include_subcategories=True)
@@ -1592,62 +1631,26 @@ def render_executive_report():
         return
 
     _, expenses, _, _ = _prepare_report_data(filtered, categories_df)
+    group_settings = get_report_group_settings()
+    if not group_settings.empty:
+        visible_groups = (
+            group_settings[group_settings["visible"].fillna(0).astype(int) == 1]["report_group"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
+        expenses = expenses[expenses["report_group"].fillna("").astype(str).str.strip().isin(visible_groups)].copy()
+        if expenses.empty:
+            st.info("No reviewed expense rows match the selected visible reporting groups.")
+            return
     if expenses.empty:
         st.info("No reviewed expense rows match the selected period.")
         return
 
     current_month = cutoff_ts.to_period("M")
-    previous_month = current_month - 1
     month_window = _executive_month_window(current_month)
     month_labels = _executive_month_labels(month_window)
-    month_label = current_month.to_timestamp().strftime("%B %Y")
-    previous_label = previous_month.to_timestamp().strftime("%B %Y")
-
-    current_total = float(expenses.loc[expenses["month"] == current_month, "expense_usd"].sum())
-    previous_total = float(expenses.loc[expenses["month"] == previous_month, "expense_usd"].sum())
-    all_total = float(expenses["expense_usd"].sum())
-    current_change = current_total - previous_total
-    month_total_map = {
-        month: float(expenses.loc[expenses["month"] == month, "expense_usd"].sum())
-        for month in month_window
-    }
-    average_total = (sum(month_total_map.values()) / len(month_total_map)) if month_total_map else 0.0
-
-    render_summary_strip([
-        ("Report until", cutoff_ts.strftime("%d %b %Y")),
-        (f"{month_label} expenses", _money(current_total)),
-        (f"{previous_label} expenses", _money(previous_total)),
-        ("Average monthly", _money(average_total)),
-        ("Movement", _money(current_change)),
-        ("Total to date", _money(all_total)),
-        ("Groups", expenses["report_group"].nunique()),
-        ("Reviewed rows", len(filtered)),
-        ("Expense rows", len(expenses)),
-    ])
-
-    groups = sorted(expenses["report_group"].dropna().astype(str).unique().tolist())
-    rows = []
-    for group in groups:
-        group_expenses = expenses[expenses["report_group"] == group].copy()
-        metrics = _executive_metric_values(group_expenses, month_window)
-        rows.append((group, metrics))
-    rows.sort(key=lambda item: abs(item[1]["change"]), reverse=True)
-
-    month_headers = "".join(f"<th>{escape(month_labels[month])}</th>" for month in month_window)
-    header = (
-        "<div class=\"executive-scroll\">"
-        "<table class=\"executive-table\">"
-        "<thead><tr>"
-        "<th>Reporting group</th>"
-        f"{month_headers}"
-        "<th>Average</th>"
-        "<th>Change</th>"
-        "<th>% change</th>"
-        "<th>Status</th>"
-        "</tr></thead><tbody>"
-    )
-    body = "".join(_executive_row_html(group, metrics, month_window) for group, metrics in rows)
-    st.markdown(header + body + "</tbody></table></div>", unsafe_allow_html=True)
     _render_executive_drilldown(expenses, month_window, month_labels)
 
 
@@ -2001,18 +2004,24 @@ elif page == "Pending Review":
     elif not categories:
         st.warning("No categories are loaded. Upload categories in Setup first.")
     else:
-        p1, p2, p3, p4 = st.columns(4)
-        p1.metric("Pending rows", len(pending))
-        p2.metric("Exact", int((pending["match_type"] == "exact").sum()))
-        p3.metric("Similar", int((pending["match_type"] == "similar").sum()))
-        p4.metric("New", int((pending["match_type"] == "new").sum()))
-
+        statement_values = sorted(
+            value
+            for value in pending.get("statement_name", pd.Series(dtype=str)).fillna("").astype(str).unique()
+            if value
+        )
+        statement_filter = st.selectbox(
+            "Statement",
+            ["All pending statements"] + statement_values,
+            key="pending_statement_filter",
+        )
         description_filter = st.text_input(
             "Filter by transaction description",
             placeholder="e.g. Wolt",
             key="pending_description_filter",
         )
         pending_view = pending.copy()
+        if statement_filter != "All pending statements":
+            pending_view = pending_view[pending_view["statement_name"].fillna("").astype(str) == statement_filter].copy()
         if description_filter:
             pending_view = pending_view[
                 pending_view["original_description"].fillna("").astype(str).str.contains(
@@ -2022,8 +2031,15 @@ elif page == "Pending Review":
                 )
             ].copy()
 
+        p1, p2, p3, p4, p5 = st.columns(5)
+        p1.metric("Visible rows", len(pending_view))
+        p2.metric("All pending", len(pending))
+        p3.metric("Exact", int((pending_view["match_type"] == "exact").sum()))
+        p4.metric("Similar", int((pending_view["match_type"] == "similar").sum()))
+        p5.metric("New", int((pending_view["match_type"] == "new").sum()))
+
         if pending_view.empty:
-            st.warning("No pending transactions match the current description filter.")
+            st.warning("No pending transactions match the current filters.")
             st.stop()
 
         render_wrapped_descriptions(pending_view)
@@ -2052,12 +2068,16 @@ elif page == "Pending Review":
 elif page == "Database":
     st.subheader("Database")
     all_tx = get_all_transactions()
-    categories = get_categories()
+    categories_df = get_categories(include_subcategories=True)
+    categories = sorted(
+        categories_df.get("category", pd.Series(dtype=str)).dropna().astype(str).unique().tolist()
+    )
     subcategories = get_subcategories()
 
     if all_tx.empty:
         st.info("No transactions imported yet.")
     else:
+        all_tx = add_report_group_column(all_tx, categories_df)
         db_filtered = transaction_filter_controls(all_tx, "database")
         search = st.text_input("Search database")
         db_view = db_filtered.copy()
@@ -2095,6 +2115,7 @@ elif page == "Database":
             "original_description",
             "category",
             "subcategory",
+            "report_group",
             "match_type",
         ]
         db_edit = st.data_editor(
@@ -2121,6 +2142,7 @@ elif page == "Database":
                     options=[""] + subcategories,
                     required=False,
                 ),
+                "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
             },
             key="database_editor",
         )
@@ -2169,6 +2191,18 @@ elif page == "Database":
             file_name="transactions_database_filtered.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+        with st.expander("Recent transaction change log"):
+            change_log = get_transaction_change_log()
+            if change_log.empty:
+                st.info("No transaction changes have been logged yet.")
+            else:
+                st.dataframe(change_log, use_container_width=True, hide_index=True, height=360)
+                st.download_button(
+                    "Download change log Excel",
+                    data=dataframe_to_excel_bytes({"Change log": change_log}),
+                    file_name="transaction_change_log.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
     render_manual_transaction_form(categories, subcategories)
 
 
@@ -2477,6 +2511,40 @@ elif page == "Setup":
             + ", ".join(setup_missing_rates)
             + ". Replace the Rates workbook before importing statements for those currencies."
         )
+
+    setup_report_groups = sorted(
+        group
+        for group in setup_categories.get("report_group", pd.Series(dtype=str)).fillna("").astype(str).str.strip().unique()
+        if group and not group.lower().startswith("0-")
+    )
+    if setup_report_groups:
+        st.markdown("### Executive Report Visibility")
+        group_settings = get_report_group_settings()
+        if group_settings.empty:
+            default_visible_groups = setup_report_groups
+        else:
+            default_visible_groups = (
+                group_settings[group_settings["visible"].fillna(0).astype(int) == 1]["report_group"]
+                .fillna("")
+                .astype(str)
+                .tolist()
+            )
+            default_visible_groups = [group for group in default_visible_groups if group in setup_report_groups]
+        selected_visible_groups = st.multiselect(
+            "Reporting groups shown in Executive Summary",
+            setup_report_groups,
+            default=default_visible_groups,
+            key="executive_visible_groups",
+        )
+        if st.button("Save executive report visibility"):
+            settings_df = pd.DataFrame({
+                "report_group": setup_report_groups,
+                "visible": [group in selected_visible_groups for group in setup_report_groups],
+            })
+            count = replace_report_group_settings(settings_df)
+            st.success(f"Saved visibility for {count} reporting groups.")
+            st.cache_data.clear()
+            st.rerun()
 
     st.markdown("### Current Setup")
     setup_left, setup_middle, setup_right = st.columns(3)

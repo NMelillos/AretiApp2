@@ -358,6 +358,26 @@ def init_db():
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS report_group_settings (
+            report_group TEXT PRIMARY KEY,
+            visible INTEGER DEFAULT 1,
+            updated_at TEXT
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS transaction_change_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id INTEGER NOT NULL,
+            field_name TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            source TEXT DEFAULT '',
+            changed_at TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_classified_status
         ON classified_transactions(status, reviewed)
     """)
@@ -462,7 +482,7 @@ def _normalize_rate_type(rate_type, currency=""):
     return text.replace(" ", "")
 
 
-def _transaction_line_key(row):
+def _transaction_line_key(row, include_account=True):
     date_value = _canonical_date(row.get("Date", row.get("txn_date", "")))
     amount = _float_or_none(row.get("Amount", row.get("amount", None)))
     normalized = _canonical_text(row.get("normalized_description", ""))
@@ -471,23 +491,29 @@ def _transaction_line_key(row):
     if not date_value or amount is None or not normalized:
         return None
 
-    account_number = _canonical_account_number(row.get("account_number", ""))
-    account_identity = account_number or _canonical_text(row.get("account_name", ""))
-    return (
+    key = (
         date_value,
         f"{round(float(amount), 2):.2f}",
         normalized,
         _canonical_text(row.get("currency", "")),
         _canonical_text(row.get("bank", "")),
-        account_identity,
     )
+    if include_account:
+        account_number = _canonical_account_number(row.get("account_number", ""))
+        account_identity = account_number or _canonical_text(row.get("account_name", ""))
+        key += (account_identity,)
+    else:
+        account_name = _canonical_text(row.get("account_name", ""))
+        if account_name:
+            key += (account_name,)
+    return key
 
 
-def _existing_transaction_line_keys(cur):
-    return set(_existing_transaction_line_lookup(cur))
+def _existing_transaction_line_keys(cur, include_account=True):
+    return set(_existing_transaction_line_lookup(cur, include_account=include_account))
 
 
-def _existing_transaction_line_lookup(cur):
+def _existing_transaction_line_lookup(cur, include_account=True):
     cur.execute("""
         SELECT id, statement_name, txn_date, original_description, normalized_description,
                amount, currency, bank, account_number, account_name
@@ -498,7 +524,7 @@ def _existing_transaction_line_lookup(cur):
     lookup = {}
     for values in cur.fetchall():
         row = dict(zip(columns, values))
-        key = _transaction_line_key(row)
+        key = _transaction_line_key(row, include_account=include_account)
         if key and key not in lookup:
             lookup[key] = {
                 "duplicate_source_id": row.get("id", ""),
@@ -520,6 +546,7 @@ def mark_duplicate_transactions(df):
     cur = conn.cursor()
     try:
         existing_lookup = _existing_transaction_line_lookup(cur)
+        relaxed_lookup = _existing_transaction_line_lookup(cur, include_account=False)
     finally:
         conn.close()
 
@@ -536,9 +563,11 @@ def mark_duplicate_transactions(df):
             source_ids.append("")
             continue
         existing_match = existing_lookup.get(key)
+        if not existing_match:
+            existing_match = relaxed_lookup.get(_transaction_line_key(row, include_account=False))
         if existing_match:
             flags.append(True)
-            reasons.append("Already imported")
+            reasons.append("Already imported / overlapping statement")
             source_statements.append(existing_match.get("duplicate_source_statement", ""))
             source_ids.append(existing_match.get("duplicate_source_id", ""))
             continue
@@ -732,6 +761,75 @@ def get_subcategories(category=None):
     finally:
         conn.close()
     return df["subcategory"].dropna().astype(str).tolist()
+
+
+def get_report_group_settings():
+    conn = get_connection()
+    try:
+        return pd.read_sql_query("""
+            SELECT report_group, visible, updated_at
+            FROM report_group_settings
+            ORDER BY report_group
+        """, conn)
+    finally:
+        conn.close()
+
+
+def replace_report_group_settings(settings):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = _now()
+    cur.execute("DELETE FROM report_group_settings")
+    rows = [
+        (_clean(row.get("report_group")), int(bool(row.get("visible"))), now)
+        for _, row in settings.iterrows()
+        if _clean(row.get("report_group"))
+    ]
+    cur.executemany("""
+        INSERT INTO report_group_settings (report_group, visible, updated_at)
+        VALUES (?, ?, ?)
+    """, rows)
+    conn.commit()
+    conn.close()
+    return len(rows)
+
+
+def get_transaction_change_log(limit=300):
+    conn = get_connection()
+    try:
+        return pd.read_sql_query("""
+            SELECT l.id,
+                   l.changed_at,
+                   l.transaction_id,
+                   t.txn_date,
+                   t.account_name,
+                   t.bank,
+                   t.amount,
+                   t.currency,
+                   t.original_description,
+                   l.field_name,
+                   l.old_value,
+                   l.new_value,
+                   l.source
+            FROM transaction_change_log l
+            LEFT JOIN classified_transactions t ON t.id = l.transaction_id
+            ORDER BY l.id DESC
+            LIMIT ?
+        """, conn, params=(int(limit),))
+    finally:
+        conn.close()
+
+
+def _audit_transaction_change(cur, transaction_id, field_name, old_value, new_value, source):
+    old_text = "" if old_value is None else str(old_value)
+    new_text = "" if new_value is None else str(new_value)
+    if old_text == new_text:
+        return
+    cur.execute("""
+        INSERT INTO transaction_change_log
+        (transaction_id, field_name, old_value, new_value, source, changed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (int(transaction_id), field_name, old_text, new_text, source, _now()))
 
 
 def add_category(category, subcategory=""):
@@ -1412,10 +1510,16 @@ def save_pending_transactions(df, statement_name, statement_hash):
     inserted = 0
     duplicate_lines = 0
     existing_keys = _existing_transaction_line_keys(cur)
+    relaxed_existing_keys = _existing_transaction_line_keys(cur, include_account=False)
 
     for idx, row in df.reset_index(drop=True).iterrows():
         transaction_key = _transaction_line_key(row)
-        if bool(row.get("dup_flag", False)) or (transaction_key and transaction_key in existing_keys):
+        relaxed_key = _transaction_line_key(row, include_account=False)
+        if (
+            bool(row.get("dup_flag", False))
+            or (transaction_key and transaction_key in existing_keys)
+            or (relaxed_key and relaxed_key in relaxed_existing_keys)
+        ):
             duplicate_lines += 1
             continue
 
@@ -1564,11 +1668,25 @@ def save_reviewed_rows(df):
         category = _clean(row.get("category"))
         subcategory = _clean(row.get("subcategory"))
         cur.execute("""
+            SELECT category, subcategory, reviewed, status
+            FROM classified_transactions
+            WHERE id = ?
+        """, (tx_id,))
+        before = cur.fetchone()
+        before_category = before[0] if before else ""
+        before_subcategory = before[1] if before else ""
+        before_reviewed = int(before[2] or 0) if before else 0
+        before_status = before[3] if before else ""
+        cur.execute("""
             UPDATE classified_transactions
             SET category = ?, subcategory = ?, reviewed = 1, status = 'reviewed', reviewed_at = ?
             WHERE id = ?
         """, (category, subcategory, now, tx_id))
         saved += 1
+        _audit_transaction_change(cur, tx_id, "category", before_category, category, "pending_review_save")
+        _audit_transaction_change(cur, tx_id, "subcategory", before_subcategory, subcategory, "pending_review_save")
+        _audit_transaction_change(cur, tx_id, "reviewed", before_reviewed, 1, "pending_review_save")
+        _audit_transaction_change(cur, tx_id, "status", before_status, "reviewed", "pending_review_save")
 
         cur.execute("""
             SELECT original_description, normalized_description, beneficiary, transaction_type
@@ -1625,7 +1743,8 @@ def update_database_rows(df):
         row_id = int(row["id"])
         cur.execute("""
             SELECT statement_hash, txn_date, amount, currency, rate_type,
-                   account_name, bank, account_number
+                   account_name, bank, account_number, category, subcategory,
+                   status, reviewed
             FROM classified_transactions
             WHERE id = ?
         """, (row_id,))
@@ -1641,6 +1760,10 @@ def update_database_rows(df):
             "account_name": existing[5],
             "bank": existing[6],
             "account_number": existing[7],
+            "category": existing[8],
+            "subcategory": existing[9],
+            "status": existing[10],
+            "reviewed": int(existing[11] or 0),
         }
         assignments = []
         params = []
@@ -1723,6 +1846,42 @@ def update_database_rows(df):
             params,
         )
         updated += cur.rowcount
+        for column in text_columns:
+            if column in df.columns and column in existing_row:
+                new_value = _clean(row.get(column))
+                if column in {"currency", "rate_type"}:
+                    new_value = new_value.upper()
+                if column == "status" and not new_value:
+                    new_value = "reviewed" if reviewed_value else "pending"
+                elif column == "status" and new_value.casefold() in {"pending", "reviewed"}:
+                    new_value = new_value.casefold()
+                _audit_transaction_change(
+                    cur,
+                    row_id,
+                    column,
+                    existing_row.get(column, ""),
+                    new_value,
+                    "database_edit",
+                )
+        for column in bool_columns:
+            if column in df.columns and column in existing_row:
+                _audit_transaction_change(
+                    cur,
+                    row_id,
+                    column,
+                    existing_row.get(column, 0),
+                    int(_bool_from_value(row.get(column))),
+                    "database_edit",
+                )
+        if "status" not in df.columns and reviewed_value is not None:
+            _audit_transaction_change(
+                cur,
+                row_id,
+                "status",
+                existing_row.get("status", ""),
+                "reviewed" if reviewed_value else "pending",
+                "database_edit",
+            )
         if recalculate_fx and existing_row.get("statement_hash"):
             affected_statement_hashes.add(existing_row["statement_hash"])
         if reviewed_value or status == "reviewed":

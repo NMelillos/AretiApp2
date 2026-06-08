@@ -687,6 +687,27 @@ def _rate_type_from_label(label):
     return _normalize_rate_type(label)
 
 
+def _rate_from_label_value(label, value):
+    rate_type = _rate_type_from_label(label)
+    rate_value = float(value)
+    if not rate_type or rate_type == "USD/USD":
+        return rate_type, rate_value
+
+    source_currency = rate_type.split("/", 1)[0]
+    text = _canonical_text(label)
+    positions = {}
+    for code, tokens in _RATE_TYPE_TOKENS:
+        found = [text.find(token) for token in tokens if text.find(token) >= 0]
+        if found:
+            positions[code] = min(found)
+
+    usd_pos = positions.get("USD")
+    source_pos = positions.get(source_currency)
+    if usd_pos is not None and source_pos is not None and usd_pos < source_pos and rate_value:
+        rate_value = 1 / rate_value
+    return rate_type, rate_value
+
+
 def replace_rates_from_excel(uploaded_file):
     uploaded_file.seek(0)
     raw = pd.read_excel(uploaded_file, header=None)
@@ -710,7 +731,8 @@ def replace_rates_from_excel(uploaded_file):
             value = pd.to_numeric(raw.iat[row, col], errors="coerce")
             if pd.isna(label) or pd.isna(value) or float(value) == 0:
                 continue
-            rows.append((month_key, _rate_type_from_label(label), float(value), _now()))
+            rate_type, rate_value = _rate_from_label_value(label, value)
+            rows.append((month_key, rate_type, rate_value, _now()))
 
     conn = get_connection()
     cur = conn.cursor()

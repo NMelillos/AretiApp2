@@ -1322,6 +1322,115 @@ def get_import_history():
     return df
 
 
+def get_import_transaction_audit():
+    conn = get_connection()
+    try:
+        df = pd.read_sql_query("""
+            WITH tx AS (
+                SELECT statement_hash,
+                       COUNT(*) AS database_rows,
+                       SUM(CASE
+                           WHEN COALESCE(status, 'pending') = 'pending'
+                                AND COALESCE(reviewed, 0) = 0
+                           THEN 1 ELSE 0 END) AS pending_rows,
+                       SUM(CASE
+                           WHEN COALESCE(status, '') = 'reviewed'
+                                OR COALESCE(reviewed, 0) = 1
+                           THEN 1 ELSE 0 END) AS reviewed_rows,
+                       SUM(CASE WHEN COALESCE(dup_flag, 0) = 1 THEN 1 ELSE 0 END) AS duplicate_flagged_rows,
+                       SUM(CASE
+                           WHEN amount IS NOT NULL
+                                AND ABS(COALESCE(amount, 0)) > 0.005
+                                AND amount_usd IS NULL
+                           THEN 1 ELSE 0 END) AS missing_usd_rows,
+                       MIN(created_at) AS first_row_created_at,
+                       MAX(created_at) AS last_row_created_at,
+                       MIN(account_name) AS account_name,
+                       MIN(bank) AS bank,
+                       MIN(account_number) AS account_number,
+                       MIN(currency) AS currency
+                FROM classified_transactions
+                GROUP BY statement_hash
+            )
+            SELECT si.statement_name,
+                   si.imported_at,
+                   si.transaction_count AS imported_rows_recorded,
+                   COALESCE(tx.database_rows, 0) AS database_rows,
+                   COALESCE(tx.pending_rows, 0) AS pending_rows,
+                   COALESCE(tx.reviewed_rows, 0) AS reviewed_rows,
+                   COALESCE(tx.duplicate_flagged_rows, 0) AS duplicate_flagged_rows,
+                   COALESCE(tx.missing_usd_rows, 0) AS missing_usd_rows,
+                   COALESCE(tx.account_name, '') AS account_name,
+                   COALESCE(tx.bank, '') AS bank,
+                   COALESCE(tx.account_number, '') AS account_number,
+                   COALESCE(tx.currency, '') AS currency,
+                   COALESCE(si.duplicate_attempts, 0) AS duplicate_attempts,
+                   si.last_duplicate_at,
+                   tx.first_row_created_at,
+                   tx.last_row_created_at,
+                   si.statement_hash
+            FROM statement_imports si
+            LEFT JOIN tx ON tx.statement_hash = si.statement_hash
+            ORDER BY si.imported_at DESC, si.id DESC
+        """, conn)
+    finally:
+        conn.close()
+    return df
+
+
+def get_cross_statement_duplicate_audit():
+    conn = get_connection()
+    try:
+        if USING_POSTGRES:
+            query = """
+                SELECT txn_date,
+                       currency,
+                       amount,
+                       account_name,
+                       bank,
+                       account_number,
+                       normalized_description,
+                       COUNT(*) AS duplicate_count,
+                       COUNT(DISTINCT statement_hash) AS statement_files,
+                       STRING_AGG(CAST(id AS TEXT), ', ' ORDER BY id) AS ids,
+                       STRING_AGG(DISTINCT COALESCE(statement_name, ''), ' | ') AS statements,
+                       MIN(created_at) AS first_seen,
+                       MAX(created_at) AS last_seen
+                FROM classified_transactions
+                WHERE amount IS NOT NULL
+                  AND COALESCE(normalized_description, '') <> ''
+                GROUP BY txn_date, currency, amount, account_name, bank, account_number, normalized_description
+                HAVING COUNT(*) > 1 AND COUNT(DISTINCT statement_hash) > 1
+                ORDER BY duplicate_count DESC, txn_date DESC
+            """
+        else:
+            query = """
+                SELECT txn_date,
+                       currency,
+                       amount,
+                       account_name,
+                       bank,
+                       account_number,
+                       normalized_description,
+                       COUNT(*) AS duplicate_count,
+                       COUNT(DISTINCT statement_hash) AS statement_files,
+                       GROUP_CONCAT(id) AS ids,
+                       GROUP_CONCAT(DISTINCT COALESCE(statement_name, '')) AS statements,
+                       MIN(created_at) AS first_seen,
+                       MAX(created_at) AS last_seen
+                FROM classified_transactions
+                WHERE amount IS NOT NULL
+                  AND COALESCE(normalized_description, '') <> ''
+                GROUP BY txn_date, currency, amount, account_name, bank, account_number, normalized_description
+                HAVING COUNT(*) > 1 AND COUNT(DISTINCT statement_hash) > 1
+                ORDER BY duplicate_count DESC, txn_date DESC
+            """
+        df = pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
+    return df
+
+
 def update_statement_balance_rows(df):
     if df.empty:
         return 0

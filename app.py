@@ -30,8 +30,10 @@ from db import (
     get_accounts,
     get_all_transactions,
     get_categories,
+    get_cross_statement_duplicate_audit,
     get_dashboard_counts,
     get_import_history,
+    get_import_transaction_audit,
     get_memory,
     get_pending_transactions,
     get_report_group_settings,
@@ -67,8 +69,10 @@ _DB_CACHE_TTL_SECONDS = 90
 _db_get_accounts = get_accounts
 _db_get_all_transactions = get_all_transactions
 _db_get_categories = get_categories
+_db_get_cross_statement_duplicate_audit = get_cross_statement_duplicate_audit
 _db_get_dashboard_counts = get_dashboard_counts
 _db_get_import_history = get_import_history
+_db_get_import_transaction_audit = get_import_transaction_audit
 _db_get_memory = get_memory
 _db_get_pending_transactions = get_pending_transactions
 _db_get_report_group_settings = get_report_group_settings
@@ -114,6 +118,11 @@ def get_categories(include_subcategories=False):
 
 
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_cross_statement_duplicate_audit():
+    return _db_get_cross_statement_duplicate_audit()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
 def get_dashboard_counts():
     return _db_get_dashboard_counts()
 
@@ -121,6 +130,11 @@ def get_dashboard_counts():
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
 def get_import_history():
     return _db_get_import_history()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_import_transaction_audit():
+    return _db_get_import_transaction_audit()
 
 
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
@@ -2233,6 +2247,89 @@ elif page == "Import History":
             file_name="import_history.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+        st.markdown("#### All Imported Rows by Statement")
+        import_audit = get_import_transaction_audit()
+        if import_audit.empty:
+            st.info("No imported transaction rows found.")
+        else:
+            render_summary_strip([
+                ("Database rows", int(pd.to_numeric(import_audit["database_rows"], errors="coerce").fillna(0).sum())),
+                ("Pending rows", int(pd.to_numeric(import_audit["pending_rows"], errors="coerce").fillna(0).sum())),
+                ("Reviewed rows", int(pd.to_numeric(import_audit["reviewed_rows"], errors="coerce").fillna(0).sum())),
+                ("Missing USD", int(pd.to_numeric(import_audit["missing_usd_rows"], errors="coerce").fillna(0).sum())),
+            ])
+            audit_search = st.text_input("Search all imported rows by statement", key="import_audit_search")
+            audit_view = import_audit.copy()
+            if audit_search:
+                mask = audit_view.astype(str).apply(
+                    lambda col: col.str.contains(audit_search, case=False, na=False)
+                ).any(axis=1)
+                audit_view = audit_view[mask].copy()
+            audit_cols = [
+                "statement_name",
+                "imported_at",
+                "imported_rows_recorded",
+                "database_rows",
+                "pending_rows",
+                "reviewed_rows",
+                "duplicate_flagged_rows",
+                "missing_usd_rows",
+                "account_name",
+                "bank",
+                "account_number",
+                "currency",
+                "duplicate_attempts",
+                "last_duplicate_at",
+                "first_row_created_at",
+                "last_row_created_at",
+            ]
+            st.dataframe(
+                audit_view[[col for col in audit_cols if col in audit_view.columns]],
+                use_container_width=True,
+                hide_index=True,
+                height=420,
+            )
+
+            cross_duplicates = get_cross_statement_duplicate_audit()
+            st.markdown("#### Possible Cross-Statement Duplicates")
+            if cross_duplicates.empty:
+                st.success("No cross-statement duplicate transaction groups detected.")
+            else:
+                st.warning(
+                    f"{len(cross_duplicates)} possible duplicate group(s) found across different statements. "
+                    "Review the IDs before changing any rows."
+                )
+                dup_cols = [
+                    "txn_date",
+                    "currency",
+                    "amount",
+                    "duplicate_count",
+                    "statement_files",
+                    "account_name",
+                    "bank",
+                    "account_number",
+                    "normalized_description",
+                    "ids",
+                    "statements",
+                    "first_seen",
+                    "last_seen",
+                ]
+                st.dataframe(
+                    cross_duplicates[[col for col in dup_cols if col in cross_duplicates.columns]],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=420,
+                )
+            st.download_button(
+                "Download import audit Excel",
+                data=dataframe_to_excel_bytes({
+                    "Imports by statement": import_audit,
+                    "Cross statement duplicates": cross_duplicates,
+                }),
+                file_name="import_audit.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 
 elif page == "Pending Review":

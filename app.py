@@ -32,6 +32,7 @@ from db import (
     get_categories,
     get_cross_statement_duplicate_audit,
     get_dashboard_counts,
+    get_exact_duplicate_audit,
     get_import_history,
     get_import_transaction_audit,
     get_memory,
@@ -71,6 +72,7 @@ _db_get_all_transactions = get_all_transactions
 _db_get_categories = get_categories
 _db_get_cross_statement_duplicate_audit = get_cross_statement_duplicate_audit
 _db_get_dashboard_counts = get_dashboard_counts
+_db_get_exact_duplicate_audit = get_exact_duplicate_audit
 _db_get_import_history = get_import_history
 _db_get_import_transaction_audit = get_import_transaction_audit
 _db_get_memory = get_memory
@@ -125,6 +127,11 @@ def get_cross_statement_duplicate_audit():
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
 def get_dashboard_counts():
     return _db_get_dashboard_counts()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_exact_duplicate_audit():
+    return _db_get_exact_duplicate_audit()
 
 
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
@@ -2267,6 +2274,7 @@ elif page == "Import History":
                 ).any(axis=1)
                 audit_view = audit_view[mask].copy()
             audit_cols = [
+                "import_batch_id",
                 "statement_name",
                 "imported_at",
                 "imported_rows_recorded",
@@ -2279,6 +2287,12 @@ elif page == "Import History":
                 "bank",
                 "account_number",
                 "currency",
+                "period_start",
+                "period_end",
+                "opening_balance",
+                "money_in",
+                "money_out",
+                "closing_balance",
                 "duplicate_attempts",
                 "last_duplicate_at",
                 "first_row_created_at",
@@ -2291,16 +2305,58 @@ elif page == "Import History":
                 height=420,
             )
 
+            exact_duplicates = get_exact_duplicate_audit()
+            st.markdown("#### Exact Duplicate Groups")
+            if exact_duplicates.empty:
+                st.success("No high-confidence repeated row fingerprints found.")
+            else:
+                st.error(
+                    f"{len(exact_duplicates)} high-confidence duplicate group(s) found. "
+                    "Export a backup first and preserve the row with the most complete corrections."
+                )
+                exact_cols = [
+                    "duplicate_confidence",
+                    "duplicate_count",
+                    "row_hash",
+                    "ids",
+                    "statements",
+                    "import_batch_ids",
+                    "import_timestamps",
+                    "txn_date",
+                    "currency",
+                    "amount",
+                    "account_name",
+                    "bank",
+                    "account_number",
+                    "normalized_description",
+                    "category_subcategory_values",
+                    "category_conflict",
+                    "pending_rows",
+                    "reviewed_rows",
+                    "earliest_period_start",
+                    "latest_period_end",
+                    "audit_reason",
+                    "safe_cleanup_recommendation",
+                ]
+                st.dataframe(
+                    exact_duplicates[[col for col in exact_cols if col in exact_duplicates.columns]],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=420,
+                )
+
             cross_duplicates = get_cross_statement_duplicate_audit()
             st.markdown("#### Possible Cross-Statement Duplicates")
             if cross_duplicates.empty:
-                st.success("No cross-statement duplicate transaction groups detected.")
+                st.success("No possible cross-statement duplicate groups detected.")
             else:
                 st.warning(
                     f"{len(cross_duplicates)} possible duplicate group(s) found across different statements. "
-                    "Review the IDs before changing any rows."
+                    "These are not confirmed duplicates. Review the IDs and source statements before changing any rows."
                 )
                 dup_cols = [
+                    "duplicate_confidence",
+                    "audit_reason",
                     "txn_date",
                     "currency",
                     "amount",
@@ -2310,10 +2366,18 @@ elif page == "Import History":
                     "bank",
                     "account_number",
                     "normalized_description",
+                    "category_subcategory_values",
+                    "category_conflict",
+                    "pending_rows",
+                    "reviewed_rows",
                     "ids",
                     "statements",
+                    "import_batch_ids",
+                    "import_timestamps",
+                    "statement_ranges",
                     "first_seen",
                     "last_seen",
+                    "safe_cleanup_recommendation",
                 ]
                 st.dataframe(
                     cross_duplicates[[col for col in dup_cols if col in cross_duplicates.columns]],
@@ -2325,6 +2389,7 @@ elif page == "Import History":
                 "Download import audit Excel",
                 data=dataframe_to_excel_bytes({
                     "Imports by statement": import_audit,
+                    "Exact duplicate groups": exact_duplicates,
                     "Cross statement duplicates": cross_duplicates,
                 }),
                 file_name="import_audit.xlsx",

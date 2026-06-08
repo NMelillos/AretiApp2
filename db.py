@@ -1352,7 +1352,8 @@ def get_import_transaction_audit():
                 FROM classified_transactions
                 GROUP BY statement_hash
             )
-            SELECT si.statement_name,
+            SELECT si.id AS import_batch_id,
+                   si.statement_name,
                    si.imported_at,
                    si.transaction_count AS imported_rows_recorded,
                    COALESCE(tx.database_rows, 0) AS database_rows,
@@ -1364,6 +1365,12 @@ def get_import_transaction_audit():
                    COALESCE(tx.bank, '') AS bank,
                    COALESCE(tx.account_number, '') AS account_number,
                    COALESCE(tx.currency, '') AS currency,
+                   sb.period_start,
+                   sb.period_end,
+                   sb.opening_balance,
+                   sb.money_in,
+                   sb.money_out,
+                   sb.closing_balance,
                    COALESCE(si.duplicate_attempts, 0) AS duplicate_attempts,
                    si.last_duplicate_at,
                    tx.first_row_created_at,
@@ -1371,8 +1378,116 @@ def get_import_transaction_audit():
                    si.statement_hash
             FROM statement_imports si
             LEFT JOIN tx ON tx.statement_hash = si.statement_hash
+            LEFT JOIN statement_balances sb ON sb.statement_hash = si.statement_hash
             ORDER BY si.imported_at DESC, si.id DESC
         """, conn)
+    finally:
+        conn.close()
+    return df
+
+
+def get_exact_duplicate_audit():
+    conn = get_connection()
+    try:
+        if USING_POSTGRES:
+            query = """
+                WITH enriched AS (
+                    SELECT t.*,
+                           si.id AS import_batch_id,
+                           si.imported_at,
+                           sb.period_start,
+                           sb.period_end
+                    FROM classified_transactions t
+                    LEFT JOIN statement_imports si ON si.statement_hash = t.statement_hash
+                    LEFT JOIN statement_balances sb ON sb.statement_hash = t.statement_hash
+                )
+                SELECT row_hash,
+                       COUNT(*) AS duplicate_count,
+                       COUNT(DISTINCT statement_hash) AS statement_files,
+                       STRING_AGG(CAST(id AS TEXT), ', ' ORDER BY id) AS ids,
+                       STRING_AGG(DISTINCT COALESCE(statement_name, ''), ' | ') AS statements,
+                       STRING_AGG(DISTINCT CAST(import_batch_id AS TEXT), ', ') AS import_batch_ids,
+                       STRING_AGG(DISTINCT COALESCE(imported_at, ''), ' | ') AS import_timestamps,
+                       MIN(txn_date) AS txn_date,
+                       MIN(currency) AS currency,
+                       MIN(amount) AS amount,
+                       MIN(account_name) AS account_name,
+                       MIN(bank) AS bank,
+                       MIN(account_number) AS account_number,
+                       MIN(normalized_description) AS normalized_description,
+                       STRING_AGG(DISTINCT COALESCE(category, '') || ' / ' || COALESCE(subcategory, ''), ' | ') AS category_subcategory_values,
+                       CASE
+                           WHEN COUNT(DISTINCT COALESCE(category, '') || ' / ' || COALESCE(subcategory, '')) > 1
+                           THEN 'Conflict - stop and review'
+                           ELSE 'No conflict detected'
+                       END AS category_conflict,
+                       SUM(CASE
+                           WHEN COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+                           THEN 1 ELSE 0 END) AS pending_rows,
+                       SUM(CASE
+                           WHEN COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
+                           THEN 1 ELSE 0 END) AS reviewed_rows,
+                       MIN(period_start) AS earliest_period_start,
+                       MAX(period_end) AS latest_period_end,
+                       'High' AS duplicate_confidence,
+                       'Same generated row fingerprint/hash appears more than once.' AS audit_reason,
+                       'Backup first; keep the row with the most complete data and manual corrections.' AS safe_cleanup_recommendation
+                FROM enriched
+                WHERE COALESCE(row_hash, '') <> ''
+                GROUP BY row_hash
+                HAVING COUNT(*) > 1
+                ORDER BY duplicate_count DESC, txn_date DESC
+            """
+        else:
+            query = """
+                WITH enriched AS (
+                    SELECT t.*,
+                           si.id AS import_batch_id,
+                           si.imported_at,
+                           sb.period_start,
+                           sb.period_end
+                    FROM classified_transactions t
+                    LEFT JOIN statement_imports si ON si.statement_hash = t.statement_hash
+                    LEFT JOIN statement_balances sb ON sb.statement_hash = t.statement_hash
+                )
+                SELECT row_hash,
+                       COUNT(*) AS duplicate_count,
+                       COUNT(DISTINCT statement_hash) AS statement_files,
+                       GROUP_CONCAT(id) AS ids,
+                       GROUP_CONCAT(DISTINCT COALESCE(statement_name, '')) AS statements,
+                       GROUP_CONCAT(DISTINCT import_batch_id) AS import_batch_ids,
+                       GROUP_CONCAT(DISTINCT COALESCE(imported_at, '')) AS import_timestamps,
+                       MIN(txn_date) AS txn_date,
+                       MIN(currency) AS currency,
+                       MIN(amount) AS amount,
+                       MIN(account_name) AS account_name,
+                       MIN(bank) AS bank,
+                       MIN(account_number) AS account_number,
+                       MIN(normalized_description) AS normalized_description,
+                       GROUP_CONCAT(DISTINCT COALESCE(category, '') || ' / ' || COALESCE(subcategory, '')) AS category_subcategory_values,
+                       CASE
+                           WHEN COUNT(DISTINCT COALESCE(category, '') || ' / ' || COALESCE(subcategory, '')) > 1
+                           THEN 'Conflict - stop and review'
+                           ELSE 'No conflict detected'
+                       END AS category_conflict,
+                       SUM(CASE
+                           WHEN COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+                           THEN 1 ELSE 0 END) AS pending_rows,
+                       SUM(CASE
+                           WHEN COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
+                           THEN 1 ELSE 0 END) AS reviewed_rows,
+                       MIN(period_start) AS earliest_period_start,
+                       MAX(period_end) AS latest_period_end,
+                       'High' AS duplicate_confidence,
+                       'Same generated row fingerprint/hash appears more than once.' AS audit_reason,
+                       'Backup first; keep the row with the most complete data and manual corrections.' AS safe_cleanup_recommendation
+                FROM enriched
+                WHERE COALESCE(row_hash, '') <> ''
+                GROUP BY row_hash
+                HAVING COUNT(*) > 1
+                ORDER BY duplicate_count DESC, txn_date DESC
+            """
+        df = pd.read_sql_query(query, conn)
     finally:
         conn.close()
     return df
@@ -1383,6 +1498,16 @@ def get_cross_statement_duplicate_audit():
     try:
         if USING_POSTGRES:
             query = """
+                WITH enriched AS (
+                    SELECT t.*,
+                           si.id AS import_batch_id,
+                           si.imported_at,
+                           sb.period_start,
+                           sb.period_end
+                    FROM classified_transactions t
+                    LEFT JOIN statement_imports si ON si.statement_hash = t.statement_hash
+                    LEFT JOIN statement_balances sb ON sb.statement_hash = t.statement_hash
+                )
                 SELECT txn_date,
                        currency,
                        amount,
@@ -1394,9 +1519,27 @@ def get_cross_statement_duplicate_audit():
                        COUNT(DISTINCT statement_hash) AS statement_files,
                        STRING_AGG(CAST(id AS TEXT), ', ' ORDER BY id) AS ids,
                        STRING_AGG(DISTINCT COALESCE(statement_name, ''), ' | ') AS statements,
+                       STRING_AGG(DISTINCT CAST(import_batch_id AS TEXT), ', ') AS import_batch_ids,
+                       STRING_AGG(DISTINCT COALESCE(imported_at, ''), ' | ') AS import_timestamps,
+                       STRING_AGG(DISTINCT COALESCE(period_start, '') || ' to ' || COALESCE(period_end, ''), ' | ') AS statement_ranges,
+                       STRING_AGG(DISTINCT COALESCE(category, '') || ' / ' || COALESCE(subcategory, ''), ' | ') AS category_subcategory_values,
+                       CASE
+                           WHEN COUNT(DISTINCT COALESCE(category, '') || ' / ' || COALESCE(subcategory, '')) > 1
+                           THEN 'Conflict - stop and review'
+                           ELSE 'No conflict detected'
+                       END AS category_conflict,
+                       SUM(CASE
+                           WHEN COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+                           THEN 1 ELSE 0 END) AS pending_rows,
+                       SUM(CASE
+                           WHEN COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
+                           THEN 1 ELSE 0 END) AS reviewed_rows,
                        MIN(created_at) AS first_seen,
-                       MAX(created_at) AS last_seen
-                FROM classified_transactions
+                       MAX(created_at) AS last_seen,
+                       'Possible - needs review' AS duplicate_confidence,
+                       'Same date, amount, currency, normalized description, account and bank appear in more than one source statement. This can still be legitimate repeated spending.' AS audit_reason,
+                       'Do not delete automatically. Review the source statements and preserve manual category/subcategory corrections.' AS safe_cleanup_recommendation
+                FROM enriched
                 WHERE amount IS NOT NULL
                   AND COALESCE(normalized_description, '') <> ''
                 GROUP BY txn_date, currency, amount, account_name, bank, account_number, normalized_description
@@ -1405,6 +1548,16 @@ def get_cross_statement_duplicate_audit():
             """
         else:
             query = """
+                WITH enriched AS (
+                    SELECT t.*,
+                           si.id AS import_batch_id,
+                           si.imported_at,
+                           sb.period_start,
+                           sb.period_end
+                    FROM classified_transactions t
+                    LEFT JOIN statement_imports si ON si.statement_hash = t.statement_hash
+                    LEFT JOIN statement_balances sb ON sb.statement_hash = t.statement_hash
+                )
                 SELECT txn_date,
                        currency,
                        amount,
@@ -1416,9 +1569,27 @@ def get_cross_statement_duplicate_audit():
                        COUNT(DISTINCT statement_hash) AS statement_files,
                        GROUP_CONCAT(id) AS ids,
                        GROUP_CONCAT(DISTINCT COALESCE(statement_name, '')) AS statements,
+                       GROUP_CONCAT(DISTINCT import_batch_id) AS import_batch_ids,
+                       GROUP_CONCAT(DISTINCT COALESCE(imported_at, '')) AS import_timestamps,
+                       GROUP_CONCAT(DISTINCT COALESCE(period_start, '') || ' to ' || COALESCE(period_end, '')) AS statement_ranges,
+                       GROUP_CONCAT(DISTINCT COALESCE(category, '') || ' / ' || COALESCE(subcategory, '')) AS category_subcategory_values,
+                       CASE
+                           WHEN COUNT(DISTINCT COALESCE(category, '') || ' / ' || COALESCE(subcategory, '')) > 1
+                           THEN 'Conflict - stop and review'
+                           ELSE 'No conflict detected'
+                       END AS category_conflict,
+                       SUM(CASE
+                           WHEN COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+                           THEN 1 ELSE 0 END) AS pending_rows,
+                       SUM(CASE
+                           WHEN COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
+                           THEN 1 ELSE 0 END) AS reviewed_rows,
                        MIN(created_at) AS first_seen,
-                       MAX(created_at) AS last_seen
-                FROM classified_transactions
+                       MAX(created_at) AS last_seen,
+                       'Possible - needs review' AS duplicate_confidence,
+                       'Same date, amount, currency, normalized description, account and bank appear in more than one source statement. This can still be legitimate repeated spending.' AS audit_reason,
+                       'Do not delete automatically. Review the source statements and preserve manual category/subcategory corrections.' AS safe_cleanup_recommendation
+                FROM enriched
                 WHERE amount IS NOT NULL
                   AND COALESCE(normalized_description, '') <> ''
                 GROUP BY txn_date, currency, amount, account_name, bank, account_number, normalized_description

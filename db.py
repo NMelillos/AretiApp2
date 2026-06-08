@@ -498,11 +498,11 @@ def _transaction_line_key(row, include_account=True):
         _canonical_text(row.get("currency", "")),
         _canonical_text(row.get("bank", "")),
     )
-    if include_account:
+    if include_account is True:
         account_number = _canonical_account_number(row.get("account_number", ""))
         account_identity = account_number or _canonical_text(row.get("account_name", ""))
         key += (account_identity,)
-    else:
+    elif include_account is False:
         account_name = _canonical_text(row.get("account_name", ""))
         if account_name:
             key += (account_name,)
@@ -547,6 +547,7 @@ def mark_duplicate_transactions(df):
     try:
         existing_lookup = _existing_transaction_line_lookup(cur)
         relaxed_lookup = _existing_transaction_line_lookup(cur, include_account=False)
+        bank_level_lookup = _existing_transaction_line_lookup(cur, include_account=None)
     finally:
         conn.close()
 
@@ -565,6 +566,8 @@ def mark_duplicate_transactions(df):
         existing_match = existing_lookup.get(key)
         if not existing_match:
             existing_match = relaxed_lookup.get(_transaction_line_key(row, include_account=False))
+        if not existing_match and _canonical_text(row.get("bank", "")):
+            existing_match = bank_level_lookup.get(_transaction_line_key(row, include_account=None))
         if existing_match:
             flags.append(True)
             reasons.append("Already imported / overlapping statement")
@@ -761,6 +764,30 @@ def get_subcategories(category=None):
     finally:
         conn.close()
     return df["subcategory"].dropna().astype(str).tolist()
+
+
+def _subcategory_parent_lookup(cur):
+    cur.execute("""
+        SELECT category, subcategory
+        FROM category_list
+        WHERE COALESCE(category, '') <> ''
+          AND COALESCE(subcategory, '') <> ''
+    """)
+    parents = {}
+    ambiguous = set()
+    for category, subcategory in cur.fetchall():
+        key = _clean(subcategory).casefold()
+        if not key:
+            continue
+        category_value = _clean(category)
+        existing = parents.get(key)
+        if existing and existing != category_value:
+            ambiguous.add(key)
+            continue
+        parents[key] = category_value
+    for key in ambiguous:
+        parents.pop(key, None)
+    return parents
 
 
 def get_report_group_settings():
@@ -1511,14 +1538,17 @@ def save_pending_transactions(df, statement_name, statement_hash):
     duplicate_lines = 0
     existing_keys = _existing_transaction_line_keys(cur)
     relaxed_existing_keys = _existing_transaction_line_keys(cur, include_account=False)
+    bank_level_existing_keys = _existing_transaction_line_keys(cur, include_account=None)
 
     for idx, row in df.reset_index(drop=True).iterrows():
         transaction_key = _transaction_line_key(row)
         relaxed_key = _transaction_line_key(row, include_account=False)
+        bank_level_key = _transaction_line_key(row, include_account=None) if _canonical_text(row.get("bank", "")) else None
         if (
             bool(row.get("dup_flag", False))
             or (transaction_key and transaction_key in existing_keys)
             or (relaxed_key and relaxed_key in relaxed_existing_keys)
+            or (bank_level_key and bank_level_key in bank_level_existing_keys)
         ):
             duplicate_lines += 1
             continue
@@ -1659,6 +1689,7 @@ def save_reviewed_rows(df):
     cur = conn.cursor()
     now = _now()
     saved = 0
+    subcategory_parent_lookup = _subcategory_parent_lookup(cur)
 
     for _, row in df.iterrows():
         reviewed = bool(row.get("reviewed", False))
@@ -1667,6 +1698,9 @@ def save_reviewed_rows(df):
         tx_id = int(row["id"])
         category = _clean(row.get("category"))
         subcategory = _clean(row.get("subcategory"))
+        parent_category = subcategory_parent_lookup.get(subcategory.casefold()) if subcategory else None
+        if parent_category:
+            category = parent_category
         cur.execute("""
             SELECT category, subcategory, reviewed, status
             FROM classified_transactions
@@ -1719,6 +1753,7 @@ def update_database_rows(df):
     cur = conn.cursor()
     updated = 0
     rate_lookup = _load_rate_lookup()
+    subcategory_parent_lookup = _subcategory_parent_lookup(cur)
     text_columns = [
         "txn_date",
         "original_description",
@@ -1765,24 +1800,31 @@ def update_database_rows(df):
             "status": existing[10],
             "reviewed": int(existing[11] or 0),
         }
+        row_values = row.to_dict()
+        if "subcategory" in row_values:
+            subcategory_key = _clean(row_values.get("subcategory")).casefold()
+            parent_category = subcategory_parent_lookup.get(subcategory_key)
+            if parent_category:
+                row_values["category"] = parent_category
+        effective_text_columns = [column for column in text_columns if column in row_values]
         assignments = []
         params = []
         recalculate_fx = any(column in df.columns for column in account_update_columns)
 
         reviewed_value = None
-        if "reviewed" in df.columns:
-            reviewed_value = int(_bool_from_value(row.get("reviewed")))
+        if "reviewed" in row_values:
+            reviewed_value = int(_bool_from_value(row_values.get("reviewed")))
 
-        for column in text_columns:
-            if column not in df.columns:
+        for column in effective_text_columns:
+            if column not in row_values:
                 continue
             if recalculate_fx and column == "rate_type":
                 continue
-            value = _clean(row.get(column))
+            value = _clean(row_values.get(column))
             if column in {"currency", "rate_type"}:
                 value = value.upper()
             if column == "rate_type":
-                value = _normalize_rate_type(value, row.get("currency", existing_row.get("currency", "")))
+                value = _normalize_rate_type(value, row_values.get("currency", existing_row.get("currency", "")))
             if column == "status" and not value:
                 value = "reviewed" if reviewed_value else "pending"
             elif column == "status" and value.casefold() in {"pending", "reviewed"}:
@@ -1796,12 +1838,12 @@ def update_database_rows(df):
             if recalculate_fx and column in {"fx_rate", "amount_usd"}:
                 continue
             assignments.append(f"{column} = ?")
-            params.append(_float_or_none(row.get(column)))
+            params.append(_float_or_none(row_values.get(column)))
 
         for column in bool_columns:
-            if column not in df.columns:
+            if column not in row_values:
                 continue
-            value = int(_bool_from_value(row.get(column)))
+            value = int(_bool_from_value(row_values.get(column)))
             assignments.append(f"{column} = ?")
             params.append(value)
 
@@ -1810,15 +1852,15 @@ def update_database_rows(df):
             params.append("reviewed" if reviewed_value else "pending")
 
         if recalculate_fx:
-            merged_date = row.get("txn_date") if "txn_date" in df.columns else existing_row.get("txn_date")
-            merged_amount = row.get("amount") if "amount" in df.columns else existing_row.get("amount")
+            merged_date = row_values.get("txn_date") if "txn_date" in df.columns else existing_row.get("txn_date")
+            merged_amount = row_values.get("amount") if "amount" in df.columns else existing_row.get("amount")
             merged_currency = (
-                _clean(row.get("currency")).upper()
+                _clean(row_values.get("currency")).upper()
                 if "currency" in df.columns
                 else _clean(existing_row.get("currency")).upper()
             )
             merged_rate_type = _normalize_rate_type(
-                row.get("rate_type") if "rate_type" in df.columns else existing_row.get("rate_type"),
+                row_values.get("rate_type") if "rate_type" in df.columns else existing_row.get("rate_type"),
                 merged_currency,
             )
             merged_fx_rate = _lookup_rate(rate_lookup, merged_rate_type, merged_date)
@@ -1826,9 +1868,9 @@ def update_database_rows(df):
             assignments.extend(["rate_type = ?", "fx_rate = ?", "amount_usd = ?"])
             params.extend([merged_rate_type, merged_fx_rate, merged_amount_usd])
 
-        category = _clean(row.get("category")) if "category" in df.columns else ""
-        subcategory = _clean(row.get("subcategory")) if "subcategory" in df.columns else ""
-        status = _clean(row.get("status")).casefold() if "status" in df.columns else ""
+        category = _clean(row_values.get("category")) if "category" in row_values else ""
+        subcategory = _clean(row_values.get("subcategory")) if "subcategory" in row_values else ""
+        status = _clean(row_values.get("status")).casefold() if "status" in row_values else ""
         if reviewed_value or status == "reviewed":
             assignments.append("reviewed_at = ?")
             params.append(_now())
@@ -1846,9 +1888,9 @@ def update_database_rows(df):
             params,
         )
         updated += cur.rowcount
-        for column in text_columns:
-            if column in df.columns and column in existing_row:
-                new_value = _clean(row.get(column))
+        for column in effective_text_columns:
+            if column in row_values and column in existing_row:
+                new_value = _clean(row_values.get(column))
                 if column in {"currency", "rate_type"}:
                     new_value = new_value.upper()
                 if column == "status" and not new_value:
@@ -1864,13 +1906,13 @@ def update_database_rows(df):
                     "database_edit",
                 )
         for column in bool_columns:
-            if column in df.columns and column in existing_row:
+            if column in row_values and column in existing_row:
                 _audit_transaction_change(
                     cur,
                     row_id,
                     column,
                     existing_row.get(column, 0),
-                    int(_bool_from_value(row.get(column))),
+                    int(_bool_from_value(row_values.get(column))),
                     "database_edit",
                 )
         if "status" not in df.columns and reviewed_value is not None:
@@ -1938,7 +1980,11 @@ def backfill_missing_usd_amounts():
             SELECT id, txn_date, amount, currency, rate_type, fx_rate
             FROM classified_transactions
             WHERE amount IS NOT NULL
-              AND (amount_usd IS NULL OR CAST(amount_usd AS TEXT) = '')
+              AND (
+                  amount_usd IS NULL
+                  OR CAST(amount_usd AS TEXT) = ''
+                  OR (ABS(COALESCE(amount_usd, 0)) <= 0.005 AND ABS(COALESCE(amount, 0)) > 0.005)
+              )
         """, conn)
         if tx.empty:
             return 0

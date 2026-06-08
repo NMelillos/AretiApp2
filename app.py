@@ -384,9 +384,9 @@ st.markdown(
     .drill-header {
         display: grid;
         grid-template-columns: minmax(220px, 2.4fr) repeat(5, minmax(92px, 1fr));
-        gap: 8px;
+        gap: 4px;
         align-items: stretch;
-        margin-top: 10px;
+        margin-top: 8px;
         color: var(--text-muted);
         font-size: 11px;
         font-weight: 800;
@@ -395,27 +395,42 @@ st.markdown(
     .drill-row {
         display: grid;
         grid-template-columns: minmax(220px, 2.4fr) repeat(5, minmax(92px, 1fr));
-        gap: 8px;
+        gap: 4px;
         align-items: stretch;
-        margin-top: 8px;
+        margin-top: 4px;
     }
     .drill-cell {
         background: var(--panel);
         border: 1px solid var(--border);
-        border-radius: 6px;
-        min-height: 30px;
-        padding: 4px 7px;
+        border-radius: 4px;
+        min-height: 24px;
+        padding: 2px 5px;
         display: flex;
         align-items: center;
         justify-content: flex-end;
         text-align: right;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
     }
     .drill-cell:first-child {
         justify-content: flex-start;
         text-align: left;
         color: var(--text-main);
+    }
+    .drill-cell.trend-up {
+        background: #fff1f2;
+        color: #b42318;
+        border-left: 3px solid #dc2626;
+    }
+    .drill-cell.trend-down {
+        background: #ecfdf3;
+        color: #067647;
+        border-left: 3px solid #16a34a;
+    }
+    .drill-cell.trend-flat {
+        background: #f8fafc;
+        color: var(--text-muted);
+        border-left: 3px solid #94a3b8;
     }
     .drill-breadcrumb {
         color: var(--text-muted);
@@ -951,10 +966,9 @@ def editable_pending_table(df, categories, subcategories, key):
                 options=[""] + categories,
                 required=False,
             ),
-            "subcategory": st.column_config.SelectboxColumn(
+            "subcategory": st.column_config.TextColumn(
                 "Subcategory",
-                options=[""] + subcategories,
-                required=False,
+                help="Use a subcategory from the selected category. When saved, known subcategories automatically align the category.",
             ),
         },
     )
@@ -1338,11 +1352,12 @@ def _executive_change_pct(change, previous_amount):
     return (change / previous_amount) * 100
 
 
-def _executive_metric_values(frame, months):
+def _executive_metric_values(frame, months, denominator=0.0):
     month_values = {
         month: float(frame.loc[frame["month"] == month, "expense_usd"].sum())
         for month in months
     }
+    total_amount = float(frame["expense_usd"].sum()) if "expense_usd" in frame.columns else 0.0
     current_month = months[-1] if months else None
     previous_month = months[-2] if len(months) > 1 else None
     current_amount = month_values.get(current_month, 0.0)
@@ -1353,6 +1368,8 @@ def _executive_metric_values(frame, months):
         "months": month_values,
         "current": current_amount,
         "previous": previous_amount,
+        "total": total_amount,
+        "share_pct": (total_amount / denominator * 100) if abs(denominator) > 0.005 else None,
         "average": (sum(month_values.values()) / len(month_values)) if month_values else 0.0,
         "change": change,
         "change_pct": _executive_change_pct(change, previous_amount),
@@ -1365,6 +1382,7 @@ def _executive_level_rows(expenses, level_column, months):
     rows = []
     if expenses.empty or level_column not in expenses.columns:
         return rows
+    denominator = float(expenses["expense_usd"].sum()) if "expense_usd" in expenses.columns else 0.0
     raw_labels = expenses[level_column].fillna("").astype(str).str.strip().unique().tolist()
     if level_column == "subcategory":
         labels = sorted(raw_labels, key=lambda value: (value == "", value.casefold()))
@@ -1374,11 +1392,11 @@ def _executive_level_rows(expenses, level_column, months):
         frame = expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
         if frame.empty:
             continue
-        metrics = _executive_metric_values(frame, months)
+        metrics = _executive_metric_values(frame, months, denominator)
         metrics["label"] = label or "No subcategory"
         metrics["value"] = label
         rows.append(metrics)
-    rows.sort(key=lambda row: abs(row["change"]), reverse=True)
+    rows.sort(key=lambda row: (row["share_pct"] or 0.0, row["total"]), reverse=True)
     return rows
 
 
@@ -1403,7 +1421,7 @@ def _render_executive_click_rows(title, rows, level, months, month_labels):
     if not rows:
         st.info("No rows available for this level.")
         return
-    widths = [2.4] + [1 for _ in months] + [1, 1, 0.85, 1]
+    widths = [2.4] + [1 for _ in months] + [1, 0.75, 1, 1, 0.85, 1]
     header_cols = st.columns(widths)
     header_cols[0].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
     for idx, month in enumerate(months, start=1):
@@ -1411,7 +1429,7 @@ def _render_executive_click_rows(title, rows, level, months, month_labels):
             f"<div class=\"summary-label\">{escape(month_labels[month])}</div>",
             unsafe_allow_html=True,
         )
-    tail_labels = ["Average", "Change", "% change", "Status"]
+    tail_labels = ["SUM", "%", "Average", "Change", "% change", "Status"]
     for idx, label in enumerate(tail_labels, start=1 + len(months)):
         header_cols[idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
 
@@ -1426,7 +1444,10 @@ def _render_executive_click_rows(title, rows, level, months, month_labels):
                 f"<div class=\"drill-cell\">{_money(row['months'].get(month, 0.0))}</div>",
                 unsafe_allow_html=True,
             )
-        avg_index = 1 + len(months)
+        sum_index = 1 + len(months)
+        cols[sum_index].markdown(f"<div class=\"drill-cell\">{_money(row['total'])}</div>", unsafe_allow_html=True)
+        cols[sum_index + 1].markdown(f"<div class=\"drill-cell\">{_percent(row['share_pct'])}</div>", unsafe_allow_html=True)
+        avg_index = sum_index + 2
         cols[avg_index].markdown(f"<div class=\"drill-cell\">{_money(row['average'])}</div>", unsafe_allow_html=True)
         cols[avg_index + 1].markdown(
             f"<div class=\"drill-cell {row['trend_class']}\">{_money(row['change'])}</div>",
@@ -1509,7 +1530,10 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
             "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
             "expense_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
             "category": st.column_config.SelectboxColumn("Category", options=[""] + categories, required=False),
-            "subcategory": st.column_config.SelectboxColumn("Subcategory", options=[""] + subcategories, required=False),
+            "subcategory": st.column_config.TextColumn(
+                "Subcategory",
+                help="Use the filtered correction panel for dropdown selection. Known subcategories automatically align the category when saved.",
+            ),
             "reviewed": st.column_config.CheckboxColumn(
                 "Reviewed",
                 help="Untick to send the transaction back to Pending Review.",
@@ -2155,10 +2179,9 @@ elif page == "Database":
                     options=[""] + categories,
                     required=False,
                 ),
-                "subcategory": st.column_config.SelectboxColumn(
+                "subcategory": st.column_config.TextColumn(
                     "Subcategory",
-                    options=[""] + subcategories,
-                    required=False,
+                    help="Use the filtered correction panel for dropdown selection. Known subcategories automatically align the category when saved.",
                 ),
                 "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
             },

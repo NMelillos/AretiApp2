@@ -2143,6 +2143,7 @@ if page == "Import":
                 "account_name",
                 "account_number",
                 "currency",
+                "currency_source",
                 "amount_usd",
                 "suggested_category",
                 "suggested_subcategory",

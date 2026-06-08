@@ -1779,17 +1779,25 @@ def apply_account_and_rates(df, account):
     banks = []
     account_numbers = []
     currencies = []
+    currency_sources = []
     rate_types = []
     fx_rates = []
     usd_values = []
 
     for _, row in out.iterrows():
         row_account = _dynamic_amex_account(row, account, accounts)
-        row_currency = _clean(
-            row.get("statement_currency", "")
-            or row.get("currency", "")
-            or row_account.get("currency", "")
-        ).upper()
+        statement_currency = _clean(row.get("statement_currency", "")).upper()
+        existing_row_currency = _clean(row.get("currency", "")).upper()
+        account_currency = _clean(row_account.get("currency", "")).upper()
+        row_currency = statement_currency or existing_row_currency or account_currency
+        if statement_currency:
+            currency_source = _clean(row.get("statement_currency_source", "")) or "statement row"
+        elif existing_row_currency:
+            currency_source = "input currency column"
+        elif account_currency:
+            currency_source = "account setup fallback"
+        else:
+            currency_source = ""
         preferred_rate_type = _rate_type_for_currency(row_currency) if row_currency else _rate_type_from_account(row_account)
         rate_type, rate = _resolve_rate_for_values(rate_lookup, preferred_rate_type, row_currency, row.get("Date"))
         amount = float(row.get("Amount", 0) or 0)
@@ -1798,6 +1806,7 @@ def apply_account_and_rates(df, account):
         banks.append(row_account.get("bank", ""))
         account_numbers.append(row_account.get("account_number", ""))
         currencies.append(row_currency)
+        currency_sources.append(currency_source)
         rate_types.append(rate_type)
 
         if rate is None or rate == 0:
@@ -1811,6 +1820,7 @@ def apply_account_and_rates(df, account):
     out["bank"] = banks
     out["account_number"] = account_numbers
     out["currency"] = currencies
+    out["currency_source"] = currency_sources
     out["rate_type"] = rate_types
     out["fx_rate"] = fx_rates
     out["amount_usd"] = usd_values

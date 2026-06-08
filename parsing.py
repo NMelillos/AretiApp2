@@ -264,7 +264,7 @@ def _currency_from_money_text(value):
 def _currency_from_money_text(value):
     raw = str(value or "")
     text = raw.upper()
-    if "$" in raw or "USD" in text or "US$" in text:
+    if "US$" in text or "$" in raw or "USD" in text or "DOLLAR" in text:
         return "USD"
     if (
         "\u20ac" in raw
@@ -288,6 +288,10 @@ def _currency_from_money_text(value):
 
 def _normalize_currency_value(value):
     return _currency_from_money_text(value)
+
+
+def _currency_source(value):
+    return "statement row symbol" if _currency_from_money_text(value) else ""
 
 
 def _currency_from_row_values(row, columns):
@@ -334,9 +338,10 @@ def _parse_revolut_pdf_text(text):
 
         token_text, amount = current["amounts"][0]
         currency = _currency_from_money_text(token_text) or current.get("currency", "")
+        currency_source = _currency_source(token_text) or "statement account section"
         description = current["description"].strip()
         if description and amount != 0:
-            rows.append([current["date"], description, amount, currency])
+            rows.append([current["date"], description, amount, currency, currency_source])
         current = None
 
     for line in lines:
@@ -1009,9 +1014,14 @@ def prepare_dataframe_from_tabular(df):
         else pd.Series([""] * len(df), index=df.index)
     )
     symbol_currency = df.apply(lambda row: _currency_from_row_values(row, amount_currency_cols), axis=1)
-    statement_currency = explicit_currency.where(explicit_currency.astype(str).str.strip() != "", symbol_currency)
+    statement_currency = symbol_currency.where(symbol_currency.astype(str).str.strip() != "", explicit_currency)
     if statement_currency.fillna("").astype(str).str.strip().ne("").any():
         out["statement_currency"] = statement_currency.fillna("").astype(str).str.upper()
+        source_values = [
+            "statement row symbol" if str(symbol).strip() else "explicit currency column"
+            for symbol in symbol_currency.fillna("").astype(str)
+        ]
+        out["statement_currency_source"] = source_values
     if card_member_col and source_account_col:
         out["Amount"] = -out["Amount"]
     if card_member_col:
@@ -1044,7 +1054,9 @@ def parse_excel(uploaded_file):
 
 
 def _frame_from_pdf_rows(rows):
-    if rows and len(rows[0]) >= 4:
+    if rows and len(rows[0]) >= 5:
+        df = pd.DataFrame(rows, columns=["Date", "Description", "Amount", "statement_currency", "statement_currency_source"])
+    elif rows and len(rows[0]) >= 4:
         df = pd.DataFrame(rows, columns=["Date", "Description", "Amount", "statement_currency"])
     else:
         df = pd.DataFrame(rows, columns=["Date", "Description", "Amount"])
@@ -1054,6 +1066,12 @@ def _frame_from_pdf_rows(rows):
         df["statement_currency"] = existing_currency.where(existing_currency.str.strip() != "", amount_currency)
     elif amount_currency.fillna("").astype(str).str.strip().ne("").any():
         df["statement_currency"] = amount_currency.fillna("").astype(str).str.upper()
+    if "statement_currency" in df.columns and "statement_currency_source" not in df.columns:
+        amount_source = df["Amount"].apply(_currency_source)
+        df["statement_currency_source"] = amount_source.where(
+            amount_source.astype(str).str.strip() != "",
+            "statement/header fallback",
+        )
     df["Date"] = df["Date"].apply(_parse_pdf_date)
     df["Amount"] = df["Amount"].apply(_parse_amount)
     df["Description"] = df["Description"].fillna("").astype(str)

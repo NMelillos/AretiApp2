@@ -1564,6 +1564,179 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
     )
 
 
+def _largest_change_rows(frame, group_column, current_month, previous_month, ascending=False, limit=5):
+    if frame.empty or group_column not in frame.columns:
+        return []
+    pivot = (
+        frame.groupby([group_column, "month"])["expense_usd"]
+        .sum()
+        .unstack(fill_value=0)
+    )
+    current = pivot[current_month] if current_month in pivot.columns else 0
+    previous = pivot[previous_month] if previous_month in pivot.columns else 0
+    out = pd.DataFrame({
+        group_column: pivot.index.astype(str),
+        "current": current,
+        "previous": previous,
+    })
+    out["change"] = out["current"] - out["previous"]
+    out = out[out["change"].abs() > 0.005].copy()
+    if out.empty:
+        return []
+    out = out.sort_values("change", ascending=ascending).head(limit)
+    return out.to_dict("records")
+
+
+def _format_analysis_bullets(title, rows, name_column, direction):
+    if not rows:
+        return f"**{title}**\n- No material movement found."
+    bullets = [f"**{title}**"]
+    for row in rows:
+        change_text = _money(abs(row.get("change", 0)))
+        current_text = _money(row.get("current", 0))
+        previous_text = _money(row.get("previous", 0))
+        bullets.append(
+            f"- {row.get(name_column) or 'Unassigned'} {direction} by {change_text} "
+            f"({previous_text} to {current_text})."
+        )
+    return "\n".join(bullets)
+
+
+def _build_family_analysis(expenses, months, month_labels):
+    family = expenses[
+        expenses["report_group"].fillna("").astype(str).str.strip().str.casefold().eq("1-family")
+    ].copy()
+    if family.empty:
+        return "", pd.DataFrame()
+
+    current_month = months[-1] if months else family["month"].max()
+    previous_month = months[-2] if len(months) > 1 else None
+    total = float(family["expense_usd"].sum())
+    current_total = float(family.loc[family["month"] == current_month, "expense_usd"].sum())
+    previous_total = (
+        float(family.loc[family["month"] == previous_month, "expense_usd"].sum())
+        if previous_month is not None
+        else 0.0
+    )
+    change = current_total - previous_total
+    trend_text = "increased" if change > 0.005 else "decreased" if change < -0.005 else "stayed broadly stable"
+
+    category_totals = (
+        family.groupby("category")["expense_usd"]
+        .sum()
+        .sort_values(ascending=False)
+        .reset_index()
+    )
+    category_totals["share"] = category_totals["expense_usd"].apply(
+        lambda value: (float(value) / total * 100) if total else 0.0
+    )
+    top_categories = category_totals.head(5).copy()
+
+    subcategory_totals = (
+        family.groupby(["category", "subcategory"], dropna=False)["expense_usd"]
+        .sum()
+        .sort_values(ascending=False)
+        .reset_index()
+        .head(8)
+    )
+    subcategory_totals["subcategory"] = subcategory_totals["subcategory"].fillna("").replace("", "No subcategory")
+
+    increase_rows = _largest_change_rows(family, "category", current_month, previous_month, ascending=False, limit=5)
+    decrease_rows = _largest_change_rows(family, "category", current_month, previous_month, ascending=True, limit=5)
+
+    top_category_lines = [
+        f"- {row['category'] or 'Unassigned'}: {_money(row['expense_usd'])} ({_percent(row['share'])} of 1-family)."
+        for _, row in top_categories.iterrows()
+    ] or ["- No category totals available."]
+
+    subcategory_lines = [
+        f"- {row['category'] or 'Unassigned'} / {row['subcategory']}: {_money(row['expense_usd'])}."
+        for _, row in subcategory_totals.iterrows()
+    ] or ["- No subcategory totals available."]
+
+    cut_focus = top_categories.head(3)["category"].dropna().astype(str).tolist()
+    cut_lines = [
+        f"- Start with {', '.join(cut_focus)} because these are the largest 1-family cost drivers."
+        if cut_focus else "- Start with the largest visible categories once more data is reviewed.",
+        "- Review categories that increased in the latest month first; these are the quickest places to find unusual one-off items.",
+        "- For recurring or repeated costs, set a monthly reference amount and investigate anything above it.",
+        "- Check the transaction detail under each subcategory before cutting, so essential family costs are separated from discretionary costs.",
+    ]
+
+    analysis = "\n\n".join([
+        (
+            f"**1-family analysis through {month_labels.get(current_month, str(current_month))}**\n"
+            f"- Total reviewed 1-family expenses in this report window: {_money(total)}.\n"
+            f"- Current month: {_money(current_total)}; previous month: {_money(previous_total)}.\n"
+            f"- Overall movement: 1-family {trend_text} by {_money(abs(change))}."
+        ),
+        "**Main cost drivers**\n" + "\n".join(top_category_lines),
+        _format_analysis_bullets("What is going up", increase_rows, "category", "increased"),
+        _format_analysis_bullets("What is going down", decrease_rows, "category", "decreased"),
+        "**What to notice**\n" + "\n".join(subcategory_lines),
+        "**How to cut down**\n" + "\n".join(cut_lines),
+    ])
+
+    export_rows = []
+    for _, row in category_totals.iterrows():
+        export_rows.append({
+            "Section": "Cost driver",
+            "Category": row["category"],
+            "Subcategory": "",
+            "Amount": float(row["expense_usd"]),
+            "Share": float(row["share"]),
+            "Comment": f"{row['category']} represents {_percent(row['share'])} of 1-family.",
+        })
+    for row in increase_rows:
+        export_rows.append({
+            "Section": "Going up",
+            "Category": row.get("category", ""),
+            "Subcategory": "",
+            "Amount": float(row.get("change", 0)),
+            "Share": "",
+            "Comment": f"Increased from {_money(row.get('previous', 0))} to {_money(row.get('current', 0))}.",
+        })
+    for row in decrease_rows:
+        export_rows.append({
+            "Section": "Going down",
+            "Category": row.get("category", ""),
+            "Subcategory": "",
+            "Amount": float(row.get("change", 0)),
+            "Share": "",
+            "Comment": f"Decreased from {_money(row.get('previous', 0))} to {_money(row.get('current', 0))}.",
+        })
+
+    return analysis, pd.DataFrame(export_rows)
+
+
+def _render_family_analysis_button(expenses, months, month_labels):
+    has_family = (
+        not expenses.empty
+        and "report_group" in expenses.columns
+        and expenses["report_group"].fillna("").astype(str).str.strip().str.casefold().eq("1-family").any()
+    )
+    if not has_family:
+        return
+
+    st.markdown("### 1-family AI analysis")
+    if st.button("Generate 1-family AI analysis", type="primary", key="generate_family_analysis"):
+        st.session_state["family_analysis_generated"] = True
+
+    if st.session_state.get("family_analysis_generated"):
+        analysis, export_df = _build_family_analysis(expenses, months, month_labels)
+        if analysis:
+            st.markdown(analysis)
+            if not export_df.empty:
+                st.download_button(
+                    "Download 1-family AI analysis Excel",
+                    data=dataframe_to_excel_bytes({"1-family analysis": export_df}),
+                    file_name="1_family_analysis.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+        else:
+            st.info("No reviewed 1-family expenses are available for this report period.")
+
+
 def _render_executive_drilldown(expenses, months, month_labels):
     st.markdown("### Drill-down")
     selected_group = _valid_executive_selection(
@@ -1675,6 +1848,7 @@ def render_executive_report():
     current_month = cutoff_ts.to_period("M")
     month_window = _executive_month_window(current_month)
     month_labels = _executive_month_labels(month_window)
+    _render_family_analysis_button(expenses, month_window, month_labels)
     _render_executive_drilldown(expenses, month_window, month_labels)
 
 

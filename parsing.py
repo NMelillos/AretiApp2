@@ -28,6 +28,7 @@ DATE_NAMES = {"date", "transaction date", "booking date", "value date", "posted 
 AMOUNT_NAMES = {"amount", "transaction amount", "paid in", "paid out"}
 DEBIT_NAMES = {"debit", "withdrawal", "paid out", "out"}
 CREDIT_NAMES = {"credit", "deposit", "paid in", "in"}
+CURRENCY_NAMES = {"currency", "curr", "ccy", "transaction currency", "original currency"}
 IGNORE_TEXT_HINTS = {"balance", "currency", "rate", "account", "iban", "number"}
 MONTH_DATE_RE = re.compile(
     r"^(?P<date>(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+"
@@ -37,6 +38,9 @@ MONTH_DATE_RE = re.compile(
 NUMERIC_DATE_RE = re.compile(r"^(?P<date>\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(?P<rest>.+)$")
 MONEY_RE = re.compile(r"-?\s*(?:[$€£]|USD|EUR|GBP|M\$)?\s*\(?\d[\d,]*\.\d{2}\)?", re.IGNORECASE)
 MONEY_TOKEN = r"-?\s*(?:[$€£]|USD|EUR|GBP|M\$)?\s*\(?\d[\d,]*\.\d{2}\)?"
+MONEY_PREFIX_TOKEN = r"(?:US\$|M\$|\$|\u20ac|\u00a3|USD|EUR|GBP|\u00e2\u201a\u00ac|\u00c2\u00a3|\u03b2\u201a\u00ac|\u0392\u00a3)"
+MONEY_RE = re.compile(rf"-?\s*(?:{MONEY_PREFIX_TOKEN})?\s*\(?\d[\d,]*\.\d{{2}}\)?", re.IGNORECASE)
+MONEY_TOKEN = rf"-?\s*(?:{MONEY_PREFIX_TOKEN})?\s*\(?\d[\d,]*\.\d{{2}}\)?"
 PDF_SKIP_PREFIXES = (
     "EUR Statement",
     "Generated on",
@@ -254,6 +258,45 @@ def _currency_from_money_text(value):
         return "EUR"
     if "£" in text or "GBP" in text:
         return "GBP"
+    return ""
+
+
+def _currency_from_money_text(value):
+    raw = str(value or "")
+    text = raw.upper()
+    if "$" in raw or "USD" in text or "US$" in text:
+        return "USD"
+    if (
+        "\u20ac" in raw
+        or "\u00e2\u201a\u00ac" in raw
+        or "\u03b2\u201a\u00ac" in raw
+        or "EUR" in text
+        or "EURO" in text
+    ):
+        return "EUR"
+    if (
+        "\u00a3" in raw
+        or "\u00c2\u00a3" in raw
+        or "\u0392\u00a3" in raw
+        or "GBP" in text
+        or "POUND" in text
+        or "STERLING" in text
+    ):
+        return "GBP"
+    return ""
+
+
+def _normalize_currency_value(value):
+    return _currency_from_money_text(value)
+
+
+def _currency_from_row_values(row, columns):
+    for col in columns:
+        if col is None:
+            continue
+        currency = _currency_from_money_text(row.get(col, ""))
+        if currency:
+            return currency
     return ""
 
 
@@ -712,6 +755,24 @@ def _extract_currency(text):
     return ""
 
 
+def _extract_currency(text):
+    raw_head = text[:2000]
+    head = raw_head.upper()
+    if (
+        "EUR STATEMENT" in head
+        or "EUR" in head
+        or "\u20ac" in raw_head
+        or "\u00e2\u201a\u00ac" in raw_head
+        or "\u03b2\u201a\u00ac" in raw_head
+    ):
+        return "EUR"
+    if "$" in raw_head or "USD" in head:
+        return "USD"
+    if "\u00a3" in raw_head or "\u00c2\u00a3" in raw_head or "\u0392\u00a3" in raw_head or "GBP" in head:
+        return "GBP"
+    return ""
+
+
 def _find_first_amount(flat_text, patterns):
     for pattern in patterns:
         match = re.search(pattern, flat_text, re.IGNORECASE)
@@ -920,12 +981,15 @@ def prepare_dataframe_from_tabular(df):
     columns = {_norm_col(c): c for c in df.columns}
     card_member_col = columns.get("card member")
     source_account_col = columns.get("account #") or columns.get("account number")
+    currency_col = next((columns.get(name) for name in CURRENCY_NAMES if columns.get(name)), None)
+    generated_amount_from_debit_credit = False
 
     if amount_col is None and debit_col and credit_col:
         debit = df[debit_col].apply(_parse_amount).abs()
         credit = df[credit_col].apply(_parse_amount).abs()
         df["Amount"] = credit - debit
         amount_col = "Amount"
+        generated_amount_from_debit_credit = True
 
     if not date_col or not desc_cols or not amount_col:
         raise ValueError(
@@ -938,6 +1002,16 @@ def prepare_dataframe_from_tabular(df):
     out["Date"] = df[date_col].apply(date_parser)
     out["Description"] = df.apply(lambda row: _combine_description(row, desc_cols), axis=1)
     out["Amount"] = df[amount_col].apply(_parse_amount)
+    amount_currency_cols = [debit_col, credit_col] if generated_amount_from_debit_credit else [amount_col]
+    explicit_currency = (
+        df[currency_col].apply(_normalize_currency_value)
+        if currency_col
+        else pd.Series([""] * len(df), index=df.index)
+    )
+    symbol_currency = df.apply(lambda row: _currency_from_row_values(row, amount_currency_cols), axis=1)
+    statement_currency = explicit_currency.where(explicit_currency.astype(str).str.strip() != "", symbol_currency)
+    if statement_currency.fillna("").astype(str).str.strip().ne("").any():
+        out["statement_currency"] = statement_currency.fillna("").astype(str).str.upper()
     if card_member_col and source_account_col:
         out["Amount"] = -out["Amount"]
     if card_member_col:
@@ -974,6 +1048,12 @@ def _frame_from_pdf_rows(rows):
         df = pd.DataFrame(rows, columns=["Date", "Description", "Amount", "statement_currency"])
     else:
         df = pd.DataFrame(rows, columns=["Date", "Description", "Amount"])
+    amount_currency = df["Amount"].apply(_currency_from_money_text)
+    if "statement_currency" in df.columns:
+        existing_currency = df["statement_currency"].fillna("").astype(str).str.upper()
+        df["statement_currency"] = existing_currency.where(existing_currency.str.strip() != "", amount_currency)
+    elif amount_currency.fillna("").astype(str).str.strip().ne("").any():
+        df["statement_currency"] = amount_currency.fillna("").astype(str).str.upper()
     df["Date"] = df["Date"].apply(_parse_pdf_date)
     df["Amount"] = df["Amount"].apply(_parse_amount)
     df["Description"] = df["Description"].fillna("").astype(str)

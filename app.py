@@ -1435,19 +1435,30 @@ def _executive_metric_values(frame, months, denominator=0.0):
     }
 
 
-def _executive_level_rows(expenses, level_column, months):
+def _executive_level_rows(expenses, level_column, months, extra_labels=None):
     rows = []
-    if expenses.empty or level_column not in expenses.columns:
+    extra_labels = _ordered_text_values(extra_labels or [])
+    if (expenses.empty or level_column not in expenses.columns) and not extra_labels:
         return rows
     denominator = float(expenses["expense_usd"].sum()) if "expense_usd" in expenses.columns else 0.0
-    raw_labels = expenses[level_column].fillna("").astype(str).str.strip().unique().tolist()
+    raw_labels = (
+        expenses[level_column].fillna("").astype(str).str.strip().unique().tolist()
+        if level_column in expenses.columns
+        else []
+    )
     if level_column == "subcategory":
         labels = sorted(raw_labels, key=lambda value: (value == "", value.casefold()))
     else:
         labels = sorted(value for value in raw_labels if value)
+    if extra_labels:
+        labels = _ordered_text_values(labels + extra_labels)
     for label in labels:
-        frame = expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
-        if frame.empty:
+        frame = (
+            expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
+            if level_column in expenses.columns
+            else expenses.iloc[0:0].copy()
+        )
+        if frame.empty and label not in extra_labels:
             continue
         metrics = _executive_metric_values(frame, months, denominator)
         metrics["label"] = label or "No subcategory"
@@ -1455,6 +1466,95 @@ def _executive_level_rows(expenses, level_column, months):
         rows.append(metrics)
     rows.sort(key=lambda row: (row["share_pct"] or 0.0, row["total"]), reverse=True)
     return rows
+
+
+def _ordered_text_values(values):
+    seen = set()
+    out = []
+    for value in values:
+        text = str(value or "").strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _executive_report_group_options(categories_df, expenses):
+    from reporting import get_report_groups
+
+    setup_groups = get_report_groups(categories_df)
+    data_groups = (
+        expenses.get("report_group", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .tolist()
+        if not expenses.empty
+        else []
+    )
+    return _ordered_text_values(setup_groups + sorted(data_groups))
+
+
+def _executive_default_visible_groups(all_report_groups):
+    group_settings = get_report_group_settings()
+    if group_settings.empty:
+        return all_report_groups
+    settings = group_settings.copy()
+    settings["report_group"] = settings["report_group"].fillna("").astype(str).str.strip()
+    known_groups = set(settings["report_group"].tolist())
+    visible_groups = (
+        settings[settings["visible"].fillna(0).astype(int) == 1]["report_group"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .tolist()
+    )
+    visible_groups.extend(group for group in all_report_groups if group not in known_groups)
+    return [group for group in _ordered_text_values(visible_groups) if group in all_report_groups]
+
+
+def _save_executive_visible_groups(all_report_groups, visible_groups):
+    settings_df = pd.DataFrame({
+        "report_group": all_report_groups,
+        "visible": [group in visible_groups for group in all_report_groups],
+    })
+    return replace_report_group_settings(settings_df)
+
+
+def _render_executive_group_visibility_control(all_report_groups):
+    if not all_report_groups:
+        return []
+    default_visible_groups = _executive_default_visible_groups(all_report_groups)
+    if not default_visible_groups:
+        default_visible_groups = all_report_groups
+
+    with st.expander("Manage reporting groups shown", expanded=False):
+        selected_visible_groups = st.multiselect(
+            "Reporting groups included in this Executive Summary",
+            all_report_groups,
+            default=default_visible_groups,
+            key="executive_visible_groups_inline",
+        )
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("Save reporting group selection", type="primary", key="save_executive_groups_inline"):
+                if not selected_visible_groups:
+                    st.warning("Select at least one reporting group before saving.")
+                else:
+                    count = _save_executive_visible_groups(all_report_groups, selected_visible_groups)
+                    st.success(f"Saved visibility for {count} reporting groups.")
+                    st.cache_data.clear()
+                    st.rerun()
+        with c2:
+            if st.button("Show all reporting groups", key="show_all_executive_groups_inline"):
+                count = _save_executive_visible_groups(all_report_groups, all_report_groups)
+                st.success(f"All {count} reporting groups are now shown.")
+                st.cache_data.clear()
+                st.rerun()
+
+    return default_visible_groups
 
 
 def _set_executive_selection(level, value):
@@ -1796,7 +1896,7 @@ def _render_family_analysis_button(expenses, months, month_labels):
             st.info("No reviewed 1-family expenses are available for this report period.")
 
 
-def _render_executive_drilldown(expenses, months, month_labels):
+def _render_executive_drilldown(expenses, months, month_labels, visible_report_groups=None):
     st.markdown("### Drill-down")
     selected_group = _valid_executive_selection(
         expenses,
@@ -1836,7 +1936,12 @@ def _render_executive_drilldown(expenses, months, month_labels):
             trail += f" / Subcategory: {selected_subcategory or 'No subcategory'}"
         st.markdown(f"<div class=\"drill-breadcrumb\">{escape(trail)}</div>", unsafe_allow_html=True)
 
-    group_rows = _executive_level_rows(expenses, "report_group", months)
+    group_rows = _executive_level_rows(
+        expenses,
+        "report_group",
+        months,
+        extra_labels=visible_report_groups or [],
+    )
     _render_executive_click_rows("1. Reporting Groups", group_rows, "group", months, month_labels)
 
     if not selected_group:
@@ -1859,7 +1964,7 @@ def _render_executive_drilldown(expenses, months, month_labels):
 
 
 def render_executive_report():
-    from reporting import _prepare_report_data, get_report_groups
+    from reporting import _prepare_report_data
 
     st.subheader("Executive Summary")
 
@@ -1888,25 +1993,14 @@ def render_executive_report():
         return
 
     _, expenses, _, _ = _prepare_report_data(filtered, categories_df)
-    group_settings = get_report_group_settings()
-    if not group_settings.empty:
-        all_report_groups = get_report_groups(categories_df)
-        known_setting_groups = set(
-            group_settings["report_group"].fillna("").astype(str).str.strip()
-        )
-        visible_groups = (
-            group_settings[group_settings["visible"].fillna(0).astype(int) == 1]["report_group"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .tolist()
-        )
-        visible_groups.extend(group for group in all_report_groups if group not in known_setting_groups)
-        expenses = expenses[expenses["report_group"].fillna("").astype(str).str.strip().isin(visible_groups)].copy()
-        if expenses.empty:
-            st.info("No reviewed expense rows match the selected visible reporting groups.")
-            return
-    if expenses.empty:
+    all_report_groups = _executive_report_group_options(categories_df, expenses)
+    visible_report_groups = _render_executive_group_visibility_control(all_report_groups)
+    if visible_report_groups:
+        expenses = expenses[
+            expenses["report_group"].fillna("").astype(str).str.strip().isin(visible_report_groups)
+        ].copy()
+
+    if expenses.empty and not visible_report_groups:
         st.info("No reviewed expense rows match the selected period.")
         return
 
@@ -1914,7 +2008,7 @@ def render_executive_report():
     month_window = _executive_month_window(current_month)
     month_labels = _executive_month_labels(month_window)
     _render_family_analysis_button(expenses, month_window, month_labels)
-    _render_executive_drilldown(expenses, month_window, month_labels)
+    _render_executive_drilldown(expenses, month_window, month_labels, visible_report_groups)
 
 
 if is_executive_report_request():
@@ -3004,8 +3098,9 @@ elif page == "Setup":
         st.dataframe(setup_categories, use_container_width=True, height=260)
         new_category = st.text_input("Add category")
         new_subcategory = st.text_input("Add subcategory")
+        new_report_group = st.text_input("Reporting group for new category")
         if st.button("Add category row"):
-            add_category(new_category, new_subcategory)
+            add_category(new_category, new_subcategory, new_report_group)
             st.cache_data.clear()
             st.rerun()
     with setup_middle:

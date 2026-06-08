@@ -881,17 +881,33 @@ def _audit_transaction_change(cur, transaction_id, field_name, old_value, new_va
     """, (int(transaction_id), field_name, old_text, new_text, source, _now()))
 
 
-def add_category(category, subcategory=""):
+def add_category(category, subcategory="", report_group=""):
     category = _clean(category)
     subcategory = _clean(subcategory)
+    report_group = _clean(report_group)
     if not category:
         return
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        INSERT OR IGNORE INTO category_list (category, subcategory, created_at)
-        VALUES (?, ?, ?)
-    """, (category, subcategory, _now()))
+        SELECT id, COALESCE(report_group, '')
+        FROM category_list
+        WHERE category = ? AND COALESCE(subcategory, '') = ?
+        LIMIT 1
+    """, (category, subcategory))
+    existing = cur.fetchone()
+    if existing:
+        if report_group:
+            cur.execute("""
+                UPDATE category_list
+                SET report_group = ?, created_at = ?
+                WHERE id = ?
+            """, (report_group, _now(), existing[0]))
+    else:
+        cur.execute("""
+            INSERT INTO category_list (category, subcategory, report_group, created_at)
+            VALUES (?, ?, ?, ?)
+        """, (category, subcategory, report_group, _now()))
     conn.commit()
     conn.close()
 

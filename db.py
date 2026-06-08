@@ -1822,32 +1822,30 @@ def build_statement_hash(file_bytes):
 
 
 def save_pending_transactions(df, statement_name, statement_hash):
-    if statement_already_imported(statement_hash):
-        record_duplicate_statement_attempt(statement_hash)
-        return 0, True, 0
-
     conn = get_connection()
     cur = conn.cursor()
     now = _now()
+    cur.execute("""
+        INSERT OR IGNORE INTO statement_imports
+        (statement_hash, statement_name, imported_at, transaction_count)
+        VALUES (?, ?, ?, 0)
+    """, (statement_hash, statement_name, now))
+    if cur.rowcount == 0:
+        conn.close()
+        record_duplicate_statement_attempt(statement_hash)
+        return 0, True, 0
+
     inserted = 0
     duplicate_lines = 0
     existing_keys = _existing_transaction_line_keys(cur)
     relaxed_existing_keys = _existing_transaction_line_keys(cur, include_account=False)
     bank_level_existing_keys = _existing_transaction_line_keys(cur, include_account=None)
+    seen_row_hashes = set()
 
     for idx, row in df.reset_index(drop=True).iterrows():
         transaction_key = _transaction_line_key(row)
         relaxed_key = _transaction_line_key(row, include_account=False)
         bank_level_key = _transaction_line_key(row, include_account=None) if _canonical_text(row.get("bank", "")) else None
-        if (
-            bool(row.get("dup_flag", False))
-            or (transaction_key and transaction_key in existing_keys)
-            or (relaxed_key and relaxed_key in relaxed_existing_keys)
-            or (bank_level_key and bank_level_key in bank_level_existing_keys)
-        ):
-            duplicate_lines += 1
-            continue
-
         row_hash_src = "|".join([
             statement_hash,
             str(idx),
@@ -1856,8 +1854,19 @@ def save_pending_transactions(df, statement_name, statement_hash):
             str(row.get("Description", "")),
         ])
         row_hash = hashlib.sha256(row_hash_src.encode("utf-8")).hexdigest()
+        if (
+            bool(row.get("dup_flag", False))
+            or (transaction_key and transaction_key in existing_keys)
+            or (relaxed_key and relaxed_key in relaxed_existing_keys)
+            or (bank_level_key and bank_level_key in bank_level_existing_keys)
+            or row_hash in seen_row_hashes
+        ):
+            duplicate_lines += 1
+            continue
+
         cur.execute("SELECT COUNT(*) FROM classified_transactions WHERE row_hash = ?", (row_hash,))
         if cur.fetchone()[0] > 0:
+            duplicate_lines += 1
             continue
 
         cur.execute("""
@@ -1895,12 +1904,13 @@ def save_pending_transactions(df, statement_name, statement_hash):
             now,
         ))
         inserted += 1
+        seen_row_hashes.add(row_hash)
 
     cur.execute("""
-        INSERT OR IGNORE INTO statement_imports
-        (statement_hash, statement_name, imported_at, transaction_count)
-        VALUES (?, ?, ?, ?)
-    """, (statement_hash, statement_name, now, inserted))
+        UPDATE statement_imports
+        SET transaction_count = ?
+        WHERE statement_hash = ?
+    """, (inserted, statement_hash))
     conn.commit()
     conn.close()
     return inserted, False, duplicate_lines

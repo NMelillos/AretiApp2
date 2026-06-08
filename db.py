@@ -1457,6 +1457,21 @@ def _lookup_rate(rate_lookup, rate_type, txn_date=None):
     return float(candidates["rate_value"].iloc[0])
 
 
+def _resolve_rate_for_values(rate_lookup, rate_type="", currency="", txn_date=None):
+    normalized_rate_type = _normalize_rate_type(rate_type, currency)
+    currency_rate_type = _rate_type_for_currency(currency)
+    candidates = []
+    for candidate in [normalized_rate_type, currency_rate_type]:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    for candidate in candidates:
+        rate = _lookup_rate(rate_lookup, candidate, txn_date)
+        if rate is not None:
+            return candidate, rate
+    return normalized_rate_type or currency_rate_type, None
+
+
 def _usd_from_amount(amount, rate):
     if rate is None or rate == 0:
         return None
@@ -1495,8 +1510,8 @@ def apply_account_and_rates(df, account):
             or row.get("currency", "")
             or row_account.get("currency", "")
         ).upper()
-        rate_type = _rate_type_for_currency(row_currency) if row_currency else _rate_type_from_account(row_account)
-        rate = _lookup_rate(rate_lookup, rate_type, row.get("Date"))
+        preferred_rate_type = _rate_type_for_currency(row_currency) if row_currency else _rate_type_from_account(row_account)
+        rate_type, rate = _resolve_rate_for_values(rate_lookup, preferred_rate_type, row_currency, row.get("Date"))
         amount = float(row.get("Amount", 0) or 0)
 
         account_names.append(row_account.get("account_name", ""))
@@ -1863,7 +1878,12 @@ def update_database_rows(df):
                 row_values.get("rate_type") if "rate_type" in df.columns else existing_row.get("rate_type"),
                 merged_currency,
             )
-            merged_fx_rate = _lookup_rate(rate_lookup, merged_rate_type, merged_date)
+            merged_rate_type, merged_fx_rate = _resolve_rate_for_values(
+                rate_lookup,
+                merged_rate_type,
+                merged_currency,
+                merged_date,
+            )
             merged_amount_usd = _usd_from_amount(merged_amount, merged_fx_rate)
             assignments.extend(["rate_type = ?", "fx_rate = ?", "amount_usd = ?"])
             params.extend([merged_rate_type, merged_fx_rate, merged_amount_usd])
@@ -1993,10 +2013,15 @@ def backfill_missing_usd_amounts():
         updated = 0
         for _, row in tx.iterrows():
             currency = _clean(row.get("currency", "")).upper()
-            rate_type = _normalize_rate_type(row.get("rate_type", ""), currency)
+            rate_type, lookup_rate = _resolve_rate_for_values(
+                rate_lookup,
+                row.get("rate_type", ""),
+                currency,
+                row.get("txn_date"),
+            )
             fx_rate = _float_or_none(row.get("fx_rate"))
-            if fx_rate is None:
-                fx_rate = _lookup_rate(rate_lookup, rate_type, row.get("txn_date"))
+            if fx_rate is None or fx_rate == 0:
+                fx_rate = lookup_rate
             amount_usd = _usd_from_amount(row.get("amount"), fx_rate)
             if amount_usd is None:
                 continue

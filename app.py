@@ -162,6 +162,21 @@ def get_subcategories(category=None):
 def get_transaction_change_log(limit=300):
     return _db_get_transaction_change_log(limit=limit)
 
+
+def ensure_usd_backfilled(show_message=False):
+    try:
+        count = backfill_missing_usd_amounts()
+    except Exception as exc:
+        if show_message:
+            st.warning(f"Could not calculate missing USD equivalents automatically: {exc}")
+        return 0
+    if count:
+        st.cache_data.clear()
+        if show_message:
+            st.info(f"Calculated missing USD equivalents for {count} transaction row(s).")
+    return count
+
+
 st.markdown(
     """
     <style>
@@ -402,14 +417,14 @@ st.markdown(
     .drill-cell {
         background: var(--panel);
         border: 1px solid var(--border);
-        border-radius: 4px;
-        min-height: 24px;
-        padding: 2px 5px;
+        border-radius: 2px;
+        min-height: 20px;
+        padding: 1px 4px;
         display: flex;
         align-items: center;
         justify-content: flex-end;
         text-align: right;
-        font-size: 11px;
+        font-size: 10.5px;
         font-weight: 700;
     }
     .drill-cell:first-child {
@@ -489,6 +504,25 @@ st.markdown(
     div[data-testid="stDataFrame"] [role="gridcell"] {
         white-space: normal !important;
         line-height: 1.35 !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.drill-cell) {
+        gap: 2px !important;
+        margin: 0 !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.drill-cell) div[data-testid="column"] {
+        padding-left: 1px !important;
+        padding-right: 1px !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.drill-cell) div[data-testid="stMarkdown"],
+    div[data-testid="stHorizontalBlock"]:has(.drill-cell) div[data-testid="stButton"] {
+        margin: 0 !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.drill-cell) button {
+        min-height: 22px !important;
+        padding: 1px 5px !important;
+        border-radius: 2px !important;
+        font-size: 10.5px !important;
+        line-height: 1.1 !important;
     }
     .section-divider {
         height: 1px;
@@ -966,8 +1000,10 @@ def editable_pending_table(df, categories, subcategories, key):
                 options=[""] + categories,
                 required=False,
             ),
-            "subcategory": st.column_config.TextColumn(
+            "subcategory": st.column_config.SelectboxColumn(
                 "Subcategory",
+                options=[""] + subcategories,
+                required=False,
                 help="Use a subcategory from the selected category. When saved, known subcategories automatically align the category.",
             ),
         },
@@ -1530,8 +1566,10 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
             "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
             "expense_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
             "category": st.column_config.SelectboxColumn("Category", options=[""] + categories, required=False),
-            "subcategory": st.column_config.TextColumn(
+            "subcategory": st.column_config.SelectboxColumn(
                 "Subcategory",
+                options=[""] + subcategories,
+                required=False,
                 help="Use the filtered correction panel for dropdown selection. Known subcategories automatically align the category when saved.",
             ),
             "reviewed": st.column_config.CheckboxColumn(
@@ -1800,10 +1838,11 @@ def _render_executive_drilldown(expenses, months, month_labels):
 
 
 def render_executive_report():
-    from reporting import _prepare_report_data
+    from reporting import _prepare_report_data, get_report_groups
 
     st.subheader("Executive Summary")
 
+    ensure_usd_backfilled()
     reviewed = get_saved_transactions()
     categories_df = get_categories(include_subcategories=True)
     if reviewed.empty:
@@ -1830,6 +1869,10 @@ def render_executive_report():
     _, expenses, _, _ = _prepare_report_data(filtered, categories_df)
     group_settings = get_report_group_settings()
     if not group_settings.empty:
+        all_report_groups = get_report_groups(categories_df)
+        known_setting_groups = set(
+            group_settings["report_group"].fillna("").astype(str).str.strip()
+        )
         visible_groups = (
             group_settings[group_settings["visible"].fillna(0).astype(int) == 1]["report_group"]
             .fillna("")
@@ -1837,6 +1880,7 @@ def render_executive_report():
             .str.strip()
             .tolist()
         )
+        visible_groups.extend(group for group in all_report_groups if group not in known_setting_groups)
         expenses = expenses[expenses["report_group"].fillna("").astype(str).str.strip().isin(visible_groups)].copy()
         if expenses.empty:
             st.info("No reviewed expense rows match the selected visible reporting groups.")
@@ -2249,10 +2293,15 @@ elif page == "Pending Review":
 
         p1, p2, p3, p4, p5 = st.columns(5)
         p1.metric("Visible rows", len(pending_view))
-        p2.metric("All pending", len(pending))
+        p2.metric("All pending backlog", len(pending))
         p3.metric("Exact", int((pending_view["match_type"] == "exact").sum()))
         p4.metric("Similar", int((pending_view["match_type"] == "similar").sum()))
         p5.metric("New", int((pending_view["match_type"] == "new").sum()))
+        if statement_filter != "All pending statements" and len(pending) != len(pending_view):
+            st.info(
+                f"You are viewing {len(pending_view)} row(s) for {statement_filter}. "
+                f"The {len(pending)} pending figure is the full backlog across all pending statements."
+            )
 
         if pending_view.empty:
             st.warning("No pending transactions match the current filters.")
@@ -2283,6 +2332,7 @@ elif page == "Pending Review":
 
 elif page == "Database":
     st.subheader("Database")
+    ensure_usd_backfilled(show_message=True)
     all_tx = get_all_transactions()
     categories_df = get_categories(include_subcategories=True)
     categories = sorted(
@@ -2310,6 +2360,22 @@ elif page == "Database":
             ("Pending", int((db_view["status"].fillna("pending") == "pending").sum()) if "status" in db_view else 0),
             ("Reviewed", int((db_view["status"].fillna("") == "reviewed").sum()) if "status" in db_view else 0),
         ])
+        if "amount_usd" in db_view.columns and "amount" in db_view.columns:
+            missing_usd_mask = (
+                pd.to_numeric(db_view["amount"], errors="coerce").fillna(0).abs().gt(0.005)
+                & pd.to_numeric(db_view["amount_usd"], errors="coerce").isna()
+            )
+            if missing_usd_mask.any():
+                missing_rate_types = sorted(
+                    value
+                    for value in db_view.loc[missing_usd_mask, "rate_type"].fillna("").astype(str).str.strip().unique()
+                    if value
+                ) if "rate_type" in db_view.columns else []
+                rate_note = f" Missing rate type(s): {', '.join(missing_rate_types)}." if missing_rate_types else ""
+                st.warning(
+                    f"{int(missing_usd_mask.sum())} visible row(s) still have no USD equivalent after automatic backfill."
+                    f"{rate_note} Check Setup > Rates and then use Fill missing USD equivalents."
+                )
         render_bulk_categorise_panel(db_view, categories, "database")
         render_category_correction_panel(
             db_view,
@@ -2353,8 +2419,10 @@ elif page == "Database":
                     options=[""] + categories,
                     required=False,
                 ),
-                "subcategory": st.column_config.TextColumn(
+                "subcategory": st.column_config.SelectboxColumn(
                     "Subcategory",
+                    options=[""] + subcategories,
+                    required=False,
                     help="Use the filtered correction panel for dropdown selection. Known subcategories automatically align the category when saved.",
                 ),
                 "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
@@ -2555,6 +2623,7 @@ elif page == "Reports":
     )
 
     st.subheader("Sample Expenses Report")
+    ensure_usd_backfilled(show_message=True)
     reviewed = get_saved_transactions()
     categories_df = get_categories(include_subcategories=True)
 
@@ -2745,6 +2814,10 @@ elif page == "Setup":
                 .tolist()
             )
             default_visible_groups = [group for group in default_visible_groups if group in setup_report_groups]
+            known_setting_groups = set(group_settings["report_group"].fillna("").astype(str).str.strip())
+            default_visible_groups.extend(
+                group for group in setup_report_groups if group not in known_setting_groups
+            )
         selected_visible_groups = st.multiselect(
             "Reporting groups shown in Executive Summary",
             setup_report_groups,

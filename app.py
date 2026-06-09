@@ -1672,7 +1672,7 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
         st.info("No rows available for this level.")
         return
     display_months = months if show_all_months else months[-1:]
-    widths = [2.4, 1, 0.75, 1] + [1 for _ in display_months] + [1.25, 0.85, 1.25, 1, 0.85, 1]
+    widths = [2.4, 1, 0.75, 1] + [1 for _ in display_months] + [1.25, 1.25, 1.25]
     header_cols = st.columns(widths)
     col_idx = 0
     header_cols[col_idx].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
@@ -1689,11 +1689,8 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
     trend_end = _executive_short_month_label(months[-1] if months else None)
     tail_labels = [
         "Change from previous month",
-        "% change",
         "Status from previous month",
         f"Trend {trend_start}-{trend_end}",
-        "% trend",
-        "Trend status",
     ]
     for label in tail_labels:
         col_idx += 1
@@ -1722,27 +1719,12 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
         )
         col_idx += 1
         cols[col_idx].markdown(
-            f"<div class=\"drill-cell {row['trend_class']}\">{_percent(row['change_pct'])}</div>",
-            unsafe_allow_html=True,
-        )
-        col_idx += 1
-        cols[col_idx].markdown(
             f"<div class=\"drill-cell {row['trend_class']}\">{row['trend_text']}</div>",
             unsafe_allow_html=True,
         )
         col_idx += 1
         cols[col_idx].markdown(
             f"<div class=\"drill-cell {row['period_trend_class']}\">{_money(row['period_change'])}</div>",
-            unsafe_allow_html=True,
-        )
-        col_idx += 1
-        cols[col_idx].markdown(
-            f"<div class=\"drill-cell {row['period_trend_class']}\">{_percent(row['period_change_pct'])}</div>",
-            unsafe_allow_html=True,
-        )
-        col_idx += 1
-        cols[col_idx].markdown(
-            f"<div class=\"drill-cell {row['period_trend_class']}\">{row['period_trend_text']}</div>",
             unsafe_allow_html=True,
         )
 
@@ -2162,12 +2144,13 @@ def render_executive_report():
 
     _, expenses, _, _ = _prepare_report_data(filtered, categories_df)
     all_report_groups = _executive_report_group_options(categories_df, expenses)
-    report_mode = st.radio(
+    report_options = ["Areti working report (all groups)", "TB Family Office report (selected groups)"]
+    report_mode = st.segmented_control(
         "Executive report type",
-        ["Areti working report (all groups)", "TB Family Office report (selected groups)"],
-        horizontal=True,
+        report_options,
+        default=report_options[0],
         key="executive_report_type",
-    )
+    ) or report_options[0]
     show_all_months = st.toggle(
         "Show all months plus SUM",
         value=False,

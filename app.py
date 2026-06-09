@@ -1364,10 +1364,15 @@ def render_setup_loader(key_prefix):
 
 
 EXECUTIVE_REPORT_PAGE = "Executive Summary"
+SHARED_EXECUTIVE_REPORT_PAGES = {"Boss Report", "Read Only Report"}
 
 
 def is_executive_report_request():
-    return st.query_params.get("page") in {EXECUTIVE_REPORT_PAGE, "Boss Report", "Read Only Report"}
+    return st.query_params.get("page") in {EXECUTIVE_REPORT_PAGE, *SHARED_EXECUTIVE_REPORT_PAGES}
+
+
+def _is_shared_executive_report_request():
+    return st.query_params.get("page") in SHARED_EXECUTIVE_REPORT_PAGES
 
 
 def _money(value):
@@ -1672,7 +1677,24 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
         st.info("No rows available for this level.")
         return
     display_months = months if show_all_months else months[-1:]
-    widths = [2.4, 1, 0.75, 1] + [1 for _ in display_months] + [1.25, 1.25, 1.25]
+    trend_start = _executive_short_month_label(months[0] if months else None)
+    trend_end = _executive_short_month_label(months[-1] if months else None)
+    if show_all_months:
+        tail_defs = [
+            ("change", "Change from previous month", 1.25, lambda row: _money(row["change"]), "trend_class"),
+            ("change_pct", "% change", 0.85, lambda row: _percent(row["change_pct"]), "trend_class"),
+            ("trend_text", "Status from previous month", 1.25, lambda row: row["trend_text"], "trend_class"),
+            ("period_change", f"Trend {trend_start}-{trend_end}", 1.25, lambda row: _money(row["period_change"]), "period_trend_class"),
+            ("period_change_pct", "% trend", 0.85, lambda row: _percent(row["period_change_pct"]), "period_trend_class"),
+            ("period_trend_text", "Trend status", 1.15, lambda row: row["period_trend_text"], "period_trend_class"),
+        ]
+    else:
+        tail_defs = [
+            ("change", "Change from previous month", 1.25, lambda row: _money(row["change"]), "trend_class"),
+            ("trend_text", "Status from previous month", 1.25, lambda row: row["trend_text"], "trend_class"),
+            ("period_change", f"Trend {trend_start}-{trend_end}", 1.25, lambda row: _money(row["period_change"]), "period_trend_class"),
+        ]
+    widths = [2.4, 1, 0.75, 1] + [1 for _ in display_months] + [width for _, _, width, _, _ in tail_defs]
     header_cols = st.columns(widths)
     col_idx = 0
     header_cols[col_idx].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
@@ -1685,14 +1707,7 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
             f"<div class=\"summary-label\">{escape(month_labels[month])}</div>",
             unsafe_allow_html=True,
         )
-    trend_start = _executive_short_month_label(months[0] if months else None)
-    trend_end = _executive_short_month_label(months[-1] if months else None)
-    tail_labels = [
-        "Change from previous month",
-        "Status from previous month",
-        f"Trend {trend_start}-{trend_end}",
-    ]
-    for label in tail_labels:
+    for _, label, _, _, _ in tail_defs:
         col_idx += 1
         header_cols[col_idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
 
@@ -1712,21 +1727,13 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
                 f"<div class=\"drill-cell\">{_money(row['months'].get(month, 0.0))}</div>",
                 unsafe_allow_html=True,
             )
-        col_idx += 1
-        cols[col_idx].markdown(
-            f"<div class=\"drill-cell {row['trend_class']}\">{_money(row['change'])}</div>",
-            unsafe_allow_html=True,
-        )
-        col_idx += 1
-        cols[col_idx].markdown(
-            f"<div class=\"drill-cell {row['trend_class']}\">{row['trend_text']}</div>",
-            unsafe_allow_html=True,
-        )
-        col_idx += 1
-        cols[col_idx].markdown(
-            f"<div class=\"drill-cell {row['period_trend_class']}\">{_money(row['period_change'])}</div>",
-            unsafe_allow_html=True,
-        )
+        for _, _, _, formatter, class_key in tail_defs:
+            col_idx += 1
+            css_class = row.get(class_key, "trend-flat")
+            cols[col_idx].markdown(
+                f"<div class=\"drill-cell {css_class}\">{formatter(row)}</div>",
+                unsafe_allow_html=True,
+            )
 
 
 def _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory):
@@ -2113,10 +2120,61 @@ def _render_executive_drilldown(
     _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory)
 
 
+def _render_executive_completeness_check(filtered_transactions, categories_df, visible_report_groups):
+    from reporting import build_report_verification
+
+    summary, detail = build_report_verification(filtered_transactions, categories_df)
+    visible_set = {str(group or "").strip() for group in (visible_report_groups or [])}
+    report_groups = (
+        detail.get("Reporting group", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    hidden_rows = int((~report_groups.isin(visible_set) & report_groups.ne("")).sum()) if visible_set else 0
+    missing_groups = int(report_groups.eq("").sum()) if not detail.empty else 0
+    render_summary_strip([
+        ("Completeness checked", summary.get("database_rows", 0)),
+        ("Represented rows", summary.get("represented_rows", 0)),
+        ("Needs attention", summary.get("rows_needing_attention", 0)),
+        ("Hidden by visibility", hidden_rows),
+    ])
+    if summary.get("rows_needing_attention", 0) or missing_groups or hidden_rows:
+        st.warning(
+            "Report completeness check found rows to review. Open the audit below to see whether rows are missing "
+            "USD equivalents/rates, missing reporting groups, or hidden by the selected Executive visibility list."
+        )
+    else:
+        st.success("Report completeness check passed for the current period.")
+
+    audit_cols = [
+        "Database ID",
+        "Date",
+        "Account",
+        "Bank",
+        "Account number",
+        "Currency",
+        "Statement amount",
+        "USD equivalent",
+        "Category",
+        "Subcategory",
+        "Reporting group",
+        "Report status",
+        "Full statement description",
+    ]
+    with st.expander("Report completeness audit", expanded=False):
+        st.dataframe(
+            detail[[col for col in audit_cols if col in detail.columns]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def render_executive_report():
     from reporting import _prepare_report_data
 
-    st.subheader("Executive Summary")
+    shared_report = _is_shared_executive_report_request()
+    st.subheader("TB Family Office Executive Expenses Report" if shared_report else "Executive Summary")
 
     ensure_usd_backfilled()
     reviewed = get_saved_transactions()
@@ -2133,7 +2191,11 @@ def render_executive_report():
         if not pd.isna(parsed_requested_end):
             default_end = parsed_requested_end.date()
 
-    cutoff = st.date_input("Report until", value=default_end, key="executive_report_until")
+    if shared_report:
+        cutoff = default_end
+        st.caption(f"Report until {cutoff.strftime('%d/%m/%Y')}")
+    else:
+        cutoff = st.date_input("Report until", value=default_end, key="executive_report_until")
     cutoff_ts = pd.Timestamp(cutoff)
     reviewed = reviewed.copy()
     reviewed["txn_date"] = pd.to_datetime(reviewed["txn_date"], errors="coerce")
@@ -2144,22 +2206,29 @@ def render_executive_report():
 
     _, expenses, _, _ = _prepare_report_data(filtered, categories_df)
     all_report_groups = _executive_report_group_options(categories_df, expenses)
-    report_options = ["Areti working report (all groups)", "TB Family Office report (selected groups)"]
-    report_mode = st.segmented_control(
-        "Executive report type",
-        report_options,
-        default=report_options[0],
-        key="executive_report_type",
-    ) or report_options[0]
-    show_all_months = st.toggle(
-        "Show all months plus SUM",
-        value=False,
-        key="executive_show_all_months",
-    )
-    if report_mode.startswith("Areti"):
-        visible_report_groups = all_report_groups
+    if shared_report:
+        visible_report_groups = _executive_default_visible_groups(all_report_groups)
+        if not visible_report_groups:
+            visible_report_groups = all_report_groups
+        show_all_months = False
     else:
-        visible_report_groups = _render_executive_group_visibility_control(all_report_groups)
+        report_options = ["Areti working report (all groups)", "TB Family Office report (selected groups)"]
+        report_mode = st.segmented_control(
+            "Executive report type",
+            report_options,
+            default=report_options[0],
+            key="executive_report_type",
+        ) or report_options[0]
+        show_all_months = st.toggle(
+            "Analytical view: show all months and hidden columns",
+            value=False,
+            key="executive_show_all_months",
+        )
+        if report_mode.startswith("Areti"):
+            visible_report_groups = all_report_groups
+        else:
+            visible_report_groups = _render_executive_group_visibility_control(all_report_groups)
+        _render_executive_completeness_check(filtered, categories_df, visible_report_groups)
 
     if visible_report_groups:
         expenses = expenses[
@@ -2173,7 +2242,8 @@ def render_executive_report():
     current_month = cutoff_ts.to_period("M")
     month_window = _executive_month_window(current_month)
     month_labels = _executive_month_labels(month_window)
-    _render_family_analysis_button(expenses, month_window, month_labels)
+    if not shared_report:
+        _render_family_analysis_button(expenses, month_window, month_labels)
     _render_executive_drilldown(
         expenses,
         month_window,

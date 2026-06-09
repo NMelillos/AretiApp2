@@ -329,6 +329,7 @@ def _parse_revolut_pdf_text(text):
     rows = []
     current = None
     section_currency = ""
+    in_account_transactions = False
 
     def add_current():
         nonlocal current
@@ -352,10 +353,24 @@ def _parse_revolut_pdf_text(text):
         if section_match:
             add_current()
             section_currency = section_match.group(1).upper()
+            in_account_transactions = False
+            continue
+
+        lower_line = line.lower()
+        if lower_line.startswith("account transactions from ") or lower_line == "transaction statement":
+            add_current()
+            in_account_transactions = True
+            continue
+
+        if lower_line.startswith(("pending from ", "reverted from ")):
+            add_current()
+            in_account_transactions = False
             continue
 
         date_match = MONTH_DATE_RE.match(line)
         if date_match:
+            if not in_account_transactions:
+                continue
             add_current()
 
             date_value = _parse_pdf_date(date_match.group("date"))

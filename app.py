@@ -1371,7 +1371,15 @@ def is_executive_report_request():
 
 
 def _money(value):
-    return format_currency(value)
+    if value is None or pd.isna(value):
+        return "-"
+    try:
+        amount = round(float(value))
+    except Exception:
+        return "-"
+    if amount < 0:
+        return f"-${abs(amount):,.0f}"
+    return f"${amount:,.0f}"
 
 
 def _percent(value):

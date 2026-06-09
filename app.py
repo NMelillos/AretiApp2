@@ -1508,6 +1508,16 @@ def _executive_report_group_options(categories_df, expenses):
     from reporting import get_report_groups
 
     setup_groups = get_report_groups(categories_df)
+    saved_settings = get_report_group_settings()
+    saved_groups = (
+        saved_settings.get("report_group", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .tolist()
+        if not saved_settings.empty
+        else []
+    )
     data_groups = (
         expenses.get("report_group", pd.Series(dtype=str))
         .fillna("")
@@ -1517,7 +1527,7 @@ def _executive_report_group_options(categories_df, expenses):
         if not expenses.empty
         else []
     )
-    return _ordered_text_values(setup_groups + sorted(data_groups))
+    return _ordered_text_values(setup_groups + sorted(data_groups) + saved_groups)
 
 
 def _executive_default_visible_groups(all_report_groups):
@@ -1546,6 +1556,33 @@ def _save_executive_visible_groups(all_report_groups, visible_groups):
     return replace_report_group_settings(settings_df)
 
 
+def _render_report_group_visibility_editor(all_report_groups, default_visible_groups, key_prefix):
+    editor_df = pd.DataFrame({
+        "visible": [group in default_visible_groups for group in all_report_groups],
+        "report_group": all_report_groups,
+    })
+    edited = st.data_editor(
+        editor_df,
+        hide_index=True,
+        width="stretch",
+        column_order=["visible", "report_group"],
+        column_config={
+            "visible": st.column_config.CheckboxColumn("Show", width="small"),
+            "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
+        },
+        disabled=["report_group"],
+        key=f"{key_prefix}_visibility_table",
+    )
+    visible_groups = (
+        edited.loc[edited["visible"].fillna(False).astype(bool), "report_group"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .tolist()
+    )
+    return _ordered_text_values(visible_groups)
+
+
 def _render_executive_group_visibility_control(all_report_groups):
     if not all_report_groups:
         return []
@@ -1554,11 +1591,10 @@ def _render_executive_group_visibility_control(all_report_groups):
         default_visible_groups = all_report_groups
 
     with st.expander("Manage reporting groups shown", expanded=False):
-        selected_visible_groups = st.multiselect(
-            "Reporting groups included in this Executive Summary",
+        selected_visible_groups = _render_report_group_visibility_editor(
             all_report_groups,
-            default=default_visible_groups,
-            key="executive_visible_groups_inline",
+            default_visible_groups,
+            "executive_inline",
         )
         c1, c2 = st.columns([1, 1])
         with c1:
@@ -3101,9 +3137,19 @@ elif page == "Setup":
         for group in setup_categories.get("report_group", pd.Series(dtype=str)).fillna("").astype(str).str.strip().unique()
         if group and not group.lower().startswith("0-")
     )
+    group_settings = get_report_group_settings()
+    saved_setup_groups = (
+        group_settings.get("report_group", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .tolist()
+        if not group_settings.empty
+        else []
+    )
+    setup_report_groups = _ordered_text_values(setup_report_groups + saved_setup_groups)
     if setup_report_groups:
         st.markdown("### Executive Report Visibility")
-        group_settings = get_report_group_settings()
         if group_settings.empty:
             default_visible_groups = setup_report_groups
         else:
@@ -3118,16 +3164,43 @@ elif page == "Setup":
             default_visible_groups.extend(
                 group for group in setup_report_groups if group not in known_setting_groups
             )
-        selected_visible_groups = st.multiselect(
-            "Reporting groups shown in Executive Summary",
+        selected_visible_groups = _render_report_group_visibility_editor(
             setup_report_groups,
-            default=default_visible_groups,
-            key="executive_visible_groups",
+            default_visible_groups,
+            "setup_executive",
         )
-        if st.button("Save executive report visibility"):
+        new_visibility_group = st.text_input("Add reporting group to the visibility list")
+        c_show, c_save = st.columns([1, 1])
+        with c_show:
+            if st.button("Show all executive report groups", key="setup_show_all_executive_groups"):
+                count = _save_executive_visible_groups(setup_report_groups, setup_report_groups)
+                st.success(f"All {count} reporting groups are now shown.")
+                st.cache_data.clear()
+                st.rerun()
+        with c_save:
+            if st.button("Save executive report visibility"):
+                extra_group = str(new_visibility_group or "").strip()
+                groups_to_save = _ordered_text_values(setup_report_groups + ([extra_group] if extra_group else []))
+                visible_to_save = _ordered_text_values(selected_visible_groups + ([extra_group] if extra_group else []))
+                if not visible_to_save:
+                    st.warning("Select at least one reporting group before saving.")
+                    st.stop()
+                count = _save_executive_visible_groups(groups_to_save, visible_to_save)
+                st.success(f"Saved visibility for {count} reporting groups.")
+                st.cache_data.clear()
+                st.rerun()
+    else:
+        st.markdown("### Executive Report Visibility")
+        st.info("No reporting groups are loaded yet. Add them through the Expense categories file or add a category row below.")
+        new_visibility_group = st.text_input("Add reporting group to the visibility list")
+        if st.button("Save new executive reporting group"):
+            extra_group = str(new_visibility_group or "").strip()
+            if not extra_group:
+                st.warning("Enter a reporting group name first.")
+                st.stop()
             settings_df = pd.DataFrame({
-                "report_group": setup_report_groups,
-                "visible": [group in selected_visible_groups for group in setup_report_groups],
+                "report_group": [extra_group],
+                "visible": [True],
             })
             count = replace_report_group_settings(settings_df)
             st.success(f"Saved visibility for {count} reporting groups.")

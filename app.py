@@ -538,6 +538,14 @@ st.markdown(
     div[data-testid="stHorizontalBlock"]:has(.drill-cell) div[data-testid="stButton"] {
         margin: 0 !important;
     }
+    div[data-testid="stHorizontalBlock"]:has(.drill-cell) div[data-testid="stElementContainer"] {
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+    div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stHorizontalBlock"] .drill-cell) {
+        margin: 0 !important;
+        padding: 0 !important;
+    }
     div[data-testid="stHorizontalBlock"]:has(.drill-cell) button {
         min-height: 22px !important;
         padding: 1px 5px !important;
@@ -1378,6 +1386,12 @@ def _executive_month_labels(months):
     return {month: month.to_timestamp().strftime("%B %Y") for month in months}
 
 
+def _executive_short_month_label(month):
+    if month is None:
+        return ""
+    return month.to_timestamp().strftime("%b")
+
+
 def _executive_row_html(group, metrics, months):
     month_cells = "".join(
         f"<td>{_money(metrics['months'].get(month, 0.0))}</td>"
@@ -1417,14 +1431,19 @@ def _executive_metric_values(frame, months, denominator=0.0):
     total_amount = float(frame["expense_usd"].sum()) if "expense_usd" in frame.columns else 0.0
     current_month = months[-1] if months else None
     previous_month = months[-2] if len(months) > 1 else None
+    first_month = months[0] if months else None
     current_amount = month_values.get(current_month, 0.0)
     previous_amount = month_values.get(previous_month, 0.0)
+    first_amount = month_values.get(first_month, 0.0)
     change = current_amount - previous_amount
     trend_class, trend_text = _executive_trend(change)
+    period_change = current_amount - first_amount
+    period_trend_class, period_trend_text = _executive_trend(period_change)
     return {
         "months": month_values,
         "current": current_amount,
         "previous": previous_amount,
+        "period_start": first_amount,
         "total": total_amount,
         "share_pct": (total_amount / denominator * 100) if abs(denominator) > 0.005 else None,
         "average": (sum(month_values.values()) / len(month_values)) if month_values else 0.0,
@@ -1432,6 +1451,10 @@ def _executive_metric_values(frame, months, denominator=0.0):
         "change_pct": _executive_change_pct(change, previous_amount),
         "trend_class": trend_class,
         "trend_text": trend_text,
+        "period_change": period_change,
+        "period_change_pct": _executive_change_pct(period_change, first_amount),
+        "period_trend_class": period_trend_class,
+        "period_trend_text": period_trend_text,
     }
 
 
@@ -1578,44 +1601,70 @@ def _render_executive_click_rows(title, rows, level, months, month_labels):
     if not rows:
         st.info("No rows available for this level.")
         return
-    widths = [2.4] + [1 for _ in months] + [1, 0.75, 1, 1, 0.85, 1]
+    widths = [2.4, 1, 0.75, 1] + [1 for _ in months] + [1, 0.85, 1, 1, 0.85, 1]
     header_cols = st.columns(widths)
-    header_cols[0].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
-    for idx, month in enumerate(months, start=1):
-        header_cols[idx].markdown(
+    col_idx = 0
+    header_cols[col_idx].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
+    for label in ["SUM", "%", "Average"]:
+        col_idx += 1
+        header_cols[col_idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
+    for month in months:
+        col_idx += 1
+        header_cols[col_idx].markdown(
             f"<div class=\"summary-label\">{escape(month_labels[month])}</div>",
             unsafe_allow_html=True,
         )
-    tail_labels = ["SUM", "%", "Average", "Change", "% change", "Status"]
-    for idx, label in enumerate(tail_labels, start=1 + len(months)):
-        header_cols[idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
+    trend_start = _executive_short_month_label(months[0] if months else None)
+    trend_end = _executive_short_month_label(months[-1] if months else None)
+    tail_labels = ["Change", "% change", "Status", f"Trend {trend_start}-{trend_end}", "% trend", "Trend status"]
+    for label in tail_labels:
+        col_idx += 1
+        header_cols[col_idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
 
     for idx, row in enumerate(rows):
         cols = st.columns(widths)
-        with cols[0]:
+        col_idx = 0
+        with cols[col_idx]:
             if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
                 _set_executive_selection(level, row["value"])
                 st.rerun()
-        for month_index, month in enumerate(months, start=1):
-            cols[month_index].markdown(
+        for value in [_money(row["total"]), _percent(row["share_pct"]), _money(row["average"])]:
+            col_idx += 1
+            cols[col_idx].markdown(f"<div class=\"drill-cell\">{value}</div>", unsafe_allow_html=True)
+        for month in months:
+            col_idx += 1
+            cols[col_idx].markdown(
                 f"<div class=\"drill-cell\">{_money(row['months'].get(month, 0.0))}</div>",
                 unsafe_allow_html=True,
             )
-        sum_index = 1 + len(months)
-        cols[sum_index].markdown(f"<div class=\"drill-cell\">{_money(row['total'])}</div>", unsafe_allow_html=True)
-        cols[sum_index + 1].markdown(f"<div class=\"drill-cell\">{_percent(row['share_pct'])}</div>", unsafe_allow_html=True)
-        avg_index = sum_index + 2
-        cols[avg_index].markdown(f"<div class=\"drill-cell\">{_money(row['average'])}</div>", unsafe_allow_html=True)
-        cols[avg_index + 1].markdown(
+        col_idx += 1
+        cols[col_idx].markdown(
             f"<div class=\"drill-cell {row['trend_class']}\">{_money(row['change'])}</div>",
             unsafe_allow_html=True,
         )
-        cols[avg_index + 2].markdown(
+        col_idx += 1
+        cols[col_idx].markdown(
             f"<div class=\"drill-cell {row['trend_class']}\">{_percent(row['change_pct'])}</div>",
             unsafe_allow_html=True,
         )
-        cols[avg_index + 3].markdown(
+        col_idx += 1
+        cols[col_idx].markdown(
             f"<div class=\"drill-cell {row['trend_class']}\">{row['trend_text']}</div>",
+            unsafe_allow_html=True,
+        )
+        col_idx += 1
+        cols[col_idx].markdown(
+            f"<div class=\"drill-cell {row['period_trend_class']}\">{_money(row['period_change'])}</div>",
+            unsafe_allow_html=True,
+        )
+        col_idx += 1
+        cols[col_idx].markdown(
+            f"<div class=\"drill-cell {row['period_trend_class']}\">{_percent(row['period_change_pct'])}</div>",
+            unsafe_allow_html=True,
+        )
+        col_idx += 1
+        cols[col_idx].markdown(
+            f"<div class=\"drill-cell {row['period_trend_class']}\">{row['period_trend_text']}</div>",
             unsafe_allow_html=True,
         )
 
@@ -1664,7 +1713,6 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
 
     visible = detail_view[[col for col in display_cols if col in detail_view.columns]].copy()
     categories = get_categories()
-    subcategories = get_subcategories()
     render_summary_strip([
         ("Rows", len(visible)),
         ("Total", _money(detail_view["expense_usd"].sum())),
@@ -1672,6 +1720,7 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         ("Subcategory", selected_subcategory or "No subcategory"),
     ])
     render_bulk_categorise_panel(detail_view, categories, "executive_detail")
+    filtered_subcategories = get_subcategories(selected_category) or get_subcategories()
     edited_detail = st.data_editor(
         visible,
         use_container_width=True,
@@ -1689,9 +1738,9 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
             "category": st.column_config.SelectboxColumn("Category", options=[""] + categories, required=False),
             "subcategory": st.column_config.SelectboxColumn(
                 "Subcategory",
-                options=[""] + subcategories,
+                options=[""] + filtered_subcategories,
                 required=False,
-                help="Use the filtered correction panel for dropdown selection. Known subcategories automatically align the category when saved.",
+                help="Only subcategories connected to the selected category are shown here.",
             ),
             "reviewed": st.column_config.CheckboxColumn(
                 "Reviewed",
@@ -1897,7 +1946,6 @@ def _render_family_analysis_button(expenses, months, month_labels):
 
 
 def _render_executive_drilldown(expenses, months, month_labels, visible_report_groups=None):
-    st.markdown("### Drill-down")
     selected_group = _valid_executive_selection(
         expenses,
         "report_group",
@@ -1922,11 +1970,6 @@ def _render_executive_drilldown(expenses, months, month_labels, visible_report_g
         st.session_state.pop("executive_category", None)
     if selected_subcategory != st.session_state.get("executive_subcategory"):
         st.session_state.pop("executive_subcategory", None)
-
-    if st.button("Clear drill-down selection"):
-        for key in ["executive_group", "executive_category", "executive_subcategory"]:
-            st.session_state.pop(key, None)
-        st.rerun()
 
     if selected_group:
         trail = f"Reporting group: {selected_group}"

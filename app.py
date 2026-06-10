@@ -26,6 +26,7 @@ from db import (
     backfill_missing_usd_amounts,
     build_statement_hash,
     dataframe_to_excel_bytes,
+    exclude_transactions,
     full_reset_database,
     get_accounts,
     get_all_transactions,
@@ -54,6 +55,7 @@ from db import (
     replace_report_group_settings,
     replace_rates_from_excel,
     reset_runtime_data,
+    restore_transactions,
     record_duplicate_statement_attempt,
     save_pending_transactions,
     save_statement_balance,
@@ -1137,6 +1139,80 @@ def render_category_correction_panel(df, categories, key_prefix, title="Correct 
                 st.rerun()
             else:
                 st.warning("No transaction was updated.")
+
+
+def render_transaction_exclusion_panel(df, key_prefix):
+    if df.empty or "id" not in df.columns:
+        return
+    working = df.dropna(subset=["id"]).copy()
+    if working.empty:
+        return
+    working["id"] = working["id"].astype(int)
+    if "status" in working.columns:
+        working["_status_key"] = working["status"].fillna("pending").astype(str).str.strip().str.casefold()
+    else:
+        working["_status_key"] = "pending"
+    active_rows = working[working["_status_key"] != "excluded"].copy()
+    excluded_rows = working[working["_status_key"] == "excluded"].copy()
+
+    with st.expander("Exclude or restore transactions"):
+        st.caption(
+            "Use this instead of a hard delete. Excluded rows are hidden from Pending Review, active reports, "
+            "active duplicate checks, and the normal Database view, but remain in the backup and change log."
+        )
+
+        if active_rows.empty:
+            st.info("No active rows are visible in the current filter.")
+        else:
+            active_labels = {_transaction_label(row): int(row["id"]) for _, row in active_rows.iterrows()}
+            selected_exclude = st.multiselect(
+                "Transactions to exclude",
+                list(active_labels.keys()),
+                key=f"{key_prefix}_exclude_ids",
+                help="Filter/search the Database first, then select only the rows you want to remove from active data.",
+            )
+            exclude_reason = st.text_input(
+                "Reason / note",
+                value="duplicate or not required",
+                key=f"{key_prefix}_exclude_reason",
+            )
+            confirm_exclude = st.checkbox(
+                "I confirm these selected rows should be excluded from active data, not hard deleted.",
+                key=f"{key_prefix}_exclude_confirm",
+            )
+            if st.button(
+                "Exclude selected transactions",
+                type="primary",
+                disabled=not selected_exclude or not confirm_exclude,
+                key=f"{key_prefix}_exclude_apply",
+            ):
+                count = exclude_transactions([active_labels[label] for label in selected_exclude], exclude_reason)
+                st.success(f"Excluded {count} transaction row(s). They remain recoverable in backup/change log.")
+                st.cache_data.clear()
+                st.rerun()
+
+        if excluded_rows.empty:
+            st.caption("No excluded rows are visible in the current filter.")
+        else:
+            excluded_labels = {_transaction_label(row): int(row["id"]) for _, row in excluded_rows.iterrows()}
+            selected_restore = st.multiselect(
+                "Excluded transactions to restore",
+                list(excluded_labels.keys()),
+                key=f"{key_prefix}_restore_ids",
+            )
+            confirm_restore = st.checkbox(
+                "I confirm these selected rows should be restored to active data.",
+                key=f"{key_prefix}_restore_confirm",
+            )
+            if st.button(
+                "Restore selected transactions",
+                disabled=not selected_restore or not confirm_restore,
+                key=f"{key_prefix}_restore_apply",
+            ):
+                count = restore_transactions([excluded_labels[label] for label in selected_restore])
+                st.success(f"Restored {count} transaction row(s).")
+                st.cache_data.clear()
+                st.rerun()
 
 
 def render_bulk_categorise_panel(df, categories, key_prefix):
@@ -2617,6 +2693,7 @@ elif page == "Import History":
                 ("Database rows", int(pd.to_numeric(import_audit["database_rows"], errors="coerce").fillna(0).sum())),
                 ("Pending rows", int(pd.to_numeric(import_audit["pending_rows"], errors="coerce").fillna(0).sum())),
                 ("Reviewed rows", int(pd.to_numeric(import_audit["reviewed_rows"], errors="coerce").fillna(0).sum())),
+                ("Excluded rows", int(pd.to_numeric(import_audit.get("excluded_rows", pd.Series(dtype=int)), errors="coerce").fillna(0).sum())),
                 ("Missing USD", int(pd.to_numeric(import_audit["missing_usd_rows"], errors="coerce").fillna(0).sum())),
             ])
             audit_search = st.text_input("Search all imported rows by statement", key="import_audit_search")
@@ -2634,6 +2711,7 @@ elif page == "Import History":
                 "database_rows",
                 "pending_rows",
                 "reviewed_rows",
+                "excluded_rows",
                 "duplicate_flagged_rows",
                 "missing_usd_rows",
                 "account_name",
@@ -2848,16 +2926,27 @@ elif page == "Pending Review":
 elif page == "Database":
     st.subheader("Database")
     ensure_usd_backfilled(show_message=True)
-    all_tx = get_all_transactions()
+    all_tx_raw = get_all_transactions()
     categories_df = get_categories(include_subcategories=True)
     categories = sorted(
         categories_df.get("category", pd.Series(dtype=str)).dropna().astype(str).unique().tolist()
     )
     subcategories = get_subcategories()
 
-    if all_tx.empty:
+    if all_tx_raw.empty:
         st.info("No transactions imported yet.")
     else:
+        all_tx = all_tx_raw.copy()
+        all_tx["_status_key"] = all_tx["status"].fillna("pending").astype(str).str.strip().str.casefold()
+        excluded_total = int((all_tx["_status_key"] == "excluded").sum())
+        show_excluded = st.checkbox(
+            "Show excluded transactions",
+            value=False,
+            help="Excluded rows are recoverable but hidden from active reports, Pending Review, and duplicate checks.",
+        )
+        if not show_excluded:
+            all_tx = all_tx[all_tx["_status_key"] != "excluded"].copy()
+        all_tx = all_tx.drop(columns=["_status_key"], errors="ignore")
         all_tx = add_report_group_column(all_tx, categories_df)
         db_filtered = transaction_filter_controls(all_tx, "database")
         search = st.text_input("Search database")
@@ -2874,6 +2963,7 @@ elif page == "Database":
             ("Accounts", db_view["account_name"].replace("", pd.NA).dropna().nunique()),
             ("Pending", int((db_view["status"].fillna("pending") == "pending").sum()) if "status" in db_view else 0),
             ("Reviewed", int((db_view["status"].fillna("") == "reviewed").sum()) if "status" in db_view else 0),
+            ("Excluded", excluded_total),
         ])
         if "amount_usd" in db_view.columns and "amount" in db_view.columns:
             missing_usd_mask = (
@@ -2898,6 +2988,7 @@ elif page == "Database":
             "database_single",
             "Correct one database transaction with filtered subcategories",
         )
+        render_transaction_exclusion_panel(db_view, "database")
         editable_cols = [
             "id",
             "status",
@@ -2922,7 +3013,7 @@ elif page == "Database":
             height=620,
             column_config={
                 "id": st.column_config.NumberColumn("ID", disabled=True),
-                "status": st.column_config.SelectboxColumn("Status", options=["pending", "reviewed"]),
+                "status": st.column_config.SelectboxColumn("Status", options=["pending", "reviewed", "excluded"]),
                 "reviewed": st.column_config.CheckboxColumn("Reviewed"),
                 "original_description": st.column_config.TextColumn(
                     "Full statement description",
@@ -2944,11 +3035,37 @@ elif page == "Database":
             },
             key="database_editor",
         )
+        original_status = {}
+        if "id" in db_view.columns and "status" in db_view.columns:
+            original_status = {
+                int(row["id"]): str(row.get("status", "") or "").strip().casefold()
+                for _, row in db_view.dropna(subset=["id"]).iterrows()
+            }
+        edited_excluded_ids = []
+        if "id" in db_edit.columns and "status" in db_edit.columns:
+            for _, row in db_edit.dropna(subset=["id"]).iterrows():
+                row_id = int(row["id"])
+                new_status = str(row.get("status", "") or "").strip().casefold()
+                if new_status == "excluded" and original_status.get(row_id) != "excluded":
+                    edited_excluded_ids.append(row_id)
+        confirm_editor_exclude = True
+        if edited_excluded_ids:
+            st.warning(
+                f"{len(edited_excluded_ids)} row(s) were changed to excluded in the editor. "
+                "Confirm before applying because these rows will be hidden from active reports and review."
+            )
+            confirm_editor_exclude = st.checkbox(
+                "Confirm editor status changes to excluded",
+                key="database_editor_exclude_confirm",
+            )
         if st.button("Apply database edits", type="primary"):
-            count = update_database_rows(db_edit)
-            st.success(f"Updated {count} rows.")
-            st.cache_data.clear()
-            st.rerun()
+            if edited_excluded_ids and not confirm_editor_exclude:
+                st.error("No changes applied. Please confirm excluded status changes first.")
+            else:
+                count = update_database_rows(db_edit)
+                st.success(f"Updated {count} rows.")
+                st.cache_data.clear()
+                st.rerun()
 
         if st.button("Fill missing USD equivalents"):
             count = backfill_missing_usd_amounts()

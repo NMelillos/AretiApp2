@@ -521,6 +521,7 @@ def _existing_transaction_line_lookup(cur, include_account=True, amount_sign="si
                amount, currency, bank, account_number, account_name
         FROM classified_transactions
         WHERE amount IS NOT NULL
+          AND COALESCE(status, '') <> 'excluded'
     """)
     columns = [desc[0] for desc in cur.description]
     lookup = {}
@@ -1404,9 +1405,13 @@ def get_import_transaction_audit():
                                 AND COALESCE(reviewed, 0) = 0
                            THEN 1 ELSE 0 END) AS pending_rows,
                        SUM(CASE
-                           WHEN COALESCE(status, '') = 'reviewed'
-                                OR COALESCE(reviewed, 0) = 1
+                           WHEN COALESCE(status, '') <> 'excluded'
+                                AND (COALESCE(status, '') = 'reviewed'
+                                     OR COALESCE(reviewed, 0) = 1)
                            THEN 1 ELSE 0 END) AS reviewed_rows,
+                       SUM(CASE
+                           WHEN COALESCE(status, '') = 'excluded'
+                           THEN 1 ELSE 0 END) AS excluded_rows,
                        SUM(CASE WHEN COALESCE(dup_flag, 0) = 1 THEN 1 ELSE 0 END) AS duplicate_flagged_rows,
                        SUM(CASE
                            WHEN amount IS NOT NULL
@@ -1429,6 +1434,7 @@ def get_import_transaction_audit():
                    COALESCE(tx.database_rows, 0) AS database_rows,
                    COALESCE(tx.pending_rows, 0) AS pending_rows,
                    COALESCE(tx.reviewed_rows, 0) AS reviewed_rows,
+                   COALESCE(tx.excluded_rows, 0) AS excluded_rows,
                    COALESCE(tx.duplicate_flagged_rows, 0) AS duplicate_flagged_rows,
                    COALESCE(tx.missing_usd_rows, 0) AS missing_usd_rows,
                    COALESCE(tx.account_name, '') AS account_name,
@@ -1470,6 +1476,7 @@ def get_exact_duplicate_audit():
                     FROM classified_transactions t
                     LEFT JOIN statement_imports si ON si.statement_hash = t.statement_hash
                     LEFT JOIN statement_balances sb ON sb.statement_hash = t.statement_hash
+                    WHERE COALESCE(t.status, '') <> 'excluded'
                 )
                 SELECT row_hash,
                        COUNT(*) AS duplicate_count,
@@ -1519,6 +1526,7 @@ def get_exact_duplicate_audit():
                     FROM classified_transactions t
                     LEFT JOIN statement_imports si ON si.statement_hash = t.statement_hash
                     LEFT JOIN statement_balances sb ON sb.statement_hash = t.statement_hash
+                    WHERE COALESCE(t.status, '') <> 'excluded'
                 )
                 SELECT row_hash,
                        COUNT(*) AS duplicate_count,
@@ -1577,6 +1585,7 @@ def get_cross_statement_duplicate_audit():
                     FROM classified_transactions t
                     LEFT JOIN statement_imports si ON si.statement_hash = t.statement_hash
                     LEFT JOIN statement_balances sb ON sb.statement_hash = t.statement_hash
+                    WHERE COALESCE(t.status, '') <> 'excluded'
                 )
                 SELECT txn_date,
                        currency,
@@ -1627,6 +1636,7 @@ def get_cross_statement_duplicate_audit():
                     FROM classified_transactions t
                     LEFT JOIN statement_imports si ON si.statement_hash = t.statement_hash
                     LEFT JOIN statement_balances sb ON sb.statement_hash = t.statement_hash
+                    WHERE COALESCE(t.status, '') <> 'excluded'
                 )
                 SELECT txn_date,
                        currency,
@@ -2040,7 +2050,8 @@ def get_saved_transactions():
         df = pd.read_sql_query("""
             SELECT *
             FROM classified_transactions
-            WHERE COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
+            WHERE COALESCE(status, '') <> 'excluded'
+              AND (COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1)
             ORDER BY txn_date DESC, id DESC
         """, conn)
     finally:
@@ -2061,6 +2072,80 @@ def get_all_transactions():
     return df
 
 
+def exclude_transactions(transaction_ids, reason=""):
+    ids = [int(tx_id) for tx_id in transaction_ids if str(tx_id).strip()]
+    if not ids:
+        return 0
+
+    conn = get_connection()
+    cur = conn.cursor()
+    updated = 0
+    reason_text = _clean(reason)
+    source = "database_exclude"
+    if reason_text:
+        source = f"{source}: {reason_text[:80]}"
+
+    try:
+        for tx_id in ids:
+            cur.execute("""
+                SELECT status
+                FROM classified_transactions
+                WHERE id = ?
+            """, (tx_id,))
+            existing = cur.fetchone()
+            if not existing:
+                continue
+            before_status = existing[0] or ""
+            if before_status == "excluded":
+                continue
+            cur.execute("""
+                UPDATE classified_transactions
+                SET status = 'excluded'
+                WHERE id = ?
+            """, (tx_id,))
+            updated += cur.rowcount
+            _audit_transaction_change(cur, tx_id, "status", before_status, "excluded", source)
+        conn.commit()
+    finally:
+        conn.close()
+    return updated
+
+
+def restore_transactions(transaction_ids):
+    ids = [int(tx_id) for tx_id in transaction_ids if str(tx_id).strip()]
+    if not ids:
+        return 0
+
+    conn = get_connection()
+    cur = conn.cursor()
+    updated = 0
+    try:
+        for tx_id in ids:
+            cur.execute("""
+                SELECT status, reviewed
+                FROM classified_transactions
+                WHERE id = ?
+            """, (tx_id,))
+            existing = cur.fetchone()
+            if not existing:
+                continue
+            before_status = existing[0] or ""
+            if before_status != "excluded":
+                continue
+            restored_status = "reviewed" if int(existing[1] or 0) else "pending"
+            cur.execute("""
+                UPDATE classified_transactions
+                SET status = ?
+                WHERE id = ?
+            """, (restored_status, tx_id))
+            updated += cur.rowcount
+            _audit_transaction_change(cur, tx_id, "status", before_status, restored_status, "database_restore")
+        conn.commit()
+    finally:
+        conn.close()
+    return updated
+
+
 def get_dashboard_counts():
     conn = get_connection()
     try:
@@ -2073,12 +2158,14 @@ def get_dashboard_counts():
             "pending": """
                 SELECT COUNT(*)
                 FROM classified_transactions
-                WHERE COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+                WHERE COALESCE(status, 'pending') = 'pending'
+                  AND COALESCE(reviewed, 0) = 0
             """,
             "reviewed": """
                 SELECT COUNT(*)
                 FROM classified_transactions
-                WHERE COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1
+                WHERE COALESCE(status, '') <> 'excluded'
+                  AND (COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1)
             """,
             "memory": "SELECT COUNT(*) FROM transaction_memory",
             "statements": "SELECT COUNT(*) FROM statement_imports",
@@ -2236,7 +2323,7 @@ def update_database_rows(df):
                 value = _normalize_rate_type(value, row_values.get("currency", existing_row.get("currency", "")))
             if column == "status" and not value:
                 value = "reviewed" if reviewed_value else "pending"
-            elif column == "status" and value.casefold() in {"pending", "reviewed"}:
+            elif column == "status" and value.casefold() in {"pending", "reviewed", "excluded"}:
                 value = value.casefold()
             assignments.append(f"{column} = ?")
             params.append(value)
@@ -2309,7 +2396,7 @@ def update_database_rows(df):
                     new_value = new_value.upper()
                 if column == "status" and not new_value:
                     new_value = "reviewed" if reviewed_value else "pending"
-                elif column == "status" and new_value.casefold() in {"pending", "reviewed"}:
+                elif column == "status" and new_value.casefold() in {"pending", "reviewed", "excluded"}:
                     new_value = new_value.casefold()
                 _audit_transaction_change(
                     cur,

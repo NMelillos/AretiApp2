@@ -324,6 +324,36 @@ def _append_detail(description, line):
     return f"{description} | {line}" if description else line
 
 
+def _revolut_status_counts(text):
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    counts = {"pending_rows": 0, "reverted_rows": 0}
+    section = ""
+
+    for line in lines:
+        if not line:
+            continue
+
+        lower_line = line.lower()
+        if lower_line.startswith("pending from "):
+            section = "pending"
+            continue
+        if lower_line.startswith("reverted from "):
+            section = "reverted"
+            continue
+        if lower_line.startswith("account transactions from ") or lower_line == "transaction statement":
+            section = "completed"
+            continue
+
+        if not MONTH_DATE_RE.match(line) or not _money_values_with_spans(line):
+            continue
+        if section == "pending":
+            counts["pending_rows"] += 1
+        elif section == "reverted":
+            counts["reverted_rows"] += 1
+
+    return counts
+
+
 def _parse_revolut_pdf_text(text):
     lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
     rows = []
@@ -1103,6 +1133,7 @@ def _frame_from_pdf_rows(rows):
 
 def parse_pdf(uploaded_file):
     rows = []
+    diagnostics = {}
     if pdfplumber is not None:
         uploaded_file.seek(0)
         try:
@@ -1112,6 +1143,7 @@ def parse_pdf(uploaded_file):
                 text_compact = re.sub(r"[^A-Z0-9]", "", text_upper)
                 if "Revolut Bank" in text or "Account transactions from" in text:
                     rows = _parse_revolut_pdf_text(text)
+                    diagnostics = _revolut_status_counts(text)
                 elif "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
                     rows = _parse_bank_of_cyprus_pdf_text(text)
                 elif (
@@ -1130,7 +1162,11 @@ def parse_pdf(uploaded_file):
                 if not rows:
                     rows = _parse_generic_pdf_text(text)
             if rows:
-                return _frame_from_pdf_rows(rows)
+                frame = _frame_from_pdf_rows(rows)
+                if diagnostics:
+                    diagnostics["completed_rows"] = len(frame)
+                    frame.attrs["parse_diagnostics"] = diagnostics
+                return frame
         except Exception:
             rows = []
 

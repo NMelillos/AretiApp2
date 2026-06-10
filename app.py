@@ -2377,6 +2377,7 @@ if page == "Import":
                 unsafe_allow_html=True,
             )
             parsed = parse_statement(file_bytes, uploaded_statement.name)
+            parse_diagnostics = dict(getattr(parsed, "attrs", {}).get("parse_diagnostics", {}) or {})
             parsed = apply_account_and_rates(parsed, selected_account)
             parsed = flag_duplicates(parsed)
             classified = classify_statement_rows(parsed, get_memory())
@@ -2385,12 +2386,25 @@ if page == "Import":
             st.success(f"Prepared {len(classified)} transactions for review.")
 
             duplicate_lines = int(classified["dup_flag"].fillna(False).astype(bool).sum()) if "dup_flag" in classified else 0
+            new_import_lines = max(len(classified) - duplicate_lines, 0)
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Rows", len(classified))
             c2.metric("Exact matches", int((classified["match_type"] == "exact").sum()))
             c3.metric("Similar matches", int((classified["match_type"] == "similar").sum()))
             c4.metric("Needs review", int((classified["match_type"].isin(["new", "suggestion", "rule"])).sum()))
             c5.metric("Duplicate lines", duplicate_lines)
+
+            if parse_diagnostics:
+                pending_rows = int(parse_diagnostics.get("pending_rows", 0) or 0)
+                reverted_rows = int(parse_diagnostics.get("reverted_rows", 0) or 0)
+                st.info(
+                    "Revolut import check: "
+                    f"{len(classified)} completed transaction line(s) prepared, "
+                    f"{new_import_lines} new line(s), "
+                    f"{duplicate_lines} duplicate overlap line(s), "
+                    f"{pending_rows} pending line(s) held out, "
+                    f"{reverted_rows} reverted/cancelled line(s) skipped."
+                )
 
             if duplicate_lines:
                 st.warning(

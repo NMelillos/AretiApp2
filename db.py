@@ -482,7 +482,7 @@ def _normalize_rate_type(rate_type, currency=""):
     return text.replace(" ", "")
 
 
-def _transaction_line_key(row, include_account=True):
+def _transaction_line_key(row, include_account=True, amount_sign="signed"):
     date_value = _canonical_date(row.get("Date", row.get("txn_date", "")))
     amount = _float_or_none(row.get("Amount", row.get("amount", None)))
     normalized = _canonical_text(row.get("normalized_description", ""))
@@ -490,6 +490,8 @@ def _transaction_line_key(row, include_account=True):
         normalized = _canonical_text(normalize_description(row.get("Description", row.get("original_description", ""))))
     if not date_value or amount is None or not normalized:
         return None
+    if amount_sign == "absolute":
+        amount = abs(float(amount))
 
     key = (
         date_value,
@@ -513,7 +515,7 @@ def _existing_transaction_line_keys(cur, include_account=True):
     return set(_existing_transaction_line_lookup(cur, include_account=include_account))
 
 
-def _existing_transaction_line_lookup(cur, include_account=True):
+def _existing_transaction_line_lookup(cur, include_account=True, amount_sign="signed"):
     cur.execute("""
         SELECT id, statement_name, txn_date, original_description, normalized_description,
                amount, currency, bank, account_number, account_name
@@ -524,13 +526,17 @@ def _existing_transaction_line_lookup(cur, include_account=True):
     lookup = {}
     for values in cur.fetchall():
         row = dict(zip(columns, values))
-        key = _transaction_line_key(row, include_account=include_account)
+        key = _transaction_line_key(row, include_account=include_account, amount_sign=amount_sign)
         if key and key not in lookup:
             lookup[key] = {
                 "duplicate_source_id": row.get("id", ""),
                 "duplicate_source_statement": row.get("statement_name", ""),
             }
     return lookup
+
+
+def _is_revolut_transaction_row(row):
+    return "REVOLUT" in _canonical_text(row.get("bank", ""))
 
 
 def mark_duplicate_transactions(df):
@@ -548,6 +554,17 @@ def mark_duplicate_transactions(df):
         existing_lookup = _existing_transaction_line_lookup(cur)
         relaxed_lookup = _existing_transaction_line_lookup(cur, include_account=False)
         bank_level_lookup = _existing_transaction_line_lookup(cur, include_account=None)
+        revolut_abs_lookup = _existing_transaction_line_lookup(cur, amount_sign="absolute")
+        revolut_relaxed_abs_lookup = _existing_transaction_line_lookup(
+            cur,
+            include_account=False,
+            amount_sign="absolute",
+        )
+        revolut_bank_abs_lookup = _existing_transaction_line_lookup(
+            cur,
+            include_account=None,
+            amount_sign="absolute",
+        )
     finally:
         conn.close()
 
@@ -568,9 +585,24 @@ def mark_duplicate_transactions(df):
             existing_match = relaxed_lookup.get(_transaction_line_key(row, include_account=False))
         if not existing_match and _canonical_text(row.get("bank", "")):
             existing_match = bank_level_lookup.get(_transaction_line_key(row, include_account=None))
+        duplicate_reason = "Already imported / overlapping statement"
+        if not existing_match and _is_revolut_transaction_row(row):
+            existing_match = revolut_abs_lookup.get(
+                _transaction_line_key(row, amount_sign="absolute")
+            )
+            if not existing_match:
+                existing_match = revolut_relaxed_abs_lookup.get(
+                    _transaction_line_key(row, include_account=False, amount_sign="absolute")
+                )
+            if not existing_match and _canonical_text(row.get("bank", "")):
+                existing_match = revolut_bank_abs_lookup.get(
+                    _transaction_line_key(row, include_account=None, amount_sign="absolute")
+                )
+            if existing_match:
+                duplicate_reason = "Already imported / overlapping Revolut statement (amount sign normalized)"
         if existing_match:
             flags.append(True)
-            reasons.append("Already imported / overlapping statement")
+            reasons.append(duplicate_reason)
             source_statements.append(existing_match.get("duplicate_source_statement", ""))
             source_ids.append(existing_match.get("duplicate_source_id", ""))
             continue
@@ -1888,12 +1920,33 @@ def save_pending_transactions(df, statement_name, statement_hash):
     existing_keys = _existing_transaction_line_keys(cur)
     relaxed_existing_keys = _existing_transaction_line_keys(cur, include_account=False)
     bank_level_existing_keys = _existing_transaction_line_keys(cur, include_account=None)
+    revolut_abs_existing_keys = set(_existing_transaction_line_lookup(cur, amount_sign="absolute"))
+    revolut_relaxed_abs_existing_keys = set(_existing_transaction_line_lookup(
+        cur,
+        include_account=False,
+        amount_sign="absolute",
+    ))
+    revolut_bank_abs_existing_keys = set(_existing_transaction_line_lookup(
+        cur,
+        include_account=None,
+        amount_sign="absolute",
+    ))
     seen_row_hashes = set()
 
     for idx, row in df.reset_index(drop=True).iterrows():
         transaction_key = _transaction_line_key(row)
         relaxed_key = _transaction_line_key(row, include_account=False)
         bank_level_key = _transaction_line_key(row, include_account=None) if _canonical_text(row.get("bank", "")) else None
+        is_revolut = _is_revolut_transaction_row(row)
+        revolut_abs_key = _transaction_line_key(row, amount_sign="absolute") if is_revolut else None
+        revolut_relaxed_abs_key = (
+            _transaction_line_key(row, include_account=False, amount_sign="absolute")
+            if is_revolut else None
+        )
+        revolut_bank_abs_key = (
+            _transaction_line_key(row, include_account=None, amount_sign="absolute")
+            if is_revolut and _canonical_text(row.get("bank", "")) else None
+        )
         row_hash_src = "|".join([
             statement_hash,
             str(idx),
@@ -1907,6 +1960,9 @@ def save_pending_transactions(df, statement_name, statement_hash):
             or (transaction_key and transaction_key in existing_keys)
             or (relaxed_key and relaxed_key in relaxed_existing_keys)
             or (bank_level_key and bank_level_key in bank_level_existing_keys)
+            or (revolut_abs_key and revolut_abs_key in revolut_abs_existing_keys)
+            or (revolut_relaxed_abs_key and revolut_relaxed_abs_key in revolut_relaxed_abs_existing_keys)
+            or (revolut_bank_abs_key and revolut_bank_abs_key in revolut_bank_abs_existing_keys)
             or row_hash in seen_row_hashes
         ):
             duplicate_lines += 1

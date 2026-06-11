@@ -1001,14 +1001,16 @@ def editable_pending_table(df, categories, subcategories, key):
 
     table["category"] = table.apply(selected_category, axis=1)
     table["subcategory"] = table["subcategory"].fillna(table["suggested_subcategory"]).fillna("")
+    table = _with_category_pair_column(table)
+    categories_df = get_categories(include_subcategories=True)
+    pair_options = _category_pair_options(categories_df, categories, table)
 
     visible_cols = [
         "txn_date",
         "currency",
         "amount",
         "original_description",
-        "category",
-        "subcategory",
+        _CATEGORY_PAIR_COLUMN,
         "reviewed",
         "id",
         "account_name",
@@ -1046,12 +1048,13 @@ def editable_pending_table(df, categories, subcategories, key):
                 options=[""] + categories,
                 required=False,
             ),
-            "subcategory": st.column_config.TextColumn(
-                "Subcategory",
-                disabled=True,
+            _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
+                "Category / Subcategory",
+                options=pair_options,
+                required=False,
                 help=(
-                    "Use the filtered correction panel above for subcategory changes. "
-                    "That panel only shows subcategories belonging to the selected category."
+                    "Choose a valid category/subcategory pair from Setup. "
+                    "Only valid combinations are available."
                 ),
             ),
         },
@@ -1092,6 +1095,77 @@ def _subcategory_column_config(category, disabled_help, existing_values=None):
         disabled=True,
         help=disabled_help,
     )
+
+
+_CATEGORY_PAIR_COLUMN = "category_subcategory"
+_NO_SUBCATEGORY_LABEL = "No subcategory"
+
+
+def _category_pair_label(category, subcategory):
+    category_text = str(category or "").strip()
+    subcategory_text = str(subcategory or "").strip()
+    if not category_text:
+        return ""
+    return f"{category_text} / {subcategory_text or _NO_SUBCATEGORY_LABEL}"
+
+
+def _parse_category_pair_label(value):
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    if " / " not in text:
+        return text, ""
+    category, subcategory = text.split(" / ", 1)
+    subcategory = "" if subcategory.strip() == _NO_SUBCATEGORY_LABEL else subcategory
+    return category.strip(), subcategory.strip()
+
+
+def _category_pair_options(categories_df=None, categories=None, current_df=None):
+    options = [""]
+    seen = {""}
+
+    def add_pair(category, subcategory=""):
+        label = _category_pair_label(category, subcategory)
+        key = label.casefold()
+        if label and key not in seen:
+            seen.add(key)
+            options.append(label)
+
+    if categories_df is not None and not categories_df.empty:
+        for _, row in categories_df.iterrows():
+            category = str(row.get("category", "") or "").strip()
+            subcategory = str(row.get("subcategory", "") or "").strip()
+            if category:
+                add_pair(category, "")
+                if subcategory:
+                    add_pair(category, subcategory)
+    for category in categories or []:
+        add_pair(category, "")
+    if current_df is not None and not current_df.empty:
+        for _, row in current_df.iterrows():
+            add_pair(row.get("category", ""), row.get("subcategory", ""))
+    return options
+
+
+def _with_category_pair_column(df):
+    out = df.copy()
+    out[_CATEGORY_PAIR_COLUMN] = out.apply(
+        lambda row: _category_pair_label(row.get("category", ""), row.get("subcategory", "")),
+        axis=1,
+    )
+    return out
+
+
+def _apply_category_pair_values(df):
+    out = df.copy()
+    if _CATEGORY_PAIR_COLUMN not in out.columns:
+        return out
+    for index, value in out[_CATEGORY_PAIR_COLUMN].items():
+        category, subcategory = _parse_category_pair_label(value)
+        if category:
+            out.at[index, "category"] = category
+            out.at[index, "subcategory"] = subcategory
+    return out
 
 
 def render_wrapped_descriptions(df, expanded=False):
@@ -2007,7 +2081,24 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         return
 
     visible = detail_view[[col for col in display_cols if col in detail_view.columns]].copy()
+    visible = _with_category_pair_column(visible)
+    executive_visible_cols = [
+        "txn_date",
+        "currency",
+        "amount",
+        "original_description",
+        _CATEGORY_PAIR_COLUMN,
+        "reviewed",
+        "id",
+        "account_name",
+        "bank",
+        "account_number",
+        "expense_usd",
+    ]
+    visible = visible[[col for col in executive_visible_cols if col in visible.columns]].copy()
     categories = get_categories()
+    categories_df = get_categories(include_subcategories=True)
+    pair_options = _category_pair_options(categories_df, categories, visible)
     render_summary_strip([
         ("Rows", len(visible)),
         ("Total", _money(detail_view["expense_usd"].sum())),
@@ -2024,12 +2115,7 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         inline=True,
     )
     render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=True, inline=True)
-    subcategory_config = _subcategory_column_config(
-        selected_category,
-        "Select a category first, or use the filtered correction panel above.",
-        existing_values=visible.get("subcategory", pd.Series(dtype=str)).fillna("").astype(str).tolist(),
-    )
-    st.caption(f"Transaction detail subcategory dropdown is filtered to {selected_category}.")
+    st.caption("Use Category / Subcategory to choose only valid combinations from Setup.")
     edited_detail = st.data_editor(
         visible,
         use_container_width=True,
@@ -2044,8 +2130,12 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
             "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
             "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
             "expense_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
-            "category": st.column_config.SelectboxColumn("Category", options=[""] + categories, required=False),
-            "subcategory": subcategory_config,
+            _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
+                "Category / Subcategory",
+                options=pair_options,
+                required=False,
+                help="Choose a valid category/subcategory pair from Setup.",
+            ),
             "reviewed": st.column_config.CheckboxColumn(
                 "Reviewed",
                 help="Untick to send the transaction back to Pending Review.",
@@ -2059,6 +2149,7 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         key="executive_detail_editor",
     )
     if st.button("Apply transaction detail edits", type="primary", key="executive_detail_apply"):
+        edited_detail = _apply_category_pair_values(edited_detail)
         save_cols = [col for col in ["id", "category", "subcategory", "reviewed"] if col in edited_detail.columns]
         save_df = edited_detail[save_cols].copy()
         if "reviewed" not in save_df.columns:
@@ -2385,6 +2476,16 @@ def _render_executive_completeness_check(
     reviewed_not_represented = max(0, reviewed_checked - represented_rows - needs_attention_rows)
     reconciled_rows = represented_rows + needs_attention_rows + pending_or_unreviewed + reviewed_not_represented
     reconciliation_gap = active_database_count - reconciled_rows
+    active_no_category_rows = 0
+    active_no_subcategory_rows = 0
+    no_subcategory_audit = pd.DataFrame()
+    if active_database_rows is not None and not active_database_rows.empty:
+        active_category = active_database_rows.get("category", pd.Series("", index=active_database_rows.index)).fillna("").astype(str).str.strip()
+        active_subcategory = active_database_rows.get("subcategory", pd.Series("", index=active_database_rows.index)).fillna("").astype(str).str.strip()
+        active_no_category_rows = int(active_category.eq("").sum())
+        active_no_subcategory_rows = int(active_subcategory.eq("").sum())
+        no_subcategory_audit = active_database_rows[active_subcategory.eq("")].copy()
+        no_subcategory_audit = add_report_group_column(no_subcategory_audit, categories_df)
     setup_group_count = (
         categories_df.get("report_group", pd.Series(dtype=str)).fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()
         if not categories_df.empty
@@ -2417,6 +2518,8 @@ def _render_executive_completeness_check(
         ("Pending / not reviewed", pending_or_unreviewed),
         ("Reviewed not represented", reviewed_not_represented),
         ("Row reconciliation", "OK" if reconciliation_gap == 0 else f"Gap {reconciliation_gap:+d}"),
+        ("No category rows", active_no_category_rows),
+        ("No subcategory rows", active_no_subcategory_rows),
         ("Hidden by visibility", hidden_rows),
         ("Setup groups", setup_group_count),
         ("Setup categories", setup_category_count),
@@ -2456,6 +2559,35 @@ def _render_executive_completeness_check(
             use_container_width=True,
             hide_index=True,
         )
+    if active_no_subcategory_rows:
+        no_sub_cols = [
+            "id",
+            "txn_date",
+            "account_name",
+            "bank",
+            "account_number",
+            "currency",
+            "amount",
+            "amount_usd",
+            "category",
+            "subcategory",
+            "report_group",
+            "status",
+            "reviewed",
+            "original_description",
+        ]
+        with st.expander(
+            f"No subcategory / unassigned subcategory rows ({active_no_subcategory_rows})",
+            expanded=False,
+        ):
+            st.caption(
+                "These active database rows have an empty subcategory. They are counted here so they cannot disappear silently."
+            )
+            st.dataframe(
+                no_subcategory_audit[[col for col in no_sub_cols if col in no_subcategory_audit.columns]],
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 def render_executive_report():
@@ -3154,7 +3286,7 @@ elif page == "Pending Review":
 
         if top_save or bottom_save:
             with st.spinner("Saving reviewed rows..."):
-                saved = save_reviewed_rows(edited_pending)
+                saved = save_reviewed_rows(_apply_category_pair_values(edited_pending))
             if saved:
                 st.success(f"Saved {saved} reviewed transactions.")
                 st.cache_data.clear()
@@ -3231,6 +3363,8 @@ elif page == "Database":
         )
         render_bulk_categorise_panel(db_view, categories, "database", expanded=True, inline=True)
         render_transaction_exclusion_panel(db_view, "database")
+        db_view = _with_category_pair_column(db_view)
+        pair_options = _category_pair_options(categories_df, categories, db_view)
         editable_cols = [
             "id",
             "status",
@@ -3243,22 +3377,11 @@ elif page == "Database":
             "amount",
             "amount_usd",
             "original_description",
-            "category",
-            "subcategory",
+            _CATEGORY_PAIR_COLUMN,
             "report_group",
             "match_type",
         ]
-        visible_category = _single_visible_category(db_view)
-        if visible_category:
-            st.caption(
-                f"Subcategory dropdown is filtered to {visible_category}. "
-                "Use the Category filter above to switch category safely."
-            )
-        else:
-            st.caption(
-                "For direct subcategory dropdown editing, filter Database to one category first. "
-                "This prevents choosing a subcategory from the wrong category."
-            )
+        st.caption("Use Category / Subcategory to choose only valid combinations from Setup.")
         db_edit = st.data_editor(
             db_view[[col for col in editable_cols if col in db_view.columns]],
             use_container_width=True,
@@ -3273,18 +3396,14 @@ elif page == "Database":
                     disabled=True,
                     width="large",
                 ),
-                "category": st.column_config.SelectboxColumn(
-                    "Category",
-                    options=[""] + categories,
+                _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
+                    "Category / Subcategory",
+                    options=pair_options,
                     required=False,
-                ),
-                "subcategory": _subcategory_column_config(
-                    visible_category,
-                    (
-                        "Filter Database to one category first, or use the filtered correction panel above. "
-                        "This prevents invalid category/subcategory combinations."
+                    help=(
+                        "Choose a valid category/subcategory pair from Setup. "
+                        "Use 'No subcategory' when the category intentionally has no subcategory."
                     ),
-                    existing_values=db_view.get("subcategory", pd.Series(dtype=str)).fillna("").astype(str).tolist(),
                 ),
                 "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
             },
@@ -3317,7 +3436,7 @@ elif page == "Database":
             if edited_excluded_ids and not confirm_editor_exclude:
                 st.error("No changes applied. Please confirm excluded status changes first.")
             else:
-                count = update_database_rows(db_edit)
+                count = update_database_rows(_apply_category_pair_values(db_edit))
                 st.success(f"Updated {count} rows.")
                 st.cache_data.clear()
                 st.rerun()

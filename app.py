@@ -1084,6 +1084,7 @@ def render_category_correction_panel(
     key_prefix,
     title="Correct category / subcategory",
     expanded=False,
+    inline=False,
 ):
     if df.empty or "id" not in df.columns or not categories:
         return
@@ -1093,7 +1094,13 @@ def render_category_correction_panel(
     working["id"] = working["id"].astype(int)
     labels = {_transaction_label(row): int(row["id"]) for _, row in working.iterrows()}
 
-    with st.expander(title, expanded=expanded):
+    if inline:
+        st.markdown(f"#### {title}")
+        panel = st.container()
+    else:
+        panel = st.expander(title, expanded=expanded)
+
+    with panel:
         st.caption(
             "Choose the transaction first, then choose the category. "
             "The subcategory list is filtered to that category only."
@@ -1117,6 +1124,8 @@ def render_category_correction_panel(
 
         category = st.selectbox("Category", category_options, key=category_key)
         subcategory_options = _subcategory_options_for(category)
+        if category and len(subcategory_options) <= 1:
+            st.info("No subcategories are defined for this category in Setup.")
         current_subcategory = str(selected_row.get("subcategory", "") or "").strip()
         if st.session_state.get(subcategory_key) not in subcategory_options:
             st.session_state[subcategory_key] = (
@@ -1251,21 +1260,31 @@ def render_transaction_exclusion_panel(df, key_prefix):
                 st.rerun()
 
 
-def render_bulk_categorise_panel(df, categories, key_prefix, expanded=False):
+def render_bulk_categorise_panel(df, categories, key_prefix, expanded=False, inline=False):
     if df.empty or "id" not in df.columns or not categories:
         return
-    with st.expander("Bulk categorise current filtered rows", expanded=expanded):
+    title = "Bulk categorise current filtered rows"
+    if inline:
+        st.markdown(f"#### {title}")
+        panel = st.container()
+    else:
+        panel = st.expander(title, expanded=expanded)
+
+    with panel:
         st.caption(
             "Use this after filtering, for example by description. "
             "It applies one category/subcategory to all rows currently visible below."
         )
         category_options = [""] + categories
         category = st.selectbox("Category", category_options, key=f"{key_prefix}_bulk_category")
+        subcategory_options = _subcategory_options_for(category)
         subcategory = st.selectbox(
             "Subcategory",
-            _subcategory_options_for(category),
+            subcategory_options,
             key=f"{key_prefix}_bulk_subcategory",
         )
+        if category and len(subcategory_options) <= 1:
+            st.info("No subcategories are defined for this category in Setup.")
         disabled = not category
         if st.button(
             f"Apply to {len(df)} visible rows and mark reviewed",
@@ -1937,8 +1956,9 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         "executive_detail_single",
         "Categorise one transaction with filtered subcategories",
         expanded=True,
+        inline=True,
     )
-    render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=True)
+    render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=True, inline=True)
     edited_detail = st.data_editor(
         visible,
         use_container_width=True,
@@ -2995,14 +3015,15 @@ elif page == "Pending Review":
             st.stop()
 
         render_wrapped_descriptions(pending_view)
-        render_bulk_categorise_panel(pending_view, categories, "pending", expanded=True)
         render_category_correction_panel(
             pending_view,
             categories,
             "pending_single",
-            "Correct one pending transaction with filtered subcategories",
+            "Categorise one pending transaction with filtered subcategories",
             expanded=True,
+            inline=True,
         )
+        render_bulk_categorise_panel(pending_view, categories, "pending", expanded=True, inline=True)
         top_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_top")
         edited_pending = editable_pending_table(pending_view, categories, subcategories, "pending_editor")
         bottom_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_bottom")
@@ -3076,14 +3097,15 @@ elif page == "Database":
                     f"{int(missing_usd_mask.sum())} visible row(s) still have no USD equivalent after automatic backfill."
                     f"{rate_note} Check Setup > Rates and then use Fill missing USD equivalents."
                 )
-        render_bulk_categorise_panel(db_view, categories, "database", expanded=True)
         render_category_correction_panel(
             db_view,
             categories,
             "database_single",
-            "Correct one database transaction with filtered subcategories",
+            "Categorise one database transaction with filtered subcategories",
             expanded=True,
+            inline=True,
         )
+        render_bulk_categorise_panel(db_view, categories, "database", expanded=True, inline=True)
         render_transaction_exclusion_panel(db_view, "database")
         editable_cols = [
             "id",

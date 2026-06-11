@@ -2298,10 +2298,18 @@ def update_database_rows(df):
         }
         row_values = row.to_dict()
         if "subcategory" in row_values:
-            subcategory_key = _clean(row_values.get("subcategory")).casefold()
-            parent_category = subcategory_parent_lookup.get(subcategory_key)
+            selected_category = _clean(row_values.get("category")) if "category" in row_values else ""
+            selected_subcategory = _clean(row_values.get("subcategory"))
+            parent_category = (
+                subcategory_parent_lookup.get(selected_subcategory.casefold())
+                if selected_subcategory
+                else None
+            )
             if parent_category:
-                row_values["category"] = parent_category
+                if selected_category and selected_category.casefold() != parent_category.casefold():
+                    row_values["subcategory"] = ""
+                else:
+                    row_values["category"] = parent_category
         effective_text_columns = [column for column in text_columns if column in row_values]
         assignments = []
         params = []

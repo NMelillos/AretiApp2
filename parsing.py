@@ -1,5 +1,6 @@
 import re
 from datetime import datetime
+from io import BytesIO
 
 import pandas as pd
 
@@ -168,9 +169,20 @@ def _parse_amount(value):
     text = text.replace("(", "").replace(")", "")
     text = re.sub(r"[^0-9,\.\-]", "", text)
     if "," in text and "." in text:
-        text = text.replace(",", "")
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
     elif "," in text and "." not in text:
-        text = text.replace(",", ".")
+        parts = text.split(",")
+        if len(parts) > 1 and all(len(part) == 3 for part in parts[1:]):
+            text = text.replace(",", "")
+        else:
+            text = text.replace(",", ".")
+    elif "." in text and "," not in text:
+        parts = text.split(".")
+        if len(parts) > 1 and all(len(part) == 3 for part in parts[1:]):
+            text = text.replace(".", "")
     amount = pd.to_numeric(text, errors="coerce")
     if pd.isna(amount):
         return 0.0
@@ -984,11 +996,11 @@ def detect_columns(df):
         name = _norm_col(col)
         if name in DATE_NAMES or ("date" in name and date_col is None):
             date_col = col
-        if name in AMOUNT_NAMES and amount_col is None:
+        if (name in AMOUNT_NAMES or ("amount" in name and "balance" not in name)) and amount_col is None:
             amount_col = col
-        if name in DEBIT_NAMES and debit_col is None:
+        if (name in DEBIT_NAMES or any(token in name for token in ["debit", "withdrawal", "paid out", "money out"])) and debit_col is None:
             debit_col = col
-        if name in CREDIT_NAMES and credit_col is None:
+        if (name in CREDIT_NAMES or any(token in name for token in ["credit", "deposit", "paid in", "money in"])) and credit_col is None:
             credit_col = col
 
     desc_cols = []
@@ -1088,8 +1100,33 @@ def prepare_dataframe_from_tabular(df):
 
 def parse_csv(uploaded_file):
     uploaded_file.seek(0)
-    df = pd.read_csv(uploaded_file)
-    return prepare_dataframe_from_tabular(df)
+    raw = uploaded_file.read()
+    errors = []
+    encodings = ["utf-8-sig", "utf-8", "cp1253", "windows-1252", "latin-1"]
+    separators = [None, ",", ";", "\t"]
+    for header_row in range(0, 16):
+        for encoding in encodings:
+            for separator in separators:
+                kwargs = {"encoding": encoding, "header": header_row}
+                if separator is None:
+                    kwargs.update({"sep": None, "engine": "python"})
+                else:
+                    kwargs["sep"] = separator
+                try:
+                    candidate = pd.read_csv(BytesIO(raw), **kwargs)
+                except Exception as exc:
+                    errors.append(str(exc))
+                    continue
+                if candidate.empty or len(candidate.columns) <= 1:
+                    continue
+                date_col, desc_cols, amount_col, debit_col, credit_col = detect_columns(candidate)
+                if date_col and desc_cols and (amount_col or (debit_col and credit_col)):
+                    return prepare_dataframe_from_tabular(candidate)
+    detail = errors[-1] if errors else "No usable CSV header was detected."
+    raise ValueError(
+        "Could not read this CSV statement. The file must contain Date, Description, and Amount "
+        "or Debit/Credit columns. Last parser error: " + detail
+    )
 
 
 def parse_excel(uploaded_file):

@@ -1165,29 +1165,57 @@ def render_transaction_exclusion_panel(df, key_prefix):
             st.info("No active rows are visible in the current filter.")
         else:
             active_labels = {_transaction_label(row): int(row["id"]) for _, row in active_rows.iterrows()}
-            selected_exclude = st.multiselect(
-                "Transactions to exclude",
-                list(active_labels.keys()),
+            selected_exclude = st.selectbox(
+                "Transaction to exclude",
+                [""] + list(active_labels.keys()),
                 key=f"{key_prefix}_exclude_ids",
-                help="Filter/search the Database first, then select only the rows you want to remove from active data.",
+                help="Filter/search the Database first, then choose one row only. This prevents accidental bulk deletion.",
             )
+            selected_exclude_id = active_labels.get(selected_exclude) if selected_exclude else None
+            if selected_exclude_id is not None:
+                preview_cols = [
+                    "id",
+                    "txn_date",
+                    "currency",
+                    "amount",
+                    "amount_usd",
+                    "account_name",
+                    "bank",
+                    "account_number",
+                    "original_description",
+                    "category",
+                    "subcategory",
+                    "status",
+                ]
+                selected_preview = active_rows[active_rows["id"] == selected_exclude_id]
+                st.dataframe(
+                    selected_preview[[col for col in preview_cols if col in selected_preview.columns]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
             exclude_reason = st.text_input(
                 "Reason / note",
                 value="duplicate or not required",
                 key=f"{key_prefix}_exclude_reason",
             )
-            confirm_exclude = st.checkbox(
-                "I confirm these selected rows should be excluded from active data, not hard deleted.",
+            expected_confirm = f"EXCLUDE {selected_exclude_id}" if selected_exclude_id is not None else ""
+            confirm_exclude = st.text_input(
+                "Confirmation",
+                value="",
                 key=f"{key_prefix}_exclude_confirm",
+                help=f"Type {expected_confirm} to remove this one row from active data." if expected_confirm else "Choose a transaction first.",
             )
             if st.button(
-                "Exclude selected transactions",
+                "Exclude this transaction",
                 type="primary",
-                disabled=not selected_exclude or not confirm_exclude,
+                disabled=selected_exclude_id is None or confirm_exclude.strip() != expected_confirm,
                 key=f"{key_prefix}_exclude_apply",
             ):
-                count = exclude_transactions([active_labels[label] for label in selected_exclude], exclude_reason)
-                st.success(f"Excluded {count} transaction row(s). They remain recoverable in backup/change log.")
+                count = exclude_transactions([selected_exclude_id], exclude_reason)
+                st.success(
+                    f"Excluded {count} transaction row. It is now hidden from Pending Review, active reports, "
+                    "and duplicate checks, and remains recoverable in the change log."
+                )
                 st.cache_data.clear()
                 st.rerun()
 
@@ -1818,6 +1846,30 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
                 f"<div class=\"drill-cell {css_class}\">{formatter(row)}</div>",
                 unsafe_allow_html=True,
             )
+    zero_rows = []
+    for row in rows:
+        total = float(row.get("total") or 0.0)
+        month_total = sum(float(value or 0.0) for value in row.get("months", {}).values())
+        if abs(total) <= 0.005 and abs(month_total) <= 0.005:
+            label = str(row.get("label") or "").strip()
+            if label:
+                reason = (
+                    "Visible for completeness because it exists in Setup / Expense Excel, "
+                    "but no reviewed reportable expense transactions are assigned to it in this report period."
+                )
+                if label.casefold() == "0-not on reports":
+                    reason = (
+                        "Control group kept visible for checking. It has no reviewed reportable expense activity "
+                        "in the selected period."
+                    )
+                zero_rows.append({"Row": label, "Why it shows $0": reason})
+    if zero_rows:
+        with st.expander(f"Why {title.lower()} rows show $0", expanded=False):
+            st.dataframe(pd.DataFrame(zero_rows), use_container_width=True, hide_index=True)
+            st.caption(
+                "$0 rows are not hidden. They stay visible so setup groups, categories, and subcategories "
+                "can be checked even when there is no activity in the selected period."
+            )
 
 
 def _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory):
@@ -2208,6 +2260,21 @@ def _render_executive_completeness_check(filtered_transactions, categories_df, v
     from reporting import build_report_verification
 
     summary, detail = build_report_verification(filtered_transactions, categories_df)
+    setup_group_count = (
+        categories_df.get("report_group", pd.Series(dtype=str)).fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+        if not categories_df.empty
+        else 0
+    )
+    setup_category_count = (
+        categories_df.get("category", pd.Series(dtype=str)).fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+        if not categories_df.empty
+        else 0
+    )
+    setup_subcategory_count = (
+        categories_df.get("subcategory", pd.Series(dtype=str)).fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+        if not categories_df.empty
+        else 0
+    )
     visible_set = {str(group or "").strip() for group in (visible_report_groups or [])}
     report_groups = (
         detail.get("Reporting group", pd.Series(dtype=str))
@@ -2222,6 +2289,9 @@ def _render_executive_completeness_check(filtered_transactions, categories_df, v
         ("Represented rows", summary.get("represented_rows", 0)),
         ("Needs attention", summary.get("rows_needing_attention", 0)),
         ("Hidden by visibility", hidden_rows),
+        ("Setup groups", setup_group_count),
+        ("Setup categories", setup_category_count),
+        ("Setup subcategories", setup_subcategory_count),
     ])
     if summary.get("rows_needing_attention", 0) or missing_groups or hidden_rows:
         st.warning(

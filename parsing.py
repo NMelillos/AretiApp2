@@ -371,36 +371,66 @@ def _parse_revolut_pdf_text(text):
     rows = []
     current = None
     section_currency = ""
+    section_opening_balance = None
+    previous_balance = None
     in_account_transactions = False
 
     def add_current():
-        nonlocal current
+        nonlocal current, previous_balance
         if not current or not current["amounts"]:
             current = None
             return
 
         token_text, amount = current["amounts"][0]
+        balance = current.get("balance")
+        if balance is not None and previous_balance is not None:
+            delta = float(balance) - float(previous_balance)
+            if abs(delta) > 0.005:
+                amount = abs(amount) if delta > 0 else -abs(amount)
         currency = _currency_from_money_text(token_text) or current.get("currency", "")
         currency_source = _currency_source(token_text) or "statement account section"
         description = current["description"].strip()
         if description and amount != 0:
             rows.append([current["date"], description, amount, currency, currency_source])
+        if balance is not None:
+            previous_balance = balance
         current = None
 
     for line in lines:
         if not line:
             continue
 
+        statement_currency_match = re.match(r"^(EUR|USD|GBP)\s+Statement\b", line, re.IGNORECASE)
+        if statement_currency_match:
+            statement_currency = statement_currency_match.group(1).upper()
+            if section_currency and statement_currency != section_currency:
+                add_current()
+                section_opening_balance = None
+                previous_balance = None
+                in_account_transactions = False
+            section_currency = statement_currency
+            continue
+
         section_match = re.search(r"Personal Account\s*\((EUR|USD|GBP)\)", line, re.IGNORECASE)
         if section_match:
             add_current()
             section_currency = section_match.group(1).upper()
+            section_opening_balance = None
+            previous_balance = None
             in_account_transactions = False
             continue
 
         lower_line = line.lower()
+        if "account (current account)" in lower_line:
+            summary_amounts = _money_values_with_spans(line)
+            if len(summary_amounts) >= 4:
+                section_opening_balance = summary_amounts[0][2]
+                previous_balance = None
+            continue
+
         if lower_line.startswith("account transactions from ") or lower_line == "transaction statement":
             add_current()
+            previous_balance = section_opening_balance
             in_account_transactions = True
             continue
 
@@ -420,16 +450,20 @@ def _parse_revolut_pdf_text(text):
             amounts = _money_values_with_spans(rest)
             description = rest
             money_values = []
+            balance = None
             if amounts:
                 first_span, token_text, amount = amounts[0]
                 description = rest[: first_span[0]].strip()
                 money_values.append((token_text, amount))
+                if len(amounts) >= 2:
+                    balance = amounts[-1][2]
 
             current = {
                 "date": date_value,
                 "description": description,
                 "amounts": money_values,
                 "currency": section_currency,
+                "balance": balance,
             }
             continue
 
@@ -445,6 +479,8 @@ def _parse_revolut_pdf_text(text):
                 if prefix:
                     current["description"] = _append_detail(current["description"], prefix)
                 current["amounts"].append((token_text, amount))
+                if len(amounts) >= 2 and current.get("balance") is None:
+                    current["balance"] = amounts[-1][2]
                 continue
 
             current["description"] = _append_detail(current["description"], line)

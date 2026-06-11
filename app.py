@@ -831,7 +831,7 @@ def add_report_group_column(df, categories_df):
     return out
 
 
-def transaction_filter_controls(df, key_prefix):
+def transaction_filter_controls(df, key_prefix, include_category=False):
     filtered = df.copy()
     if filtered.empty:
         return filtered
@@ -842,8 +842,13 @@ def transaction_filter_controls(df, key_prefix):
         value for value in filtered.get("account_name", pd.Series(dtype=str)).fillna("").astype(str).unique()
         if value
     )
+    category_values = sorted(
+        value for value in filtered.get("category", pd.Series(dtype=str)).fillna("").astype(str).str.strip().unique()
+        if value
+    ) if include_category and "category" in filtered.columns else []
 
-    f1, f2 = st.columns(2)
+    columns = st.columns(3 if include_category else 2)
+    f1, f2 = columns[:2]
     selected_month = f1.selectbox(
         "Month",
         ["All months"] + month_values,
@@ -859,6 +864,16 @@ def transaction_filter_controls(df, key_prefix):
         filtered = filtered[dates.dt.to_period("M").astype(str) == selected_month].copy()
     if selected_account != "All accounts":
         filtered = filtered[filtered["account_name"].fillna("").astype(str) == selected_account].copy()
+    if include_category:
+        selected_category = columns[2].selectbox(
+            "Category",
+            ["All categories"] + category_values,
+            key=f"{key_prefix}_category_filter",
+        )
+        if selected_category != "All categories":
+            filtered = filtered[
+                filtered["category"].fillna("").astype(str).str.strip() == selected_category
+            ].copy()
     return filtered
 
 
@@ -1040,6 +1055,42 @@ def editable_pending_table(df, categories, subcategories, key):
                 ),
             ),
         },
+    )
+
+
+def _single_visible_category(df):
+    if df.empty or "category" not in df.columns:
+        return ""
+    values = (
+        df["category"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .unique()
+        .tolist()
+    )
+    return values[0] if len(values) == 1 else ""
+
+
+def _subcategory_column_config(category, disabled_help, existing_values=None):
+    if category:
+        options = _subcategory_options_for(category)
+        for value in existing_values or []:
+            text = str(value or "").strip()
+            if text and text not in options:
+                options.append(text)
+        return st.column_config.SelectboxColumn(
+            "Subcategory",
+            options=options,
+            required=False,
+            help=f"Filtered to subcategories defined for {category}.",
+        )
+    return st.column_config.TextColumn(
+        "Subcategory",
+        disabled=True,
+        help=disabled_help,
     )
 
 
@@ -1973,6 +2024,12 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         inline=True,
     )
     render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=True, inline=True)
+    subcategory_config = _subcategory_column_config(
+        selected_category,
+        "Select a category first, or use the filtered correction panel above.",
+        existing_values=visible.get("subcategory", pd.Series(dtype=str)).fillna("").astype(str).tolist(),
+    )
+    st.caption(f"Transaction detail subcategory dropdown is filtered to {selected_category}.")
     edited_detail = st.data_editor(
         visible,
         use_container_width=True,
@@ -1988,14 +2045,7 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
             "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
             "expense_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
             "category": st.column_config.SelectboxColumn("Category", options=[""] + categories, required=False),
-            "subcategory": st.column_config.TextColumn(
-                "Subcategory",
-                disabled=True,
-                help=(
-                    "Use the bulk categorise panel above for changes. "
-                    "Its subcategory list is filtered by the selected category."
-                ),
-            ),
+            "subcategory": subcategory_config,
             "reviewed": st.column_config.CheckboxColumn(
                 "Reviewed",
                 help="Untick to send the transaction back to Pending Review.",
@@ -2306,10 +2356,35 @@ def _render_executive_drilldown(
     _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory)
 
 
-def _render_executive_completeness_check(filtered_transactions, categories_df, visible_report_groups):
+def _render_executive_completeness_check(
+    filtered_transactions,
+    categories_df,
+    visible_report_groups,
+    active_database_rows=None,
+):
     from reporting import build_report_verification
 
     summary, detail = build_report_verification(filtered_transactions, categories_df)
+    reviewed_checked = len(filtered_transactions)
+    active_database_count = len(active_database_rows) if active_database_rows is not None else reviewed_checked
+    reviewed_ids = set()
+    if "id" in filtered_transactions.columns:
+        reviewed_ids = {
+            int(value)
+            for value in pd.to_numeric(filtered_transactions["id"], errors="coerce").dropna().tolist()
+        }
+    active_ids = set()
+    if active_database_rows is not None and "id" in active_database_rows.columns:
+        active_ids = {
+            int(value)
+            for value in pd.to_numeric(active_database_rows["id"], errors="coerce").dropna().tolist()
+        }
+    pending_or_unreviewed = len(active_ids - reviewed_ids) if active_ids else max(0, active_database_count - reviewed_checked)
+    represented_rows = int(summary.get("represented_rows", 0) or 0)
+    needs_attention_rows = int(summary.get("rows_needing_attention", 0) or 0)
+    reviewed_not_represented = max(0, reviewed_checked - represented_rows - needs_attention_rows)
+    reconciled_rows = represented_rows + needs_attention_rows + pending_or_unreviewed + reviewed_not_represented
+    reconciliation_gap = active_database_count - reconciled_rows
     setup_group_count = (
         categories_df.get("report_group", pd.Series(dtype=str)).fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()
         if not categories_df.empty
@@ -2335,18 +2410,27 @@ def _render_executive_completeness_check(filtered_transactions, categories_df, v
     hidden_rows = int((~report_groups.isin(visible_set) & report_groups.ne("")).sum()) if visible_set else 0
     missing_groups = int(report_groups.eq("").sum()) if not detail.empty else 0
     render_summary_strip([
-        ("Completeness checked", summary.get("database_rows", 0)),
-        ("Represented rows", summary.get("represented_rows", 0)),
-        ("Needs attention", summary.get("rows_needing_attention", 0)),
+        ("Active database rows", active_database_count),
+        ("Reviewed rows checked", reviewed_checked),
+        ("Represented rows", represented_rows),
+        ("Needs attention", needs_attention_rows),
+        ("Pending / not reviewed", pending_or_unreviewed),
+        ("Reviewed not represented", reviewed_not_represented),
+        ("Row reconciliation", "OK" if reconciliation_gap == 0 else f"Gap {reconciliation_gap:+d}"),
         ("Hidden by visibility", hidden_rows),
         ("Setup groups", setup_group_count),
         ("Setup categories", setup_category_count),
         ("Setup subcategories", setup_subcategory_count),
     ])
-    if summary.get("rows_needing_attention", 0) or missing_groups or hidden_rows:
+    if needs_attention_rows or missing_groups or hidden_rows or reviewed_not_represented or reconciliation_gap:
         st.warning(
             "Report completeness check found rows to review. Open the audit below to see whether rows are missing "
             "USD equivalents/rates, missing reporting groups, or hidden by the selected Executive visibility list."
+        )
+    elif pending_or_unreviewed:
+        st.info(
+            "All reviewed rows are represented. Pending/not reviewed database rows are counted above and will enter "
+            "the Executive Report after review."
         )
     else:
         st.success("Report completeness check passed for the current period.")
@@ -2404,6 +2488,27 @@ def render_executive_report():
     reviewed = reviewed.copy()
     reviewed["txn_date"] = pd.to_datetime(reviewed["txn_date"], errors="coerce")
     filtered = reviewed[reviewed["txn_date"].notna() & (reviewed["txn_date"] <= cutoff_ts)].copy()
+    active_database_rows = get_all_transactions()
+    if not active_database_rows.empty:
+        active_database_rows = active_database_rows.copy()
+        active_database_rows["txn_date"] = pd.to_datetime(active_database_rows["txn_date"], errors="coerce")
+        status_series = (
+            active_database_rows["status"]
+            if "status" in active_database_rows.columns
+            else pd.Series("", index=active_database_rows.index)
+        )
+        active_database_rows["_status_key"] = (
+            status_series
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.casefold()
+        )
+        active_database_rows = active_database_rows[
+            active_database_rows["txn_date"].notna()
+            & (active_database_rows["txn_date"] <= cutoff_ts)
+            & active_database_rows["_status_key"].ne("excluded")
+        ].drop(columns=["_status_key"], errors="ignore")
     if filtered.empty:
         st.warning("No reviewed transactions exist up to the selected date.")
         return
@@ -2432,7 +2537,12 @@ def render_executive_report():
             visible_report_groups = all_report_groups
         else:
             visible_report_groups = _render_executive_group_visibility_control(all_report_groups)
-        _render_executive_completeness_check(filtered, categories_df, visible_report_groups)
+        _render_executive_completeness_check(
+            filtered,
+            categories_df,
+            visible_report_groups,
+            active_database_rows=active_database_rows,
+        )
 
     if visible_report_groups:
         expenses = expenses[
@@ -3078,7 +3188,7 @@ elif page == "Database":
             all_tx = all_tx[all_tx["_status_key"] != "excluded"].copy()
         all_tx = all_tx.drop(columns=["_status_key"], errors="ignore")
         all_tx = add_report_group_column(all_tx, categories_df)
-        db_filtered = transaction_filter_controls(all_tx, "database")
+        db_filtered = transaction_filter_controls(all_tx, "database", include_category=True)
         search = st.text_input("Search database")
         db_view = db_filtered.copy()
         if search:
@@ -3138,6 +3248,17 @@ elif page == "Database":
             "report_group",
             "match_type",
         ]
+        visible_category = _single_visible_category(db_view)
+        if visible_category:
+            st.caption(
+                f"Subcategory dropdown is filtered to {visible_category}. "
+                "Use the Category filter above to switch category safely."
+            )
+        else:
+            st.caption(
+                "For direct subcategory dropdown editing, filter Database to one category first. "
+                "This prevents choosing a subcategory from the wrong category."
+            )
         db_edit = st.data_editor(
             db_view[[col for col in editable_cols if col in db_view.columns]],
             use_container_width=True,
@@ -3157,13 +3278,13 @@ elif page == "Database":
                     options=[""] + categories,
                     required=False,
                 ),
-                "subcategory": st.column_config.TextColumn(
-                    "Subcategory",
-                    disabled=True,
-                    help=(
-                        "Use the filtered correction panel above for subcategory changes. "
-                        "That panel only shows subcategories belonging to the selected category."
+                "subcategory": _subcategory_column_config(
+                    visible_category,
+                    (
+                        "Filter Database to one category first, or use the filtered correction panel above. "
+                        "This prevents invalid category/subcategory combinations."
                     ),
+                    existing_values=db_view.get("subcategory", pd.Series(dtype=str)).fillna("").astype(str).tolist(),
                 ),
                 "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
             },

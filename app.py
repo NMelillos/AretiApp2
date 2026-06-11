@@ -1621,7 +1621,21 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
     else:
         labels = sorted(value for value in raw_labels if value)
     if extra_labels:
-        labels = _ordered_text_values(labels + extra_labels)
+        if level_column == "subcategory":
+            # Preserve the blank bucket for real transactions without a subcategory.
+            # _ordered_text_values intentionally drops blanks for normal setup labels.
+            merged_labels = []
+            seen = set()
+            for value in labels + extra_labels:
+                text = str(value or "").strip()
+                key = text.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged_labels.append(text)
+            labels = merged_labels
+        else:
+            labels = _ordered_text_values(labels + extra_labels)
     for label in labels:
         frame = (
             expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()

@@ -1031,11 +1031,13 @@ def editable_pending_table(df, categories, subcategories, key):
                 options=[""] + categories,
                 required=False,
             ),
-            "subcategory": st.column_config.SelectboxColumn(
+            "subcategory": st.column_config.TextColumn(
                 "Subcategory",
-                options=[""] + subcategories,
-                required=False,
-                help="Use a subcategory from the selected category. When saved, known subcategories automatically align the category.",
+                disabled=True,
+                help=(
+                    "Use the filtered correction panel above for subcategory changes. "
+                    "That panel only shows subcategories belonging to the selected category."
+                ),
             ),
         },
     )
@@ -1924,7 +1926,6 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
     ])
     render_wrapped_descriptions(detail_view, expanded=True)
     render_bulk_categorise_panel(detail_view, categories, "executive_detail")
-    filtered_subcategories = get_subcategories(selected_category) or get_subcategories()
     edited_detail = st.data_editor(
         visible,
         use_container_width=True,
@@ -1940,11 +1941,13 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
             "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
             "expense_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
             "category": st.column_config.SelectboxColumn("Category", options=[""] + categories, required=False),
-            "subcategory": st.column_config.SelectboxColumn(
+            "subcategory": st.column_config.TextColumn(
                 "Subcategory",
-                options=[""] + filtered_subcategories,
-                required=False,
-                help="Only subcategories connected to the selected category are shown here.",
+                disabled=True,
+                help=(
+                    "Use the bulk categorise panel above for changes. "
+                    "Its subcategory list is filtered by the selected category."
+                ),
             ),
             "reviewed": st.column_config.CheckboxColumn(
                 "Reviewed",
@@ -2358,7 +2361,7 @@ def render_executive_report():
         st.warning("No reviewed transactions exist up to the selected date.")
         return
 
-    _, expenses, _, _ = _prepare_report_data(filtered, categories_df)
+    _, expenses, _, _ = _prepare_report_data(filtered, categories_df, include_own_funds=True)
     all_report_groups = _executive_report_group_options(categories_df, expenses)
     if shared_report:
         visible_report_groups = _executive_default_visible_groups(all_report_groups)
@@ -3103,11 +3106,13 @@ elif page == "Database":
                     options=[""] + categories,
                     required=False,
                 ),
-                "subcategory": st.column_config.SelectboxColumn(
+                "subcategory": st.column_config.TextColumn(
                     "Subcategory",
-                    options=[""] + subcategories,
-                    required=False,
-                    help="Use the filtered correction panel for dropdown selection. Known subcategories automatically align the category when saved.",
+                    disabled=True,
+                    help=(
+                        "Use the filtered correction panel above for subcategory changes. "
+                        "That panel only shows subcategories belonging to the selected category."
+                    ),
                 ),
                 "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
             },

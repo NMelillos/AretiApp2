@@ -1770,11 +1770,19 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
             ("trend_text", "Status from previous month", 1.25, lambda row: row["trend_text"], "trend_class"),
             ("period_change", f"Trend {trend_start}-{trend_end}", 1.25, lambda row: _money(row["period_change"]), "period_trend_class"),
         ]
-    widths = [2.4, 1, 0.75, 1] + [1 for _ in display_months] + [width for _, _, width, _, _ in tail_defs]
+    base_defs = [("total", "SUM", 1, lambda row: _money(row["total"]))]
+    if not show_all_months:
+        base_defs.extend([
+            ("share_pct", "%", 0.75, lambda row: _percent(row["share_pct"])),
+            ("average", "Average", 1, lambda row: _money(row["average"])),
+        ])
+    widths = [2.4] + [width for _, _, width, _ in base_defs] + [1 for _ in display_months] + [
+        width for _, _, width, _, _ in tail_defs
+    ]
     header_cols = st.columns(widths)
     col_idx = 0
     header_cols[col_idx].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
-    for label in ["SUM", "%", "Average"]:
+    for _, label, _, _ in base_defs:
         col_idx += 1
         header_cols[col_idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
     for month in display_months:
@@ -1794,9 +1802,9 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
             if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
                 _set_executive_selection(level, row["value"])
                 st.rerun()
-        for value in [_money(row["total"]), _percent(row["share_pct"]), _money(row["average"])]:
+        for _, _, _, formatter in base_defs:
             col_idx += 1
-            cols[col_idx].markdown(f"<div class=\"drill-cell\">{value}</div>", unsafe_allow_html=True)
+            cols[col_idx].markdown(f"<div class=\"drill-cell\">{formatter(row)}</div>", unsafe_allow_html=True)
         for month in display_months:
             col_idx += 1
             cols[col_idx].markdown(

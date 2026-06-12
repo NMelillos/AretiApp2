@@ -831,6 +831,108 @@ def add_report_group_column(df, categories_df):
     return out
 
 
+def _setup_category_pair_reference(categories_df):
+    category_keys = set()
+    pair_keys = set()
+    if categories_df is None or categories_df.empty or "category" not in categories_df.columns:
+        return category_keys, pair_keys
+    for _, row in categories_df.iterrows():
+        category = str(row.get("category", "") or "").strip()
+        if not category:
+            continue
+        category_key = category.casefold()
+        category_keys.add(category_key)
+        subcategory = str(row.get("subcategory", "") or "").strip()
+        if subcategory:
+            pair_keys.add((category_key, subcategory.casefold()))
+    return category_keys, pair_keys
+
+
+def _category_pair_status(category, subcategory, category_keys, pair_keys):
+    category_text = str(category or "").strip()
+    subcategory_text = str(subcategory or "").strip()
+    if not category_text:
+        return "Missing category"
+    category_key = category_text.casefold()
+    if category_key not in category_keys:
+        return "Category not in Setup"
+    if not subcategory_text:
+        return "No subcategory"
+    if (category_key, subcategory_text.casefold()) not in pair_keys:
+        return "Subcategory not linked to category"
+    return "OK"
+
+
+def _executive_row_count_verification_frame(active_database_rows, categories_df, visible_report_groups):
+    columns = [
+        "Reporting group",
+        "Category",
+        "Subcategory",
+        "Rows",
+        "In current Executive view",
+        "Setup check",
+    ]
+    if active_database_rows is None or active_database_rows.empty:
+        return pd.DataFrame(columns=columns)
+
+    audit = add_report_group_column(active_database_rows, categories_df)
+    category_keys, pair_keys = _setup_category_pair_reference(categories_df)
+    visible_set = {str(group or "").strip() for group in (visible_report_groups or []) if str(group or "").strip()}
+
+    audit["_report_group"] = (
+        audit.get("report_group", pd.Series("", index=audit.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("", "Unassigned reporting group")
+    )
+    audit["_category"] = (
+        audit.get("category", pd.Series("", index=audit.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("", "Unassigned category")
+    )
+    audit["_subcategory"] = (
+        audit.get("subcategory", pd.Series("", index=audit.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace("", "No subcategory")
+    )
+    audit["_setup_check"] = audit.apply(
+        lambda row: _category_pair_status(
+            row.get("category", ""),
+            row.get("subcategory", ""),
+            category_keys,
+            pair_keys,
+        ),
+        axis=1,
+    )
+    audit["_in_current_view"] = (
+        audit["_report_group"].isin(visible_set) if visible_set else True
+    )
+
+    counts = (
+        audit.groupby(
+            ["_report_group", "_category", "_subcategory", "_in_current_view", "_setup_check"],
+            dropna=False,
+        )
+        .size()
+        .reset_index(name="Rows")
+        .rename(columns={
+            "_report_group": "Reporting group",
+            "_category": "Category",
+            "_subcategory": "Subcategory",
+            "_in_current_view": "In current Executive view",
+            "_setup_check": "Setup check",
+        })
+        .sort_values(["Reporting group", "Category", "Subcategory"], kind="stable")
+        .reset_index(drop=True)
+    )
+    return counts[columns]
+
+
 def transaction_filter_controls(df, key_prefix, include_category=False):
     filtered = df.copy()
     if filtered.empty:
@@ -2345,16 +2447,7 @@ def _render_family_analysis_button(expenses, months, month_labels):
         return
 
     st.markdown("### 1-family AI analysis")
-    custom_prompt = st.text_area(
-        "AI analysis instructions",
-        value=st.session_state.get("family_analysis_prompt", ""),
-        placeholder=(
-            "Optional: write the context you want the analysis to consider, such as spending habits, "
-            "family priorities, recurring costs, or what kind of human recommendations you want."
-        ),
-        height=140,
-        key="family_analysis_prompt",
-    )
+    custom_prompt = st.session_state.get("family_analysis_prompt", "")
     if st.button("Generate 1-family AI analysis", type="primary", key="generate_family_analysis"):
         st.session_state["family_analysis_generated"] = True
 
@@ -2487,132 +2580,84 @@ def _render_executive_completeness_check(
     active_database_rows=None,
     executive_row_count=None,
 ):
-    from reporting import build_report_verification
-
-    summary, detail = build_report_verification(filtered_transactions, categories_df)
     reviewed_checked = len(filtered_transactions)
     active_database_count = len(active_database_rows) if active_database_rows is not None else reviewed_checked
-    reviewed_ids = set()
-    if "id" in filtered_transactions.columns:
-        reviewed_ids = {
-            int(value)
-            for value in pd.to_numeric(filtered_transactions["id"], errors="coerce").dropna().tolist()
-        }
-    active_ids = set()
-    if active_database_rows is not None and "id" in active_database_rows.columns:
-        active_ids = {
-            int(value)
-            for value in pd.to_numeric(active_database_rows["id"], errors="coerce").dropna().tolist()
-        }
-    pending_or_unreviewed = len(active_ids - reviewed_ids) if active_ids else max(0, active_database_count - reviewed_checked)
-    represented_rows = int(summary.get("represented_rows", 0) or 0)
-    needs_attention_rows = int(summary.get("rows_needing_attention", 0) or 0)
-    reviewed_not_represented = max(0, reviewed_checked - represented_rows - needs_attention_rows)
-    reconciled_rows = represented_rows + needs_attention_rows + pending_or_unreviewed + reviewed_not_represented
-    reconciliation_gap = active_database_count - reconciled_rows
-    active_no_category_rows = 0
-    active_no_subcategory_rows = 0
-    no_subcategory_audit = pd.DataFrame()
+    pending_or_unreviewed = 0
     if active_database_rows is not None and not active_database_rows.empty:
-        active_category = active_database_rows.get("category", pd.Series("", index=active_database_rows.index)).fillna("").astype(str).str.strip()
-        active_subcategory = active_database_rows.get("subcategory", pd.Series("", index=active_database_rows.index)).fillna("").astype(str).str.strip()
-        active_no_category_rows = int(active_category.eq("").sum())
-        active_no_subcategory_rows = int(active_subcategory.eq("").sum())
-        no_subcategory_audit = active_database_rows[active_subcategory.eq("")].copy()
-        no_subcategory_audit = add_report_group_column(no_subcategory_audit, categories_df)
-    setup_group_count = (
-        categories_df.get("report_group", pd.Series(dtype=str)).fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()
-        if not categories_df.empty
+        status_key = (
+            active_database_rows.get("status", pd.Series("", index=active_database_rows.index))
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.casefold()
+        )
+        reviewed_raw = active_database_rows.get(
+            "reviewed",
+            pd.Series(False, index=active_database_rows.index),
+        ).fillna(False)
+        if pd.api.types.is_numeric_dtype(reviewed_raw):
+            reviewed_flag = pd.to_numeric(reviewed_raw, errors="coerce").fillna(0).astype(int).eq(1)
+        elif pd.api.types.is_bool_dtype(reviewed_raw):
+            reviewed_flag = reviewed_raw.astype(bool)
+        else:
+            reviewed_flag = reviewed_raw.astype(str).str.strip().str.casefold().isin(["1", "true", "yes", "reviewed"])
+        pending_or_unreviewed = int((~reviewed_flag | status_key.ne("reviewed")).sum())
+    executive_row_count = active_database_count if executive_row_count is None else int(executive_row_count)
+    count_gap = active_database_count - executive_row_count
+    row_count_frame = _executive_row_count_verification_frame(
+        active_database_rows,
+        categories_df,
+        visible_report_groups,
+    )
+    outside_view_rows = (
+        int(row_count_frame.loc[~row_count_frame["In current Executive view"], "Rows"].sum())
+        if not row_count_frame.empty
         else 0
     )
-    setup_category_count = (
-        categories_df.get("category", pd.Series(dtype=str)).fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()
-        if not categories_df.empty
+    setup_issue_frame = (
+        row_count_frame[~row_count_frame["Setup check"].isin(["OK", "No subcategory"])].copy()
+        if not row_count_frame.empty
+        else pd.DataFrame()
+    )
+    no_subcategory_rows = (
+        int(row_count_frame.loc[row_count_frame["Setup check"].eq("No subcategory"), "Rows"].sum())
+        if not row_count_frame.empty
         else 0
     )
-    setup_subcategory_count = (
-        categories_df.get("subcategory", pd.Series(dtype=str)).fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()
-        if not categories_df.empty
-        else 0
-    )
-    visible_set = {str(group or "").strip() for group in (visible_report_groups or [])}
-    report_groups = (
-        detail.get("Reporting group", pd.Series(dtype=str))
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
-    hidden_rows = int((~report_groups.isin(visible_set) & report_groups.ne("")).sum()) if visible_set else 0
-    missing_groups = int(report_groups.eq("").sum()) if not detail.empty else 0
-    executive_row_count = represented_rows if executive_row_count is None else int(executive_row_count)
     render_summary_strip([
         ("Database rows", active_database_count),
         ("Executive report rows", executive_row_count),
+        ("Difference", count_gap),
+        ("Pending / unreviewed", pending_or_unreviewed),
     ])
-    if active_database_count != executive_row_count or needs_attention_rows or missing_groups or hidden_rows or reviewed_not_represented or reconciliation_gap:
+
+    if count_gap or outside_view_rows or not setup_issue_frame.empty:
         st.warning(
-            "Report completeness check found rows to review. The audit below explains whether rows are missing "
-            "USD equivalents/rates, have missing reporting groups, are hidden by the selected Executive visibility list, "
-            "or are not yet represented in the current Executive view."
+            "Row-count verification needs review. Use the table below to compare the active database rows "
+            "against the Executive view by reporting group, category, and subcategory."
         )
-    elif pending_or_unreviewed:
+    elif no_subcategory_rows:
         st.info(
-            "All active rows that can be represented are counted above. Pending/not reviewed rows remain visible "
-            "in the Executive Report as part of the database completeness check."
+            f"All active rows are counted. {no_subcategory_rows} row(s) have no subcategory and are shown "
+            "as 'No subcategory' so they cannot disappear silently."
         )
     else:
-        st.success("Report completeness check passed for the current period.")
+        st.success("Row-count verification is balanced for the current period.")
 
-    audit_cols = [
-        "Database ID",
-        "Date",
-        "Account",
-        "Bank",
-        "Account number",
-        "Currency",
-        "Statement amount",
-        "USD equivalent",
-        "Category",
-        "Subcategory",
-        "Reporting group",
-        "Report status",
-        "Full statement description",
-    ]
-    with st.expander("Report completeness audit", expanded=False):
-        st.dataframe(
-            detail[[col for col in audit_cols if col in detail.columns]],
-            use_container_width=True,
-            hide_index=True,
-        )
-    if active_no_subcategory_rows:
-        no_sub_cols = [
-            "id",
-            "txn_date",
-            "account_name",
-            "bank",
-            "account_number",
-            "currency",
-            "amount",
-            "amount_usd",
-            "category",
-            "subcategory",
-            "report_group",
-            "status",
-            "reviewed",
-            "original_description",
-        ]
-        with st.expander(
-            f"No subcategory / unassigned subcategory rows ({active_no_subcategory_rows})",
-            expanded=False,
-        ):
+    if not row_count_frame.empty:
+        with st.expander("Row-count verification by reporting group / category / subcategory", expanded=True):
             st.caption(
-                "These active database rows have an empty subcategory. They are counted here so they cannot disappear silently."
+                "This is the verifiable count table: export the backup Excel, then compare the row counts "
+                "by reporting group, category, and subcategory. Pending and reviewed active rows are included."
             )
-            st.dataframe(
-                no_subcategory_audit[[col for col in no_sub_cols if col in no_subcategory_audit.columns]],
-                use_container_width=True,
-                hide_index=True,
+            st.dataframe(row_count_frame, use_container_width=True, hide_index=True)
+    if not setup_issue_frame.empty:
+        with st.expander("Category / subcategory combinations needing correction", expanded=True):
+            st.caption(
+                "These combinations are not present in the Expense categories setup. Correct them in Database "
+                "or Pending Review so the report can place them cleanly."
             )
+            st.dataframe(setup_issue_frame, use_container_width=True, hide_index=True)
 
 
 def render_executive_report():
@@ -3902,6 +3947,22 @@ elif page == "Setup":
             st.success(f"Saved visibility for {count} reporting groups.")
             st.cache_data.clear()
             st.rerun()
+
+    st.markdown("### AI Analysis Instructions")
+    st.caption(
+        "Write the private guidance for the 1-family AI analysis here. The Executive Report shows only the "
+        "analysis button and results, not this setup prompt."
+    )
+    st.text_area(
+        "1-family AI analysis prompt",
+        value=st.session_state.get("family_analysis_prompt", ""),
+        placeholder=(
+            "Optional: describe family priorities, spending habits, recurring costs, or the type of "
+            "human recommendations the analysis should consider."
+        ),
+        height=150,
+        key="family_analysis_prompt",
+    )
 
     st.markdown("### Current Setup")
     setup_left, setup_middle, setup_right = st.columns(3)

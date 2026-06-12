@@ -768,6 +768,25 @@ def _rate_from_label_value(label, value):
     return rate_type, rate_value
 
 
+def _parse_rate_month_cell(value):
+    if pd.isna(value):
+        return pd.NaT
+    if isinstance(value, datetime):
+        return pd.to_datetime(value, errors="coerce")
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Plain rate values such as 1.17 must not be interpreted as 1970 dates.
+        number = float(value)
+        if 20000 <= number <= 80000:
+            return pd.to_datetime(number, unit="D", origin="1899-12-30", errors="coerce")
+        return pd.NaT
+
+    text = str(value).strip()
+    if not text or re.fullmatch(r"[-+]?\d+(?:\.\d+)?", text):
+        return pd.NaT
+    return pd.to_datetime(text, errors="coerce")
+
+
 def replace_rates_from_excel(uploaded_file):
     uploaded_file.seek(0)
     raw = pd.read_excel(uploaded_file, header=None)
@@ -777,21 +796,26 @@ def replace_rates_from_excel(uploaded_file):
         month_value = None
         date_row = None
         for row in range(raw.shape[0]):
-            candidate = pd.to_datetime(raw.iat[row, col], errors="coerce")
+            candidate = _parse_rate_month_cell(raw.iat[row, col])
             if not pd.isna(candidate):
                 month_value = raw.iat[row, col]
                 date_row = row
                 break
-        month = pd.to_datetime(month_value, errors="coerce")
+        month = _parse_rate_month_cell(month_value)
         if pd.isna(month):
-            continue
-        month_key = month.to_period("M").to_timestamp().strftime("%Y-%m-%d")
-        for row in range((date_row or 0) + 1, raw.shape[0]):
+            month_key = "1970-01-01"
+            start_row = 0
+        else:
+            month_key = month.to_period("M").to_timestamp().strftime("%Y-%m-%d")
+            start_row = (date_row or 0) + 1
+        for row in range(start_row, raw.shape[0]):
             label = raw.iat[row, 0]
             value = pd.to_numeric(raw.iat[row, col], errors="coerce")
             if pd.isna(label) or pd.isna(value) or float(value) == 0:
                 continue
             rate_type, rate_value = _rate_from_label_value(label, value)
+            if not rate_type:
+                continue
             rows.append((month_key, rate_type, rate_value, _now()))
 
     conn = get_connection()

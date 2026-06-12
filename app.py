@@ -1655,13 +1655,13 @@ def _executive_month_window(cutoff_month):
 
 
 def _executive_month_labels(months):
-    return {month: month.to_timestamp().strftime("%B %Y") for month in months}
+    return {month: month.to_timestamp().strftime("%b %Y").upper() for month in months}
 
 
 def _executive_short_month_label(month):
     if month is None:
         return ""
-    return month.to_timestamp().strftime("%b")
+    return month.to_timestamp().strftime("%b").upper()
 
 
 def _executive_row_html(group, metrics, months):
@@ -1951,18 +1951,18 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
     trend_end = _executive_short_month_label(months[-1] if months else None)
     if show_all_months:
         tail_defs = [
-            ("change", "Change from previous month", 1.25, lambda row: _money(row["change"]), "trend_class"),
-            ("change_pct", "% change", 0.85, lambda row: _percent(row["change_pct"]), "trend_class"),
-            ("trend_text", "Status from previous month", 1.25, lambda row: row["trend_text"], "trend_class"),
-            ("period_change", f"Trend {trend_start}-{trend_end}", 1.25, lambda row: _money(row["period_change"]), "period_trend_class"),
-            ("period_change_pct", "% trend", 0.85, lambda row: _percent(row["period_change_pct"]), "period_trend_class"),
-            ("period_trend_text", "Trend status", 1.15, lambda row: row["period_trend_text"], "period_trend_class"),
+            ("change", "CHANGE FROM PREVIOUS MONTH", 1.25, lambda row: _money(row["change"]), "trend_class"),
+            ("change_pct", "% CHANGE FROM PREVIOUS MONTH", 0.95, lambda row: _percent(row["change_pct"]), "trend_class"),
+            ("trend_text", "STATUS FROM PREVIOUS MONTH", 1.25, lambda row: row["trend_text"], "trend_class"),
+            ("period_change", f"TREND {trend_start}-{trend_end}", 1.25, lambda row: _money(row["period_change"]), "period_trend_class"),
+            ("period_change_pct", "% CHANGE IN TREND", 0.95, lambda row: _percent(row["period_change_pct"]), "period_trend_class"),
+            ("period_trend_text", "TREND STATUS SINCE JAN 26", 1.15, lambda row: row["period_trend_text"], "period_trend_class"),
         ]
     else:
         tail_defs = [
-            ("change", "Change from previous month", 1.25, lambda row: _money(row["change"]), "trend_class"),
-            ("trend_text", "Status from previous month", 1.25, lambda row: row["trend_text"], "trend_class"),
-            ("period_change", f"Trend {trend_start}-{trend_end}", 1.25, lambda row: _money(row["period_change"]), "period_trend_class"),
+            ("change", "CHANGE FROM PREVIOUS MONTH", 1.25, lambda row: _money(row["change"]), "trend_class"),
+            ("trend_text", "STATUS FROM PREVIOUS MONTH", 1.25, lambda row: row["trend_text"], "trend_class"),
+            ("period_change", f"TREND {trend_start}-{trend_end}", 1.25, lambda row: _money(row["period_change"]), "period_trend_class"),
         ]
     base_defs = [("total", "SUM", 1, lambda row: _money(row["total"]))]
     if not show_all_months:
@@ -1970,6 +1970,8 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
             ("share_pct", "%", 0.75, lambda row: _percent(row["share_pct"])),
             ("average", "Average", 1, lambda row: _money(row["average"])),
         ])
+    else:
+        base_defs.append(("share_pct", "% OF TOTAL", 0.85, lambda row: _percent(row["share_pct"])))
     widths = [2.4] + [width for _, _, width, _ in base_defs] + [1 for _ in display_months] + [
         width for _, _, width, _, _ in tail_defs
     ]
@@ -2205,7 +2207,7 @@ def _format_analysis_bullets(title, rows, name_column, direction):
     return "\n".join(bullets)
 
 
-def _build_family_analysis(expenses, months, month_labels):
+def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
     family = expenses[
         expenses["report_group"].fillna("").astype(str).str.strip().str.casefold().eq("1-family")
     ].copy()
@@ -2265,11 +2267,17 @@ def _build_family_analysis(expenses, months, month_labels):
         "- For recurring or repeated costs, set a monthly reference amount and investigate anything above it.",
         "- Check the transaction detail under each subcategory before cutting, so essential family costs are separated from discretionary costs.",
     ]
+    prompt_text = str(custom_prompt or "").strip()
+    if prompt_text:
+        cut_lines.insert(
+            0,
+            "- Apply the written family context and spending-habit instructions when judging what is unusual, recurring, or discretionary.",
+        )
 
-    analysis = "\n\n".join([
+    sections = [
         (
             f"**1-family analysis through {month_labels.get(current_month, str(current_month))}**\n"
-            f"- Total reviewed 1-family expenses in this report window: {_money(total)}.\n"
+            f"- Total active 1-family report rows in this report window: {_money(total)}.\n"
             f"- Current month: {_money(current_total)}; previous month: {_money(previous_total)}.\n"
             f"- Overall movement: 1-family {trend_text} by {_money(abs(change))}."
         ),
@@ -2278,7 +2286,13 @@ def _build_family_analysis(expenses, months, month_labels):
         _format_analysis_bullets("What is going down", decrease_rows, "category", "decreased"),
         "**What to notice**\n" + "\n".join(subcategory_lines),
         "**How to cut down**\n" + "\n".join(cut_lines),
-    ])
+    ]
+    if prompt_text:
+        sections.append(
+            "**Additional instructions considered**\n"
+            + prompt_text
+        )
+    analysis = "\n\n".join(sections)
 
     export_rows = []
     for _, row in category_totals.iterrows():
@@ -2308,6 +2322,15 @@ def _build_family_analysis(expenses, months, month_labels):
             "Share": "",
             "Comment": f"Decreased from {_money(row.get('previous', 0))} to {_money(row.get('current', 0))}.",
         })
+    if prompt_text:
+        export_rows.append({
+            "Section": "Areti instructions",
+            "Category": "",
+            "Subcategory": "",
+            "Amount": "",
+            "Share": "",
+            "Comment": prompt_text,
+        })
 
     return analysis, pd.DataFrame(export_rows)
 
@@ -2322,11 +2345,21 @@ def _render_family_analysis_button(expenses, months, month_labels):
         return
 
     st.markdown("### 1-family AI analysis")
+    custom_prompt = st.text_area(
+        "AI analysis instructions",
+        value=st.session_state.get("family_analysis_prompt", ""),
+        placeholder=(
+            "Optional: write the context you want the analysis to consider, such as spending habits, "
+            "family priorities, recurring costs, or what kind of human recommendations you want."
+        ),
+        height=140,
+        key="family_analysis_prompt",
+    )
     if st.button("Generate 1-family AI analysis", type="primary", key="generate_family_analysis"):
         st.session_state["family_analysis_generated"] = True
 
     if st.session_state.get("family_analysis_generated"):
-        analysis, export_df = _build_family_analysis(expenses, months, month_labels)
+        analysis, export_df = _build_family_analysis(expenses, months, month_labels, custom_prompt)
         if analysis:
             st.markdown(analysis)
             if not export_df.empty:
@@ -2452,6 +2485,7 @@ def _render_executive_completeness_check(
     categories_df,
     visible_report_groups,
     active_database_rows=None,
+    executive_row_count=None,
 ):
     from reporting import build_report_verification
 
@@ -2510,30 +2544,21 @@ def _render_executive_completeness_check(
     )
     hidden_rows = int((~report_groups.isin(visible_set) & report_groups.ne("")).sum()) if visible_set else 0
     missing_groups = int(report_groups.eq("").sum()) if not detail.empty else 0
+    executive_row_count = represented_rows if executive_row_count is None else int(executive_row_count)
     render_summary_strip([
-        ("Active database rows", active_database_count),
-        ("Reviewed rows checked", reviewed_checked),
-        ("Represented rows", represented_rows),
-        ("Needs attention", needs_attention_rows),
-        ("Pending / not reviewed", pending_or_unreviewed),
-        ("Reviewed not represented", reviewed_not_represented),
-        ("Row reconciliation", "OK" if reconciliation_gap == 0 else f"Gap {reconciliation_gap:+d}"),
-        ("No category rows", active_no_category_rows),
-        ("No subcategory rows", active_no_subcategory_rows),
-        ("Hidden by visibility", hidden_rows),
-        ("Setup groups", setup_group_count),
-        ("Setup categories", setup_category_count),
-        ("Setup subcategories", setup_subcategory_count),
+        ("Database rows", active_database_count),
+        ("Executive report rows", executive_row_count),
     ])
-    if needs_attention_rows or missing_groups or hidden_rows or reviewed_not_represented or reconciliation_gap:
+    if active_database_count != executive_row_count or needs_attention_rows or missing_groups or hidden_rows or reviewed_not_represented or reconciliation_gap:
         st.warning(
-            "Report completeness check found rows to review. Open the audit below to see whether rows are missing "
-            "USD equivalents/rates, missing reporting groups, or hidden by the selected Executive visibility list."
+            "Report completeness check found rows to review. The audit below explains whether rows are missing "
+            "USD equivalents/rates, have missing reporting groups, are hidden by the selected Executive visibility list, "
+            "or are not yet represented in the current Executive view."
         )
     elif pending_or_unreviewed:
         st.info(
-            "All reviewed rows are represented. Pending/not reviewed database rows are counted above and will enter "
-            "the Executive Report after review."
+            "All active rows that can be represented are counted above. Pending/not reviewed rows remain visible "
+            "in the Executive Report as part of the database completeness check."
         )
     else:
         st.success("Report completeness check passed for the current period.")
@@ -2597,13 +2622,35 @@ def render_executive_report():
     st.subheader("TB Family Office Executive Expenses Report" if shared_report else "Executive Summary")
 
     ensure_usd_backfilled()
-    reviewed = get_saved_transactions()
+    all_transactions = get_all_transactions()
     categories_df = get_categories(include_subcategories=True)
-    if reviewed.empty:
-        st.info("No reviewed transactions are available for the executive report yet.")
+    if all_transactions.empty:
+        st.info("No transactions are available for the executive report yet.")
         return
 
-    date_values = pd.to_datetime(reviewed.get("txn_date"), errors="coerce").dropna()
+    all_transactions = all_transactions.copy()
+    all_transactions["txn_date"] = pd.to_datetime(all_transactions.get("txn_date"), errors="coerce")
+    status_series = (
+        all_transactions["status"]
+        if "status" in all_transactions.columns
+        else pd.Series("", index=all_transactions.index)
+    )
+    all_transactions["_status_key"] = (
+        status_series
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+    )
+    active_transactions = all_transactions[
+        all_transactions["txn_date"].notna()
+        & all_transactions["_status_key"].ne("excluded")
+    ].drop(columns=["_status_key"], errors="ignore")
+    if active_transactions.empty:
+        st.info("No active transactions are available for the executive report yet.")
+        return
+
+    date_values = pd.to_datetime(active_transactions.get("txn_date"), errors="coerce").dropna()
     default_end = date_values.max().date() if not date_values.empty else app_now().date()
     requested_end = st.query_params.get("to")
     if requested_end:
@@ -2617,35 +2664,18 @@ def render_executive_report():
     else:
         cutoff = st.date_input("Report until", value=default_end, key="executive_report_until")
     cutoff_ts = pd.Timestamp(cutoff)
-    reviewed = reviewed.copy()
-    reviewed["txn_date"] = pd.to_datetime(reviewed["txn_date"], errors="coerce")
-    filtered = reviewed[reviewed["txn_date"].notna() & (reviewed["txn_date"] <= cutoff_ts)].copy()
-    active_database_rows = get_all_transactions()
-    if not active_database_rows.empty:
-        active_database_rows = active_database_rows.copy()
-        active_database_rows["txn_date"] = pd.to_datetime(active_database_rows["txn_date"], errors="coerce")
-        status_series = (
-            active_database_rows["status"]
-            if "status" in active_database_rows.columns
-            else pd.Series("", index=active_database_rows.index)
-        )
-        active_database_rows["_status_key"] = (
-            status_series
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.casefold()
-        )
-        active_database_rows = active_database_rows[
-            active_database_rows["txn_date"].notna()
-            & (active_database_rows["txn_date"] <= cutoff_ts)
-            & active_database_rows["_status_key"].ne("excluded")
-        ].drop(columns=["_status_key"], errors="ignore")
+    filtered = active_transactions[active_transactions["txn_date"] <= cutoff_ts].copy()
+    active_database_rows = filtered.copy()
     if filtered.empty:
-        st.warning("No reviewed transactions exist up to the selected date.")
+        st.warning("No active transactions exist up to the selected date.")
         return
 
-    _, expenses, _, _ = _prepare_report_data(filtered, categories_df, include_own_funds=True)
+    _, expenses, _, _ = _prepare_report_data(
+        filtered,
+        categories_df,
+        include_own_funds=True,
+        include_all_valid=True,
+    )
     all_report_groups = _executive_report_group_options(categories_df, expenses)
     if shared_report:
         visible_report_groups = _executive_default_visible_groups(all_report_groups)
@@ -2661,7 +2691,7 @@ def render_executive_report():
             key="executive_report_type",
         ) or report_options[0]
         show_all_months = st.toggle(
-            "Analytical view: show all months and hidden columns",
+            "Analytical",
             value=False,
             key="executive_show_all_months",
         )
@@ -2669,20 +2699,22 @@ def render_executive_report():
             visible_report_groups = all_report_groups
         else:
             visible_report_groups = _render_executive_group_visibility_control(all_report_groups)
-        _render_executive_completeness_check(
-            filtered,
-            categories_df,
-            visible_report_groups,
-            active_database_rows=active_database_rows,
-        )
 
     if visible_report_groups:
         expenses = expenses[
             expenses["report_group"].fillna("").astype(str).str.strip().isin(visible_report_groups)
         ].copy()
+    if not shared_report:
+        _render_executive_completeness_check(
+            filtered,
+            categories_df,
+            visible_report_groups,
+            active_database_rows=active_database_rows,
+            executive_row_count=len(expenses),
+        )
 
     if expenses.empty and not visible_report_groups:
-        st.info("No reviewed expense rows match the selected period.")
+        st.info("No active report rows match the selected period.")
         return
 
     current_month = cutoff_ts.to_period("M")

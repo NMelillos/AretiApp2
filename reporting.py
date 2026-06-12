@@ -87,7 +87,7 @@ def _month_context(expenses):
     return months, labels
 
 
-def _prepare_report_data(transactions, categories, report_group=None, include_own_funds=False):
+def _prepare_report_data(transactions, categories, report_group=None, include_own_funds=False, include_all_valid=False):
     tx = transactions.copy()
     for column in ["txn_date", "amount", "amount_usd", "currency", "category", "subcategory"]:
         if column not in tx.columns:
@@ -136,7 +136,9 @@ def _prepare_report_data(transactions, categories, report_group=None, include_ow
         (tx["report_amount"] < 0)
         | (positive_amount & ~income_like & tx["report_group"].ne(UNASSIGNED_GROUP))
     )
-    if include_own_funds:
+    if include_all_valid:
+        expenses = tx.copy()
+    elif include_own_funds:
         expenses = tx[expense_mask | own_funds_mask].copy()
     else:
         expenses = tx[expense_mask & ~own_funds_mask].copy()

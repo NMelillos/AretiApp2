@@ -516,6 +516,22 @@ def _statement_year(text):
     return datetime.now().year
 
 
+def _is_credit_card_credit_description(description):
+    upper = str(description or "").upper()
+    credit_patterns = [
+        r"\bPAYMENT\s+(RECEIVED|THANK\s+YOU)\b",
+        r"\bTHANK\s+YOU\s+FOR\s+YOUR\s+PAYMENT\b",
+        r"\b(ONLINE|AUTOPAY|DIRECT\s+DEBIT|ACH|WEB|ELECTRONIC)\s+PAYMENT\b",
+        r"\bPAYMENT\s+TO\s+AMERICAN\s+EXPRESS\b",
+        r"\b(MERCHANT|STATEMENT)\s+CREDIT\b",
+        r"\bCREDIT\s+(FOR|ADJUSTMENT|BALANCE)\b",
+        r"\bREFUND\b",
+        r"\bREVERSAL\b",
+        r"\bADJUSTMENT\b",
+    ]
+    return any(re.search(pattern, upper) for pattern in credit_patterns)
+
+
 def _parse_credit_card_pdf_text(text):
     default_year = _statement_year(text)
     rows = []
@@ -543,15 +559,7 @@ def _parse_credit_card_pdf_text(text):
                 if not description or _is_pdf_noise(description):
                     current = None
                     continue
-                upper_desc = description.upper()
-                credit_hint = any(token in upper_desc for token in [
-                    "PAYMENT",
-                    "CREDIT",
-                    "REFUND",
-                    "REVERSAL",
-                    "ADJUSTMENT",
-                    "THANK YOU",
-                ])
+                credit_hint = _is_credit_card_credit_description(description)
                 amount = abs(_parse_amount(amount_text)) if credit_hint else -abs(_parse_amount(amount_text))
                 current = [_parse_any_date(match.group("date"), default_year), description, amount]
                 continue

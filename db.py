@@ -24,6 +24,33 @@ DEFAULT_DB_PATH = (
 )
 DB_PATH = "PostgreSQL database" if USING_POSTGRES else os.getenv("ARETI_DB_PATH") or str(DEFAULT_DB_PATH)
 _POSTGRES_POOL = None
+DEFAULT_HIDDEN_TRANSACTION_IDS = "3421,3422,3423"
+
+
+def _hidden_transaction_ids():
+    raw = os.getenv("HIDDEN_TRANSACTION_IDS", DEFAULT_HIDDEN_TRANSACTION_IDS).strip()
+    if raw.casefold() in {"", "0", "false", "none"}:
+        return []
+    ids = []
+    for token in re.split(r"[\s,;]+", raw):
+        if token.strip().isdigit():
+            ids.append(int(token.strip()))
+    return sorted(set(ids))
+
+
+def _hidden_filter_sql(column="id", prefix=" AND "):
+    ids = _hidden_transaction_ids()
+    if not ids:
+        return "", []
+    placeholders = ", ".join(["?"] * len(ids))
+    return f"{prefix}{column} NOT IN ({placeholders})", ids
+
+
+def _filter_hidden_transactions(df):
+    ids = _hidden_transaction_ids()
+    if not ids or df.empty or "id" not in df.columns:
+        return df
+    return df[~pd.to_numeric(df["id"], errors="coerce").isin(ids)].copy()
 
 
 def _now():
@@ -2033,12 +2060,14 @@ def save_pending_transactions(df, statement_name, statement_hash):
 def get_pending_transactions():
     conn = get_connection()
     try:
-        df = pd.read_sql_query("""
+        hidden_sql, hidden_params = _hidden_filter_sql()
+        df = pd.read_sql_query(f"""
             SELECT *
             FROM classified_transactions
             WHERE COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+            {hidden_sql}
             ORDER BY txn_date, id
-        """, conn)
+        """, conn, params=hidden_params)
     finally:
         conn.close()
     return df
@@ -2047,13 +2076,15 @@ def get_pending_transactions():
 def get_saved_transactions():
     conn = get_connection()
     try:
-        df = pd.read_sql_query("""
+        hidden_sql, hidden_params = _hidden_filter_sql()
+        df = pd.read_sql_query(f"""
             SELECT *
             FROM classified_transactions
             WHERE COALESCE(status, '') <> 'excluded'
               AND (COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1)
+              {hidden_sql}
             ORDER BY txn_date DESC, id DESC
-        """, conn)
+        """, conn, params=hidden_params)
     finally:
         conn.close()
     return df
@@ -2062,11 +2093,13 @@ def get_saved_transactions():
 def get_all_transactions():
     conn = get_connection()
     try:
-        df = pd.read_sql_query("""
+        hidden_sql, hidden_params = _hidden_filter_sql(prefix=" WHERE ")
+        df = pd.read_sql_query(f"""
             SELECT *
             FROM classified_transactions
+            {hidden_sql}
             ORDER BY id DESC
-        """, conn)
+        """, conn, params=hidden_params)
     finally:
         conn.close()
     return df
@@ -2151,27 +2184,30 @@ def get_dashboard_counts():
     try:
         cur = conn.cursor()
         counts = {}
+        hidden_sql, hidden_params = _hidden_filter_sql()
         queries = {
-            "categories": "SELECT COUNT(*) FROM category_list",
-            "accounts": "SELECT COUNT(*) FROM account_list",
-            "rates": "SELECT COUNT(*) FROM rates",
-            "pending": """
+            "categories": ("SELECT COUNT(*) FROM category_list", []),
+            "accounts": ("SELECT COUNT(*) FROM account_list", []),
+            "rates": ("SELECT COUNT(*) FROM rates", []),
+            "pending": (f"""
                 SELECT COUNT(*)
                 FROM classified_transactions
                 WHERE COALESCE(status, 'pending') = 'pending'
                   AND COALESCE(reviewed, 0) = 0
-            """,
-            "reviewed": """
+                  {hidden_sql}
+            """, hidden_params),
+            "reviewed": (f"""
                 SELECT COUNT(*)
                 FROM classified_transactions
                 WHERE COALESCE(status, '') <> 'excluded'
                   AND (COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1)
-            """,
-            "memory": "SELECT COUNT(*) FROM transaction_memory",
-            "statements": "SELECT COUNT(*) FROM statement_imports",
+                  {hidden_sql}
+            """, hidden_params),
+            "memory": ("SELECT COUNT(*) FROM transaction_memory", []),
+            "statements": ("SELECT COUNT(*) FROM statement_imports", []),
         }
-        for key, query in queries.items():
-            cur.execute(query)
+        for key, (query, params) in queries.items():
+            cur.execute(query, params)
             counts[key] = int(cur.fetchone()[0])
     finally:
         conn.close()

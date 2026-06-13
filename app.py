@@ -3032,6 +3032,11 @@ if page == "Import":
                 height=360,
             )
 
+            st.warning(
+                "Please verify that transaction signs and amounts have been imported correctly "
+                "before transferring transactions to Pending Review or the Database."
+            )
+
             if st.button("Import to pending review", type="primary"):
                 inserted, duplicate_statement, skipped_duplicates = save_pending_transactions(
                     classified,

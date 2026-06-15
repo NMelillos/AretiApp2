@@ -1,9 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from html import escape
 from io import BytesIO
+import json
 import os
 from pathlib import Path
 import re
+import urllib.error
+import urllib.request
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import zipfile
 
@@ -2573,6 +2576,157 @@ def _plain_ai_analysis_html(analysis):
     return "<div class=\"ai-analysis-box\">" + "<br>".join(lines) + "</div>"
 
 
+def _default_reporting_group_prompt():
+    return (
+        "Prepare a professional financial analysis for the selected reporting group using the report data provided. "
+        "Cover signed total, current month, previous month, main drivers, what to notice, and follow-up points. "
+        "Use only the supplied report data and do not invent transactions or explanations."
+    )
+
+
+def _analysis_rows_as_text(frame, columns, max_rows=60):
+    if frame is None or frame.empty:
+        return "- No rows."
+    output = []
+    safe_columns = [column for column in columns if column in frame.columns]
+    for _, row in frame.head(max_rows).iterrows():
+        parts = []
+        for column in safe_columns:
+            value = row.get(column, "")
+            if pd.isna(value):
+                value = ""
+            if isinstance(value, float):
+                value = round(value, 2)
+            parts.append(f"{column}: {value}")
+        output.append("- " + " | ".join(parts))
+    remaining = len(frame) - len(output)
+    if remaining > 0:
+        output.append(f"- {remaining} additional row(s) not shown in this context.")
+    return "\n".join(output)
+
+
+def _build_ai_report_data_context(
+    group_expenses,
+    category_totals,
+    report_group,
+    month_label,
+    total,
+    current_total,
+    previous_total,
+    status_delta,
+):
+    category_context = category_totals.copy()
+    if not category_context.empty:
+        category_context["_abs_sort"] = category_context["_signed_report_amount"].abs()
+        category_context = category_context.sort_values("_abs_sort", ascending=False).drop(columns=["_abs_sort"])
+
+    subcategory_context = (
+        group_expenses.groupby(["category", "subcategory"], dropna=False)["_signed_report_amount"]
+        .sum()
+        .reset_index()
+    )
+    if not subcategory_context.empty:
+        subcategory_context["subcategory"] = subcategory_context["subcategory"].fillna("").replace("", "No subcategory")
+        subcategory_context["_abs_sort"] = subcategory_context["_signed_report_amount"].abs()
+        subcategory_context = subcategory_context.sort_values("_abs_sort", ascending=False).drop(columns=["_abs_sort"])
+
+    monthly_context = (
+        group_expenses.groupby(["month", "category"], dropna=False)["_signed_report_amount"]
+        .sum()
+        .reset_index()
+        .sort_values(["month", "_signed_report_amount"], ascending=[True, True])
+    )
+
+    transaction_context = group_expenses.copy()
+    if not transaction_context.empty:
+        transaction_context["_abs_sort"] = transaction_context["_signed_report_amount"].abs()
+        transaction_context = transaction_context.sort_values("_abs_sort", ascending=False)
+        transaction_context = transaction_context.rename(columns={
+            "txn_date": "date",
+            "full_statement_description": "description",
+            "_signed_report_amount": "signed_amount_usd",
+        })
+
+    return (
+        f"Reporting group: {report_group}\n"
+        f"Report through: {month_label}\n"
+        f"Signed total: {_money(total)}\n"
+        f"Current month: {_money(current_total)}\n"
+        f"Previous month: {_money(previous_total)}\n"
+        f"Change from previous month: {_money(status_delta)}\n\n"
+        "Category totals:\n"
+        + _analysis_rows_as_text(category_context, ["category", "_signed_report_amount"], max_rows=80)
+        + "\n\nSubcategory totals:\n"
+        + _analysis_rows_as_text(subcategory_context, ["category", "subcategory", "_signed_report_amount"], max_rows=120)
+        + "\n\nMonthly category totals:\n"
+        + _analysis_rows_as_text(monthly_context, ["month", "category", "_signed_report_amount"], max_rows=160)
+        + "\n\nLargest transaction lines by absolute signed USD amount:\n"
+        + _analysis_rows_as_text(
+            transaction_context,
+            ["date", "signed_amount_usd", "currency", "category", "subcategory", "description", "account"],
+            max_rows=120,
+        )
+    )
+
+
+def _extract_openai_response_text(payload):
+    if not isinstance(payload, dict):
+        return ""
+    direct_text = payload.get("output_text")
+    if isinstance(direct_text, str) and direct_text.strip():
+        return direct_text.strip()
+    text_parts = []
+    for item in payload.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content", []) or []:
+            if not isinstance(content, dict):
+                continue
+            text = content.get("text")
+            if isinstance(text, str) and text.strip():
+                text_parts.append(text.strip())
+    return "\n\n".join(text_parts).strip()
+
+
+def _run_custom_ai_prompt(prompt_text, data_context):
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return (
+            "Custom AI prompt is saved for this reporting group, but the AI service is not configured on the server. "
+            "Set OPENAI_API_KEY on Render to generate the report using Areti's prompt only."
+        )
+
+    model = os.environ.get("OPENAI_MODEL", "gpt-5.2").strip() or "gpt-5.2"
+    max_output_tokens = int(os.environ.get("OPENAI_MAX_OUTPUT_TOKENS", "2200") or "2200")
+    timeout_seconds = int(os.environ.get("OPENAI_TIMEOUT_SECONDS", "45") or "45")
+    body = {
+        "model": model,
+        "instructions": str(prompt_text or "").strip(),
+        "input": str(data_context or "").strip(),
+        "max_output_tokens": max_output_tokens,
+    }
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        text = _extract_openai_response_text(payload)
+        if text:
+            return text
+        return "The AI service responded, but no report text was returned."
+    except urllib.error.HTTPError as exc:
+        return f"The AI service could not generate the report right now. HTTP {exc.code}."
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        return f"The AI service could not generate the report right now: {type(exc).__name__}."
+
+
 def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
     family = expenses[
         expenses["report_group"].fillna("").astype(str).str.strip().str.casefold().eq("1-family")
@@ -2791,31 +2945,6 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
     )
 
 
-def _prompt_mentions(prompt_text, *needles):
-    prompt_key = str(prompt_text or "").casefold()
-    return any(str(needle or "").casefold() in prompt_key for needle in needles)
-
-
-def _transaction_total_containing(frame, *needles):
-    if frame.empty:
-        return None
-    category_text = frame.get("category", pd.Series("", index=frame.index)).fillna("").astype(str)
-    subcategory_text = frame.get("subcategory", pd.Series("", index=frame.index)).fillna("").astype(str)
-    label_text = category_text.str.cat(subcategory_text, sep=" / ").str.strip(" /")
-    label_key = label_text.str.casefold()
-    mask = pd.Series(False, index=frame.index)
-    for needle in needles:
-        needle_key = str(needle or "").casefold()
-        if needle_key:
-            mask = mask | label_key.str.contains(re.escape(needle_key), regex=True)
-    matches = frame[mask]
-    if matches.empty:
-        return None
-    labels = label_text[mask].replace("", "Unassigned")
-    label = labels.mode().iloc[0] if not labels.mode().empty else labels.iloc[0]
-    return str(label or "Unassigned"), float(matches["_signed_report_amount"].sum())
-
-
 def _build_custom_reporting_group_analysis(
     group_expenses,
     category_totals,
@@ -2828,73 +2957,17 @@ def _build_custom_reporting_group_analysis(
     trend_text,
     prompt_text,
 ):
-    signed_amounts = group_expenses["_signed_report_amount"].astype(float)
-    total_income = float(signed_amounts[signed_amounts > 0].sum())
-    total_expenses = abs(float(signed_amounts[signed_amounts < 0].sum()))
-    coverage_pct = (total_income / total_expenses * 100) if total_expenses > 0.005 else None
-    coverage_text = _percent(coverage_pct) if coverage_pct is not None else "-"
-
-    expense_categories = category_totals[category_totals["_signed_report_amount"] < -0.005].copy()
-    income_categories = category_totals[category_totals["_signed_report_amount"] > 0.005].copy()
-    expense_categories["_abs_sort"] = expense_categories["_signed_report_amount"].abs()
-    income_categories["_abs_sort"] = income_categories["_signed_report_amount"].abs()
-    expense_categories = expense_categories.sort_values("_abs_sort", ascending=False).head(5)
-    income_categories = income_categories.sort_values("_abs_sort", ascending=False).head(5)
-
-    expense_lines = [
-        f"- {row['category'] or 'Unassigned'}: {_money(row['_signed_report_amount'])}."
-        for _, row in expense_categories.iterrows()
-    ] or ["- No expense categories found for this reporting group."]
-    income_lines = [
-        f"- {row['category'] or 'Unassigned'}: {_money(row['_signed_report_amount'])}."
-        for _, row in income_categories.iterrows()
-    ] or ["- No income categories found for this reporting group."]
-
-    notes = []
-    if _prompt_mentions(prompt_text, "insurance"):
-        insurance = _transaction_total_containing(group_expenses, "insurance")
-        if insurance:
-            notes.append(
-                f"- {insurance[0]} is {_money(insurance[1])}. Treat this as a specific review item and check whether it is one-off or recurring before forecasting future months."
-            )
-    if _prompt_mentions(prompt_text, "property tax", "property"):
-        property_tax = _transaction_total_containing(group_expenses, "property tax")
-        if property_tax:
-            notes.append(
-                f"- {property_tax[0]} is {_money(property_tax[1])}. Because this may be periodic rather than monthly, review it separately before calculating a monthly forecast."
-            )
-    if _prompt_mentions(prompt_text, "tour income", "income"):
-        if not income_categories.empty:
-            top_income = income_categories.iloc[0]
-            notes.append(
-                f"- Main income line: {top_income['category'] or 'Unassigned'} is {_money(top_income['_signed_report_amount'])}. Compare this against expenses to judge whether the house is covering its own costs."
-            )
-    if _prompt_mentions(prompt_text, "forecast", "average", "monthly"):
-        months_count = max(1, int(group_expenses["month"].nunique()))
-        notes.append(
-            f"- Simple monthly reference using all signed activity in this report window: {_money(total / months_count)} over {months_count} month(s). Exclude one-off items manually if Areti decides they should not be forecast."
-        )
-    if not notes:
-        notes.append("- The custom Setup prompt has been applied to focus this analysis on the group totals, income, expenses, and follow-up points.")
-
-    return (
-        f"**{report_group} AI analysis through {month_label}**\n"
-        f"- Total expenses in this report window: {_money(-total_expenses)}.\n"
-        f"- Total income received in this report window: {_money(total_income)}.\n"
-        f"- Income covers {coverage_text} of expenses.\n"
-        f"- Signed net total: {_money(total)}.\n"
-        f"- Current month: {_money(current_total)}; previous month: {_money(previous_total)}.\n"
-        f"- Overall movement: {report_group} {trend_text} by {_money(abs(status_delta))}.\n\n"
-        "**Expense categories to review**\n"
-        + "\n".join(expense_lines)
-        + "\n\n**Income categories to review**\n"
-        + "\n".join(income_lines)
-        + "\n\n**Analysis based on Areti's Setup prompt**\n"
-        + "\n".join(notes)
-        + "\n\n**Follow up**\n"
-        "- Open the transaction detail before making decisions, so one-off items are separated from recurring items.\n"
-        "- Use the category and subcategory rows to confirm whether each driver should remain in the forecast or be treated separately."
+    data_context = _build_ai_report_data_context(
+        group_expenses,
+        category_totals,
+        report_group,
+        month_label,
+        total,
+        current_total,
+        previous_total,
+        status_delta,
     )
+    return _run_custom_ai_prompt(prompt_text, data_context)
 
 
 def _render_executive_drilldown(
@@ -3306,7 +3379,7 @@ def render_third_link_report():
                 st.markdown(_plain_ai_analysis_html(analysis), unsafe_allow_html=True)
                 if ai_prompts.get(selected_ai_group, "").strip():
                     st.caption(
-                        "Custom AI prompt from Setup is applied to this analysis. "
+                        "Only the custom AI prompt from Setup is used for this analysis. "
                         "The raw prompt text is private and is not shown in the third report."
                     )
                 else:
@@ -4465,6 +4538,15 @@ elif page == "Setup":
             "Use this private Setup table to choose selected-report visibility, third-link visibility, "
             "and the AI prompt for each reporting group."
         )
+        with st.expander("Default AI prompt used when the group prompt is empty", expanded=False):
+            st.text_area(
+                "Default prompt",
+                value=_default_reporting_group_prompt(),
+                height=120,
+                disabled=True,
+                help="When a reporting group has its own AI prompt, only that prompt is used for the AI report.",
+                key="setup_default_ai_prompt_preview",
+            )
         settings_lookup = {}
         if not group_settings.empty:
             settings_lookup = {

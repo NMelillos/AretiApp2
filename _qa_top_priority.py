@@ -134,6 +134,88 @@ def test_database_category_enforcement():
     assert_true("stale subcategory cleared", stored["subcategory"] == "", stored.to_dict())
 
 
+def test_category_save_shapes_persist():
+    qa_db = Path(os.environ["ARETI_DB_PATH"])
+    if qa_db.exists():
+        qa_db.unlink()
+    db.init_db()
+    db.add_category("OldCat", "OldSub", "1-family")
+    db.add_category("NewCat", "NewSub", "1-family")
+    db.add_category("NoSubCat", "", "1-family")
+    db.insert_manual_transaction(
+        "2026-06-01",
+        "Executive shape persistence test",
+        10,
+        "OldCat",
+        "OldSub",
+        {
+            "account_name": "QA Account",
+            "bank": "QA Bank",
+            "account_number": "QA1",
+            "currency": "USD",
+            "rate_type": "USD/USD",
+        },
+    )
+    db.insert_manual_transaction(
+        "2026-06-02",
+        "Database shape persistence test",
+        20,
+        "OldCat",
+        "OldSub",
+        {
+            "account_name": "QA Account",
+            "bank": "QA Bank",
+            "account_number": "QA1",
+            "currency": "USD",
+            "rate_type": "USD/USD",
+        },
+    )
+    conn = db.get_connection()
+    try:
+        ids = pd.read_sql_query(
+            "SELECT id FROM classified_transactions ORDER BY id",
+            conn,
+        )["id"].astype(int).tolist()
+    finally:
+        conn.close()
+
+    executive_shape = pd.DataFrame([
+        {
+            "id": ids[0],
+            "category": "NewCat",
+            "subcategory": "NewSub",
+            "reviewed": True,
+            "status": "reviewed",
+        }
+    ])
+    database_shape = pd.DataFrame([
+        {
+            "id": ids[1],
+            "category": "NoSubCat",
+            "subcategory": "",
+            "reviewed": True,
+            "status": "reviewed",
+        }
+    ])
+    assert_true("executive-shaped category update writes", db.update_database_rows(executive_shape) == 1)
+    assert_true("database-shaped category update writes", db.update_database_rows(database_shape) == 1)
+
+    conn = db.get_connection()
+    try:
+        stored = pd.read_sql_query(
+            "SELECT id, category, subcategory, reviewed, status FROM classified_transactions ORDER BY id",
+            conn,
+        )
+    finally:
+        conn.close()
+    first = stored.iloc[0].to_dict()
+    second = stored.iloc[1].to_dict()
+    assert_true("executive-shaped category persists", first["category"] == "NewCat", first)
+    assert_true("executive-shaped subcategory persists", first["subcategory"] == "NewSub", first)
+    assert_true("database no-subcategory category persists", second["category"] == "NoSubCat", second)
+    assert_true("database no-subcategory remains blank", second["subcategory"] == "", second)
+
+
 def test_csv_amounts():
     assert_true("European amount with thousands", abs(_parse_amount("2.000,00") - 2000.0) < 0.001)
     assert_true("US amount with thousands", abs(_parse_amount("1,234.56") - 1234.56) < 0.001)
@@ -152,6 +234,7 @@ def test_csv_amounts():
 def main():
     test_executive_trust_text()
     test_database_category_enforcement()
+    test_category_save_shapes_persist()
     test_csv_amounts()
     print("TOP_PRIORITY_QA_COMPLETE")
 

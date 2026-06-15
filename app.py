@@ -1287,6 +1287,8 @@ def _category_pair_label(category, subcategory):
 
 
 def _parse_category_pair_label(value):
+    if value is None or pd.isna(value):
+        return "", ""
     text = str(value or "").strip()
     if not text:
         return "", ""
@@ -1876,15 +1878,26 @@ def _executive_change_pct(change, previous_amount):
     return (change / previous_amount) * 100
 
 
-def _executive_amount_series(frame):
+def _executive_signed_amount_series(frame):
     if frame.empty:
         return pd.Series(dtype=float)
     source_column = "report_amount" if "report_amount" in frame.columns else "expense_usd"
     return pd.to_numeric(frame.get(source_column, pd.Series(dtype=float)), errors="coerce").fillna(0)
 
 
-def _executive_metric_values(frame, months, denominator=0.0):
-    amount_series = _executive_amount_series(frame)
+def _executive_amount_series(frame, context_frame=None):
+    amount_series = _executive_signed_amount_series(frame)
+    context = frame if context_frame is None else context_frame
+    context_series = _executive_signed_amount_series(context)
+    has_positive = bool((context_series > 0.005).any())
+    has_negative = bool((context_series < -0.005).any())
+    if has_negative and not has_positive:
+        return amount_series.abs()
+    return amount_series
+
+
+def _executive_metric_values(frame, months, denominator=0.0, context_frame=None):
+    amount_series = _executive_amount_series(frame, context_frame=context_frame)
     month_values = {
         month: float(amount_series.loc[frame["month"] == month].sum())
         for month in months
@@ -1924,7 +1937,6 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
     extra_labels = _ordered_text_values(extra_labels or [])
     if (expenses.empty or level_column not in expenses.columns) and not extra_labels:
         return rows
-    denominator = float(_executive_amount_series(expenses).sum())
     raw_labels = (
         expenses[level_column].fillna("").astype(str).str.strip().unique().tolist()
         if level_column in expenses.columns
@@ -1950,6 +1962,17 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
             labels = merged_labels
         else:
             labels = _ordered_text_values(labels + extra_labels)
+    if level_column == "report_group":
+        denominator = 0.0
+        for label in labels:
+            frame = (
+                expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
+                if level_column in expenses.columns
+                else expenses.iloc[0:0].copy()
+            )
+            denominator += float(_executive_amount_series(frame, context_frame=frame).sum())
+    else:
+        denominator = float(_executive_amount_series(expenses, context_frame=expenses).sum())
     for label in labels:
         frame = (
             expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
@@ -1958,7 +1981,8 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
         )
         if frame.empty and label not in extra_labels:
             continue
-        metrics = _executive_metric_values(frame, months, denominator)
+        metric_context = frame if level_column == "report_group" else expenses
+        metrics = _executive_metric_values(frame, months, denominator, context_frame=metric_context)
         metrics["label"] = label or "No subcategory"
         metrics["value"] = label
         rows.append(metrics)
@@ -2296,7 +2320,7 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
     if detail.empty:
         st.info("No transactions found for the selected subcategory.")
         return
-    detail["_display_amount_usd"] = _executive_amount_series(detail).values
+    detail["_display_amount_usd"] = _executive_signed_amount_series(detail).values
     detail["txn_date"] = pd.to_datetime(detail["txn_date"], errors="coerce").dt.strftime("%Y-%m-%d")
     detail = detail.sort_values(["txn_date", "_display_amount_usd"], ascending=[False, False])
     display_cols = [
@@ -2622,7 +2646,7 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
     if group_expenses.empty:
         return ""
 
-    group_expenses["_signed_report_amount"] = _executive_amount_series(group_expenses).values
+    group_expenses["_signed_report_amount"] = _executive_signed_amount_series(group_expenses).values
     current_month = months[-1] if months else group_expenses["month"].max()
     previous_month = months[-2] if len(months) > 1 else None
     total = float(group_expenses["_signed_report_amount"].sum())

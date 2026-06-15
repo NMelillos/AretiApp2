@@ -2294,7 +2294,8 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
             ("share_pct", "% OF TOTAL", 0.85, lambda row: _percent(row["share_pct"])),
             ("average", "Average", 1, lambda row: _money(row["average"])),
         ])
-    widths = [2.4] + [width for _, _, width, _ in base_defs] + [1 for _ in display_months] + [
+    first_col_width = 1.75 if show_all_months else 1.55
+    widths = [first_col_width] + [width for _, _, width, _ in base_defs] + [1 for _ in display_months] + [
         width for _, _, width, _, _ in tail_defs
     ]
     if not show_all_months:

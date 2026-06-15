@@ -183,14 +183,14 @@ def require_third_report_login():
             border-radius: 7px;
             display: grid;
             place-items: center;
-            background: #4c1d95;
+            background: #111c3d;
             color: #ffffff;
             font-size: 11px;
             font-weight: 800;
             letter-spacing: 0;
         }
         .login-title {
-            color: #4c1d95;
+            color: #172033;
             font-size: 20px;
             line-height: 1.15;
             font-weight: 740;
@@ -217,16 +217,16 @@ def require_third_report_login():
             box-shadow: none !important;
         }
         div[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
-            border-color: #7c3aed !important;
-            box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.14) !important;
+            border-color: #0f766e !important;
+            box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.14) !important;
         }
         div[data-testid="stButton"] button {
             min-height: 38px !important;
             border-radius: 4px !important;
         }
         div[data-testid="stButton"] button[kind="primary"] {
-            background: #6d28d9 !important;
-            border-color: #6d28d9 !important;
+            background: #0f766e !important;
+            border-color: #0f766e !important;
         }
         </style>
         <div class="login-brand">

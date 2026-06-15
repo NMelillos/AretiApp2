@@ -1054,6 +1054,46 @@ def transaction_filter_controls(df, key_prefix, include_category=False):
     return filtered
 
 
+def _search_text_mask(df, search):
+    if df.empty:
+        return pd.Series(False, index=df.index)
+    return df.astype(str).apply(
+        lambda col: col.str.contains(search, case=False, na=False)
+    ).any(axis=1)
+
+
+def _parse_amount_search(search):
+    text = str(search or "").strip()
+    if not text:
+        return None
+    cleaned = (
+        text.replace("$", "")
+        .replace("€", "")
+        .replace("£", "")
+        .replace(",", "")
+        .strip()
+    )
+    if not re.fullmatch(r"[-+]?\d+(?:\.\d+)?", cleaned):
+        return None
+    try:
+        return round(abs(float(cleaned)), 2)
+    except Exception:
+        return None
+
+
+def database_search_mask(df, search):
+    mask = _search_text_mask(df, search)
+    amount_search = _parse_amount_search(search)
+    if amount_search is None or df.empty:
+        return mask
+    for column in ["amount", "amount_usd"]:
+        if column not in df.columns:
+            continue
+        numeric = pd.to_numeric(df[column], errors="coerce")
+        mask = mask | numeric.abs().round(2).eq(amount_search)
+    return mask
+
+
 def flag_duplicates(df):
     return mark_duplicate_transactions(df)
 
@@ -1925,6 +1965,15 @@ def _executive_metric_values(frame, months, denominator=0.0, context_frame=None)
     }
 
 
+def _executive_share_denominator(expenses, level_column, labels):
+    if expenses.empty or level_column not in expenses.columns:
+        return 0.0
+    amount_series = _executive_amount_series(expenses, context_frame=expenses)
+    label_series = expenses[level_column].fillna("").astype(str).str.strip()
+    totals = amount_series.groupby(label_series).sum()
+    return float(sum(abs(float(totals.get(str(label or "").strip(), 0.0))) for label in labels))
+
+
 def _executive_level_rows(expenses, level_column, months, extra_labels=None):
     rows = []
     extra_labels = _ordered_text_values(extra_labels or [])
@@ -1955,24 +2004,7 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
             labels = merged_labels
         else:
             labels = _ordered_text_values(labels + extra_labels)
-    if level_column == "report_group":
-        denominator = 0.0
-        for label in labels:
-            frame = (
-                expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
-                if level_column in expenses.columns
-                else expenses.iloc[0:0].copy()
-            )
-            denominator += abs(float(_executive_amount_series(frame, context_frame=frame).sum()))
-    else:
-        denominator = 0.0
-        for label in labels:
-            frame = (
-                expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
-                if level_column in expenses.columns
-                else expenses.iloc[0:0].copy()
-            )
-            denominator += abs(float(_executive_amount_series(frame, context_frame=expenses).sum()))
+    denominator = _executive_share_denominator(expenses, level_column, labels)
     for label in labels:
         frame = (
             expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
@@ -3742,10 +3774,7 @@ elif page == "Database":
         search = st.text_input("Search database")
         db_view = db_filtered.copy()
         if search:
-            mask = db_view.astype(str).apply(
-                lambda col: col.str.contains(search, case=False, na=False)
-            ).any(axis=1)
-            db_view = db_view[mask].copy()
+            db_view = db_view[database_search_mask(db_view, search)].copy()
 
         st.caption(f"Database path: {DB_PATH}")
         render_summary_strip([

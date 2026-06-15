@@ -2263,7 +2263,16 @@ def _valid_executive_selection(expenses, column, value, extra_values=None):
     return value if str(value).strip() in values else None
 
 
-def _render_executive_click_rows(title, rows, level, months, month_labels, show_all_months=False, ai_prompts=None):
+def _render_executive_click_rows(
+    title,
+    rows,
+    level,
+    months,
+    month_labels,
+    show_all_months=False,
+    ai_prompts=None,
+    show_zero_explanations=True,
+):
     st.markdown(f"#### {title}")
     if not rows:
         st.info("No rows available for this level.")
@@ -2294,7 +2303,7 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
             ("share_pct", "% OF TOTAL", 0.85, lambda row: _percent(row["share_pct"])),
             ("average", "Average", 1, lambda row: _money(row["average"])),
         ])
-    first_col_width = 1.75 if show_all_months else 1.55
+    first_col_width = 1.95 if show_all_months and ai_prompts is not None else 1.75 if show_all_months else 1.55
     widths = [first_col_width] + [width for _, _, width, _ in base_defs] + [1 for _ in display_months] + [
         width for _, _, width, _, _ in tail_defs
     ]
@@ -2331,13 +2340,13 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
         col_idx = 0
         with cols[col_idx]:
             if level == "group" and ai_prompts is not None:
-                label_col, ai_col = st.columns([6, 1])
+                label_col, ai_col = st.columns([5, 1.25])
                 with label_col:
                     if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
                         _set_executive_selection(level, row["value"])
                         st.rerun()
                 with ai_col:
-                    if st.button("🧠", key=f"executive_ai_{idx}", help=f"Open AI report for {row['label']}"):
+                    if st.button("AI", key=f"executive_ai_{idx}", help=f"Open AI report for {row['label']}", use_container_width=True):
                         st.session_state["third_report_ai_group"] = row["value"]
                         st.rerun()
             else:
@@ -2377,7 +2386,7 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
                         "in the selected period."
                     )
                 zero_rows.append({"Row": label, "Why it shows $0": reason})
-    if zero_rows:
+    if show_zero_explanations and zero_rows:
         with st.expander(f"Why {title.lower()} rows show $0", expanded=False):
             st.dataframe(pd.DataFrame(zero_rows), use_container_width=True, hide_index=True)
             st.caption(
@@ -2784,6 +2793,7 @@ def _render_executive_drilldown(
     show_all_months=False,
     read_only=False,
     ai_prompts=None,
+    show_zero_explanations=True,
 ):
     visible_report_groups = visible_report_groups or []
     selected_group = _valid_executive_selection(
@@ -2840,6 +2850,7 @@ def _render_executive_drilldown(
         month_labels,
         show_all_months=show_all_months,
         ai_prompts=ai_prompts,
+        show_zero_explanations=show_zero_explanations,
     )
 
     if not selected_group:
@@ -2858,6 +2869,7 @@ def _render_executive_drilldown(
         months,
         month_labels,
         show_all_months=show_all_months,
+        show_zero_explanations=show_zero_explanations,
     )
 
     if not selected_category:
@@ -2878,6 +2890,7 @@ def _render_executive_drilldown(
         months,
         month_labels,
         show_all_months=show_all_months,
+        show_zero_explanations=show_zero_explanations,
     )
 
     if selected_subcategory is None:
@@ -3193,6 +3206,7 @@ def render_third_link_report():
         show_all_months=show_all_months,
         read_only=True,
         ai_prompts=ai_prompts,
+        show_zero_explanations=False,
     )
 
 

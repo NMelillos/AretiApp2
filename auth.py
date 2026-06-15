@@ -84,13 +84,191 @@ def credentials_are_valid(username, password):
     return _username_matches(username) and _password_matches(password)
 
 
+def _specific_username_matches(username, configured_username):
+    configured = str(configured_username or "").strip()
+    if not configured:
+        return False
+    return hmac.compare_digest(str(username).strip().casefold(), configured.casefold())
+
+
+def credentials_are_valid_for_env(
+    username,
+    password,
+    username_env,
+    password_env,
+    password_hash_env,
+    salt_env,
+):
+    configured_username = os.getenv(username_env, "")
+    if not _specific_username_matches(username, configured_username):
+        return False
+
+    candidates = _password_candidates(password)
+    configured_password = os.getenv(password_env, "")
+    configured_hash = os.getenv(password_hash_env, "")
+    configured_salt = os.getenv(salt_env, DEFAULT_PASSWORD_SALT)
+
+    if configured_password:
+        for candidate in candidates:
+            if hmac.compare_digest(candidate, configured_password):
+                return True
+            if hmac.compare_digest(candidate, configured_password.strip()):
+                return True
+
+    if configured_hash:
+        for candidate in candidates:
+            if hmac.compare_digest(_hash_password(candidate, configured_salt), configured_hash):
+                return True
+
+    return False
+
+
 def get_login_user():
     return st.session_state.get("login_user", DEFAULT_USERNAME)
+
+
+def get_third_report_user():
+    return st.session_state.get("third_report_user", os.getenv("THIRD_REPORT_USERNAME", ""))
 
 
 def sign_out():
     for key in ["authenticated", "login_user", "login_error", "login_username", "login_password"]:
         st.session_state.pop(key, None)
+
+
+def sign_out_third_report():
+    for key in [
+        "third_report_authenticated",
+        "third_report_user",
+        "third_report_error",
+        "third_report_username",
+        "third_report_password",
+    ]:
+        st.session_state.pop(key, None)
+
+
+def require_third_report_login():
+    if st.session_state.get("third_report_authenticated"):
+        return
+
+    configured_username = os.getenv("THIRD_REPORT_USERNAME", "").strip()
+    has_password = bool(os.getenv("THIRD_REPORT_PASSWORD", "") or os.getenv("THIRD_REPORT_PASSWORD_HASH", ""))
+
+    st.markdown(
+        """
+        <style>
+        .stApp { background: #edf2f7; color: #172033; }
+        #MainMenu, footer, header, .stDeployButton,
+        [data-testid="stToolbar"], [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"], [data-testid="manage-app-button"] {
+            display: none !important;
+            visibility: hidden !important;
+            height: 0 !important;
+        }
+        .block-container {
+            max-width: 392px !important;
+            padding-top: 4.2rem !important;
+            padding-bottom: 1.5rem !important;
+        }
+        .login-brand {
+            display: grid;
+            justify-items: center;
+            gap: 7px;
+            margin-bottom: 16px;
+            text-align: center;
+        }
+        .login-mark {
+            width: 34px;
+            height: 34px;
+            border-radius: 7px;
+            display: grid;
+            place-items: center;
+            background: #4c1d95;
+            color: #ffffff;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0;
+        }
+        .login-title {
+            color: #4c1d95;
+            font-size: 20px;
+            line-height: 1.15;
+            font-weight: 740;
+        }
+        .login-subtitle,
+        .login-note {
+            color: #64748b;
+            font-size: 12px;
+        }
+        .login-note {
+            margin-top: 10px;
+            line-height: 1.45;
+            text-align: center;
+        }
+        div[data-testid="stTextInput"] label {
+            color: #172033 !important;
+            font-size: 13px !important;
+        }
+        div[data-testid="stTextInput"] div[data-baseweb="input"] {
+            min-height: 38px !important;
+            background: #ffffff !important;
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 4px !important;
+            box-shadow: none !important;
+        }
+        div[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
+            border-color: #7c3aed !important;
+            box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.14) !important;
+        }
+        div[data-testid="stButton"] button {
+            min-height: 38px !important;
+            border-radius: 4px !important;
+        }
+        div[data-testid="stButton"] button[kind="primary"] {
+            background: #6d28d9 !important;
+            border-color: #6d28d9 !important;
+        }
+        </style>
+        <div class="login-brand">
+            <div class="login-mark">TB</div>
+            <div>
+                <div class="login-title">TB & NF Family Office Expenses Report</div>
+                <div class="login-subtitle">Secure report access</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not configured_username or not has_password:
+        st.error("This report login is not configured yet. Set THIRD_REPORT_USERNAME and THIRD_REPORT_PASSWORD in deployment secrets.")
+        st.stop()
+
+    username = st.text_input("Username", key="third_report_username")
+    password = st.text_input("Password", type="password", key="third_report_password")
+    submitted = st.button("Sign in", type="primary", use_container_width=True)
+
+    if submitted:
+        if credentials_are_valid_for_env(
+            username,
+            password,
+            "THIRD_REPORT_USERNAME",
+            "THIRD_REPORT_PASSWORD",
+            "THIRD_REPORT_PASSWORD_HASH",
+            "THIRD_REPORT_PASSWORD_SALT",
+        ):
+            st.session_state["third_report_authenticated"] = True
+            st.session_state["third_report_user"] = str(username).strip()
+            st.session_state.pop("third_report_error", None)
+            st.rerun()
+        else:
+            st.session_state["third_report_error"] = "Invalid username or password."
+
+    if st.session_state.get("third_report_error"):
+        st.error(st.session_state["third_report_error"])
+
+    st.markdown('<div class="login-note">Authorized users only.</div>', unsafe_allow_html=True)
+    st.stop()
 
 
 def require_login():

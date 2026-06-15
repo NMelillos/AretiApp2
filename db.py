@@ -391,6 +391,16 @@ def init_db():
             updated_at TEXT
         )
     """)
+    _ensure_column(cur, "report_group_settings", "third_link_visible", "INTEGER DEFAULT 0")
+    _ensure_column(cur, "report_group_settings", "ai_prompt", "TEXT DEFAULT ''")
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            setting_key TEXT PRIMARY KEY,
+            setting_value TEXT DEFAULT '',
+            updated_at TEXT
+        )
+    """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS transaction_change_log (
@@ -900,7 +910,7 @@ def get_report_group_settings():
     conn = get_connection()
     try:
         return pd.read_sql_query("""
-            SELECT report_group, visible, updated_at
+            SELECT report_group, visible, third_link_visible, ai_prompt, updated_at
             FROM report_group_settings
             ORDER BY report_group
         """, conn)
@@ -912,19 +922,87 @@ def replace_report_group_settings(settings):
     conn = get_connection()
     cur = conn.cursor()
     now = _now()
+    cur.execute("""
+        SELECT report_group, visible, third_link_visible, ai_prompt
+        FROM report_group_settings
+    """)
+    existing = {
+        _clean(row[0]): {
+            "visible": int(row[1] or 0),
+            "third_link_visible": int(row[2] or 0),
+            "ai_prompt": _clean(row[3]),
+        }
+        for row in cur.fetchall()
+        if _clean(row[0])
+    }
     cur.execute("DELETE FROM report_group_settings")
-    rows = [
-        (_clean(row.get("report_group")), int(bool(row.get("visible"))), now)
-        for _, row in settings.iterrows()
-        if _clean(row.get("report_group"))
-    ]
+    rows = []
+    for _, row in settings.iterrows():
+        report_group = _clean(row.get("report_group"))
+        if not report_group:
+            continue
+        previous = existing.get(report_group, {})
+        visible = row.get("visible", previous.get("visible", 1))
+        third_link_visible = row.get("third_link_visible", previous.get("third_link_visible", 0))
+        ai_prompt = row.get("ai_prompt", previous.get("ai_prompt", ""))
+        rows.append((
+            report_group,
+            int(bool(visible)),
+            int(bool(third_link_visible)),
+            _clean(ai_prompt),
+            now,
+        ))
     cur.executemany("""
-        INSERT INTO report_group_settings (report_group, visible, updated_at)
-        VALUES (?, ?, ?)
+        INSERT INTO report_group_settings
+        (report_group, visible, third_link_visible, ai_prompt, updated_at)
+        VALUES (?, ?, ?, ?, ?)
     """, rows)
     conn.commit()
     conn.close()
     return len(rows)
+
+
+def get_app_settings():
+    conn = get_connection()
+    try:
+        return pd.read_sql_query("""
+            SELECT setting_key, setting_value, updated_at
+            FROM app_settings
+            ORDER BY setting_key
+        """, conn)
+    finally:
+        conn.close()
+
+
+def get_app_setting(setting_key, default=""):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT setting_value
+            FROM app_settings
+            WHERE setting_key = ?
+        """, (_clean(setting_key),))
+        row = cur.fetchone()
+        return row[0] if row else default
+    finally:
+        conn.close()
+
+
+def set_app_setting(setting_key, setting_value):
+    conn = get_connection()
+    cur = conn.cursor()
+    now = _now()
+    cur.execute("""
+        INSERT INTO app_settings (setting_key, setting_value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(setting_key) DO UPDATE SET
+            setting_value = excluded.setting_value,
+            updated_at = excluded.updated_at
+    """, (_clean(setting_key), _clean(setting_value), now))
+    conn.commit()
+    conn.close()
+    return 1
 
 
 def get_transaction_change_log(limit=300):

@@ -9,11 +9,29 @@ import zipfile
 
 import streamlit as st
 
-from auth import get_login_user, require_login, sign_out
+from auth import (
+    get_login_user,
+    get_third_report_user,
+    require_login,
+    require_third_report_login,
+    sign_out,
+    sign_out_third_report,
+)
 
-st.set_page_config(page_title="Statement Management", layout="wide")
+THIRD_LINK_REPORT_PAGE = "TB & NF Family Office Report"
+THIRD_LINK_REPORT_PAGES = {THIRD_LINK_REPORT_PAGE, "Family Office Report", "TB & NF Family Office Expenses Report"}
+_REQUESTED_PAGE = st.query_params.get("page")
+_THIRD_LINK_REQUEST = _REQUESTED_PAGE in THIRD_LINK_REPORT_PAGES
 
-require_login()
+st.set_page_config(
+    page_title="TB & NF Family Office Expenses Report" if _THIRD_LINK_REQUEST else "Statement Management",
+    layout="wide",
+)
+
+if _THIRD_LINK_REQUEST:
+    require_third_report_login()
+else:
+    require_login()
 
 # Keep heavy data/reporting imports after the login gate so the first screen appears quickly.
 import pandas as pd
@@ -30,6 +48,8 @@ from db import (
     full_reset_database,
     get_accounts,
     get_all_transactions,
+    get_app_setting,
+    get_app_settings,
     get_categories,
     get_cross_statement_duplicate_audit,
     get_dashboard_counts,
@@ -60,6 +80,7 @@ from db import (
     save_pending_transactions,
     save_statement_balance,
     save_reviewed_rows,
+    set_app_setting,
     statement_balance_exists,
     statement_already_imported,
     update_database_rows,
@@ -71,6 +92,7 @@ from utils import format_currency
 _DB_CACHE_TTL_SECONDS = 90
 _db_get_accounts = get_accounts
 _db_get_all_transactions = get_all_transactions
+_db_get_app_settings = get_app_settings
 _db_get_categories = get_categories
 _db_get_cross_statement_duplicate_audit = get_cross_statement_duplicate_audit
 _db_get_dashboard_counts = get_dashboard_counts
@@ -106,6 +128,21 @@ def app_now():
         return utc_now.astimezone(timezone(timedelta(hours=_cyprus_offset_hours(utc_now)), "Asia/Nicosia"))
 
 
+REPORT_UNTIL_SETTING_KEY = "report_until"
+
+
+def _parse_report_until(value, fallback_date):
+    parsed = pd.to_datetime(str(value or ""), errors="coerce")
+    if pd.isna(parsed):
+        return fallback_date
+    return parsed.date()
+
+
+def get_configured_report_until(fallback_date=None):
+    fallback = fallback_date or app_now().date()
+    return _parse_report_until(get_app_setting(REPORT_UNTIL_SETTING_KEY, ""), fallback)
+
+
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
 def get_accounts():
     return _db_get_accounts()
@@ -114,6 +151,11 @@ def get_accounts():
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
 def get_all_transactions():
     return _db_get_all_transactions()
+
+
+@st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
+def get_app_settings():
+    return _db_get_app_settings()
 
 
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
@@ -475,6 +517,27 @@ st.markdown(
         font-size: 13px;
         margin: 8px 0 4px;
     }
+    .third-report-header {
+        margin: 6px 0 18px;
+    }
+    .third-report-title {
+        color: #6d28d9;
+        font-size: 30px;
+        font-weight: 820;
+        line-height: 1.15;
+        margin: 0;
+    }
+    .third-report-subtitle {
+        color: #6d28d9;
+        font-size: 14px;
+        font-weight: 650;
+        margin-top: 5px;
+    }
+    .third-report-note {
+        color: var(--text-muted);
+        font-size: 12px;
+        margin: 2px 0 10px;
+    }
     .soft-panel {
         background: var(--panel);
         border: 1px solid var(--border);
@@ -682,6 +745,18 @@ def render_session_line():
     )
     if right.button("Sign out"):
         sign_out()
+        st.rerun()
+
+
+def render_third_report_session_line():
+    left, right = st.columns([8, 1])
+    user = get_third_report_user() or "report user"
+    left.markdown(
+        f"<div class=\"session-line\">Signed in as {escape(str(user))}</div>",
+        unsafe_allow_html=True,
+    )
+    if right.button("Sign out", key="third_report_sign_out"):
+        sign_out_third_report()
         st.rerun()
 
 
@@ -1725,6 +1800,10 @@ EXECUTIVE_REPORT_PAGE = "Executive Summary"
 SHARED_EXECUTIVE_REPORT_PAGES = {"Boss Report", "Read Only Report"}
 
 
+def is_third_link_report_request():
+    return st.query_params.get("page") in THIRD_LINK_REPORT_PAGES
+
+
 def is_executive_report_request():
     return st.query_params.get("page") in {EXECUTIVE_REPORT_PAGE, *SHARED_EXECUTIVE_REPORT_PAGES}
 
@@ -1797,12 +1876,20 @@ def _executive_change_pct(change, previous_amount):
     return (change / previous_amount) * 100
 
 
+def _executive_amount_series(frame):
+    if frame.empty:
+        return pd.Series(dtype=float)
+    source_column = "report_amount" if "report_amount" in frame.columns else "expense_usd"
+    return pd.to_numeric(frame.get(source_column, pd.Series(dtype=float)), errors="coerce").fillna(0)
+
+
 def _executive_metric_values(frame, months, denominator=0.0):
+    amount_series = _executive_amount_series(frame)
     month_values = {
-        month: float(frame.loc[frame["month"] == month, "expense_usd"].sum())
+        month: float(amount_series.loc[frame["month"] == month].sum())
         for month in months
     }
-    total_amount = float(frame["expense_usd"].sum()) if "expense_usd" in frame.columns else 0.0
+    total_amount = float(amount_series.sum())
     current_month = months[-1] if months else None
     previous_month = months[-2] if len(months) > 1 else None
     first_month = months[0] if months else None
@@ -1837,7 +1924,7 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
     extra_labels = _ordered_text_values(extra_labels or [])
     if (expenses.empty or level_column not in expenses.columns) and not extra_labels:
         return rows
-    denominator = float(expenses["expense_usd"].sum()) if "expense_usd" in expenses.columns else 0.0
+    denominator = float(_executive_amount_series(expenses).sum())
     raw_labels = (
         expenses[level_column].fillna("").astype(str).str.strip().unique().tolist()
         if level_column in expenses.columns
@@ -1954,11 +2041,58 @@ def _executive_default_visible_groups(all_report_groups):
     return [group for group in _ordered_text_values(visible_groups) if group in all_report_groups]
 
 
+def _third_link_default_visible_groups(all_report_groups):
+    group_settings = get_report_group_settings()
+    if not group_settings.empty and "third_link_visible" in group_settings.columns:
+        settings = group_settings.copy()
+        settings["report_group"] = settings["report_group"].fillna("").astype(str).str.strip()
+        visible_groups = (
+            settings[settings["third_link_visible"].fillna(0).astype(int) == 1]["report_group"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
+        visible_groups = [group for group in visible_groups if group in all_report_groups]
+        if visible_groups:
+            return _ordered_text_values(visible_groups)
+
+    woking_groups = [
+        group for group in all_report_groups
+        if "woking way llc" in str(group).casefold()
+    ]
+    return _ordered_text_values(woking_groups[:1])
+
+
+def _report_group_prompt_lookup():
+    settings = get_report_group_settings()
+    if settings.empty or "ai_prompt" not in settings.columns:
+        return {}
+    return {
+        str(row.get("report_group", "") or "").strip(): str(row.get("ai_prompt", "") or "").strip()
+        for _, row in settings.iterrows()
+        if str(row.get("report_group", "") or "").strip()
+    }
+
+
 def _save_executive_visible_groups(all_report_groups, visible_groups):
-    settings_df = pd.DataFrame({
-        "report_group": all_report_groups,
-        "visible": [group in visible_groups for group in all_report_groups],
-    })
+    existing = get_report_group_settings()
+    existing_lookup = {}
+    if not existing.empty:
+        existing_lookup = {
+            str(row.get("report_group", "") or "").strip(): row
+            for _, row in existing.iterrows()
+            if str(row.get("report_group", "") or "").strip()
+        }
+    settings_df = pd.DataFrame([
+        {
+            "report_group": group,
+            "visible": group in visible_groups,
+            "third_link_visible": bool(existing_lookup.get(group, {}).get("third_link_visible", 0)),
+            "ai_prompt": str(existing_lookup.get(group, {}).get("ai_prompt", "") or ""),
+        }
+        for group in all_report_groups
+    ])
     return replace_report_group_settings(settings_df)
 
 
@@ -2043,7 +2177,7 @@ def _valid_executive_selection(expenses, column, value, extra_values=None):
     return value if str(value).strip() in values else None
 
 
-def _render_executive_click_rows(title, rows, level, months, month_labels, show_all_months=False):
+def _render_executive_click_rows(title, rows, level, months, month_labels, show_all_months=False, ai_prompts=None):
     st.markdown(f"#### {title}")
     if not rows:
         st.info("No rows available for this level.")
@@ -2062,18 +2196,18 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
         ]
     else:
         tail_defs = [
-            ("change", "CHANGE FROM PREVIOUS MONTH", 1.25, lambda row: _money(row["change"]), "trend_class"),
+            ("change_pct", "% CHANGE FROM PREVIOUS MONTH", 0.95, lambda row: _percent(row["change_pct"]), "trend_class"),
             ("trend_text", "STATUS FROM PREVIOUS MONTH", 1.25, lambda row: row["trend_text"], "trend_class"),
-            ("period_change", f"TREND {trend_start}-{trend_end}", 1.25, lambda row: _money(row["period_change"]), "period_trend_class"),
+            ("period_change_pct", "% CHANGE IN TREND", 0.95, lambda row: _percent(row["period_change_pct"]), "period_trend_class"),
+            ("period_trend_text", "TREND STATUS SINCE JAN 26", 1.15, lambda row: row["period_trend_text"], "period_trend_class"),
         ]
-    base_defs = [("total", "SUM", 1, lambda row: _money(row["total"]))]
-    if not show_all_months:
+    base_defs = []
+    if show_all_months:
         base_defs.extend([
-            ("share_pct", "%", 0.75, lambda row: _percent(row["share_pct"])),
+            ("total", "Sum since Jan", 1, lambda row: _money(row["total"])),
+            ("share_pct", "% OF TOTAL", 0.85, lambda row: _percent(row["share_pct"])),
             ("average", "Average", 1, lambda row: _money(row["average"])),
         ])
-    else:
-        base_defs.append(("share_pct", "% OF TOTAL", 0.85, lambda row: _percent(row["share_pct"])))
     widths = [2.4] + [width for _, _, width, _ in base_defs] + [1 for _ in display_months] + [
         width for _, _, width, _, _ in tail_defs
     ]
@@ -2097,9 +2231,20 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
         cols = st.columns(widths)
         col_idx = 0
         with cols[col_idx]:
-            if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
-                _set_executive_selection(level, row["value"])
-                st.rerun()
+            if level == "group" and ai_prompts is not None:
+                label_col, ai_col = st.columns([6, 1])
+                with label_col:
+                    if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
+                        _set_executive_selection(level, row["value"])
+                        st.rerun()
+                with ai_col:
+                    if st.button("🧠", key=f"executive_ai_{idx}", help=f"Open AI report for {row['label']}"):
+                        st.session_state["third_report_ai_group"] = row["value"]
+                        st.rerun()
+            else:
+                if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
+                    _set_executive_selection(level, row["value"])
+                    st.rerun()
         for _, _, _, formatter in base_defs:
             col_idx += 1
             cols[col_idx].markdown(f"<div class=\"drill-cell\">{formatter(row)}</div>", unsafe_allow_html=True)
@@ -2142,7 +2287,7 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
             )
 
 
-def _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory):
+def _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory, read_only=False):
     detail = expenses[
         (expenses["report_group"].fillna("").astype(str).str.strip() == selected_group)
         & (expenses["category"].fillna("").astype(str).str.strip() == selected_category)
@@ -2151,8 +2296,9 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
     if detail.empty:
         st.info("No transactions found for the selected subcategory.")
         return
+    detail["_display_amount_usd"] = _executive_amount_series(detail).values
     detail["txn_date"] = pd.to_datetime(detail["txn_date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    detail = detail.sort_values(["txn_date", "expense_usd"], ascending=[False, False])
+    detail = detail.sort_values(["txn_date", "_display_amount_usd"], ascending=[False, False])
     display_cols = [
         "txn_date",
         "currency",
@@ -2165,7 +2311,7 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         "account_name",
         "bank",
         "account_number",
-        "expense_usd",
+        "_display_amount_usd",
     ]
     st.markdown("#### Transaction Detail")
     detail_search = st.text_input(
@@ -2197,7 +2343,7 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
         "account_name",
         "bank",
         "account_number",
-        "expense_usd",
+        "_display_amount_usd",
     ]
     visible = visible[[col for col in executive_visible_cols if col in visible.columns]].copy()
     categories = get_categories()
@@ -2205,64 +2351,67 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
     pair_options = _category_pair_options(categories_df, categories, visible)
     render_summary_strip([
         ("Rows", len(visible)),
-        ("Total", _money(detail_view["expense_usd"].sum())),
+        ("Total", _money(detail_view["_display_amount_usd"].sum())),
         ("Category", selected_category),
         ("Subcategory", selected_subcategory or "No subcategory"),
     ])
     render_wrapped_descriptions(detail_view, expanded=True)
-    render_category_correction_panel(
-        detail_view,
-        categories,
-        "executive_detail_single",
-        "Categorise one transaction with filtered subcategories",
-        expanded=True,
-        inline=True,
-    )
-    render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=True, inline=True)
-    st.caption("Use Category / Subcategory to choose only valid combinations from Setup.")
-    edited_detail = st.data_editor(
-        visible,
-        use_container_width=True,
-        hide_index=True,
-        height=min(640, 130 + max(len(visible), 4) * 34),
-        column_config={
-            "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-            "txn_date": st.column_config.TextColumn("Date", disabled=True),
-            "account_name": st.column_config.TextColumn("Account", disabled=True),
-            "bank": st.column_config.TextColumn("Bank", disabled=True),
-            "account_number": st.column_config.TextColumn("Account number", disabled=True),
-            "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
-            "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
-            "expense_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
-            _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
-                "Category / Subcategory",
-                options=pair_options,
-                required=False,
-                help="Choose a valid category/subcategory pair from Setup.",
-            ),
-            "reviewed": st.column_config.CheckboxColumn(
-                "Reviewed",
-                help="Untick to send the transaction back to Pending Review.",
-            ),
-            "original_description": st.column_config.TextColumn(
-                "Full statement description",
-                disabled=True,
-                width="large",
-            ),
-        },
-        key="executive_detail_editor",
-    )
-    if st.button("Apply transaction detail edits", type="primary", key="executive_detail_apply"):
-        edited_detail = _apply_category_pair_values(edited_detail)
-        save_cols = [col for col in ["id", "category", "subcategory", "reviewed"] if col in edited_detail.columns]
-        save_df = edited_detail[save_cols].copy()
-        if "reviewed" not in save_df.columns:
-            save_df["reviewed"] = True
-        save_df["status"] = save_df["reviewed"].map(lambda value: "reviewed" if bool(value) else "pending")
-        count = update_database_rows(save_df)
-        st.success(f"Updated {count} visible transactions.")
-        st.cache_data.clear()
-        st.rerun()
+    if read_only:
+        st.dataframe(visible, use_container_width=True, hide_index=True, height=min(520, 130 + max(len(visible), 4) * 34))
+    else:
+        render_category_correction_panel(
+            detail_view,
+            categories,
+            "executive_detail_single",
+            "Categorise one transaction with filtered subcategories",
+            expanded=True,
+            inline=True,
+        )
+        render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=True, inline=True)
+        st.caption("Use Category / Subcategory to choose only valid combinations from Setup.")
+        edited_detail = st.data_editor(
+            visible,
+            use_container_width=True,
+            hide_index=True,
+            height=min(640, 130 + max(len(visible), 4) * 34),
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                "txn_date": st.column_config.TextColumn("Date", disabled=True),
+                "account_name": st.column_config.TextColumn("Account", disabled=True),
+                "bank": st.column_config.TextColumn("Bank", disabled=True),
+                "account_number": st.column_config.TextColumn("Account number", disabled=True),
+                "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
+                "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
+                "_display_amount_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
+                _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
+                    "Category / Subcategory",
+                    options=pair_options,
+                    required=False,
+                    help="Choose a valid category/subcategory pair from Setup.",
+                ),
+                "reviewed": st.column_config.CheckboxColumn(
+                    "Reviewed",
+                    help="Untick to send the transaction back to Pending Review.",
+                ),
+                "original_description": st.column_config.TextColumn(
+                    "Full statement description",
+                    disabled=True,
+                    width="large",
+                ),
+            },
+            key="executive_detail_editor",
+        )
+        if st.button("Apply transaction detail edits", type="primary", key="executive_detail_apply"):
+            edited_detail = _apply_category_pair_values(edited_detail)
+            save_cols = [col for col in ["id", "category", "subcategory", "reviewed"] if col in edited_detail.columns]
+            save_df = edited_detail[save_cols].copy()
+            if "reviewed" not in save_df.columns:
+                save_df["reviewed"] = True
+            save_df["status"] = save_df["reviewed"].map(lambda value: "reviewed" if bool(value) else "pending")
+            count = update_database_rows(save_df)
+            st.success(f"Updated {count} visible transactions.")
+            st.cache_data.clear()
+            st.rerun()
     st.download_button(
         "Download selected transactions Excel",
         data=dataframe_to_excel_bytes({"Transactions": visible}),
@@ -2447,7 +2596,7 @@ def _render_family_analysis_button(expenses, months, month_labels):
         return
 
     st.markdown("### 1-family AI analysis")
-    custom_prompt = st.session_state.get("family_analysis_prompt", "")
+    custom_prompt = _report_group_prompt_lookup().get("1-family", "")
     if st.button("Generate 1-family AI analysis", type="primary", key="generate_family_analysis"):
         st.session_state["family_analysis_generated"] = True
 
@@ -2466,6 +2615,59 @@ def _render_family_analysis_button(expenses, months, month_labels):
             st.info("No reviewed 1-family expenses are available for this report period.")
 
 
+def _build_reporting_group_analysis(expenses, months, month_labels, report_group, custom_prompt=""):
+    group_expenses = expenses[
+        expenses["report_group"].fillna("").astype(str).str.strip().eq(str(report_group or "").strip())
+    ].copy()
+    if group_expenses.empty:
+        return ""
+
+    group_expenses["_signed_report_amount"] = _executive_amount_series(group_expenses).values
+    current_month = months[-1] if months else group_expenses["month"].max()
+    previous_month = months[-2] if len(months) > 1 else None
+    total = float(group_expenses["_signed_report_amount"].sum())
+    current_total = float(group_expenses.loc[group_expenses["month"] == current_month, "_signed_report_amount"].sum())
+    previous_total = (
+        float(group_expenses.loc[group_expenses["month"] == previous_month, "_signed_report_amount"].sum())
+        if previous_month is not None
+        else 0.0
+    )
+    change = current_total - previous_total
+    trend_text = "increased" if change > 0.005 else "decreased" if change < -0.005 else "stayed broadly stable"
+
+    category_totals = (
+        group_expenses.groupby("category")["_signed_report_amount"]
+        .sum()
+        .reset_index()
+    )
+    category_totals["_abs_sort"] = category_totals["_signed_report_amount"].abs()
+    category_totals = category_totals.sort_values("_abs_sort", ascending=False).drop(columns=["_abs_sort"])
+    top_categories = category_totals.head(5).copy()
+
+    category_lines = [
+        f"- {row['category'] or 'Unassigned'}: {_money(row['_signed_report_amount'])}."
+        for _, row in top_categories.iterrows()
+    ] or ["- No category totals available."]
+
+    prompt_text = str(custom_prompt or "").strip()
+    prompt_section = f"\n\n**Additional instructions considered**\n{prompt_text}" if prompt_text else ""
+    return (
+        f"**{report_group} AI analysis through {month_labels.get(current_month, str(current_month))}**\n"
+        f"- Signed total in this report window: {_money(total)}.\n"
+        f"- Current month: {_money(current_total)}; previous month: {_money(previous_total)}.\n"
+        f"- Overall movement: {report_group} {trend_text} by {_money(abs(change))}.\n\n"
+        "**Main drivers by signed total**\n"
+        + "\n".join(category_lines)
+        + "\n\n**What to notice**\n"
+        "- Positive rows increase the signed total; negative rows decrease it. Check unusual movements in transaction detail.\n"
+        "- Focus first on categories with the largest signed movement and any change from the previous month.\n\n"
+        "**How to cut down / follow up**\n"
+        "- Open the category and subcategory detail before taking action, so recurring costs are separated from one-off items.\n"
+        "- Review increasing categories first and ask whether they are expected, recurring, or avoidable."
+        + prompt_section
+    )
+
+
 def _render_executive_drilldown(
     expenses,
     months,
@@ -2473,6 +2675,8 @@ def _render_executive_drilldown(
     visible_report_groups=None,
     categories_df=None,
     show_all_months=False,
+    read_only=False,
+    ai_prompts=None,
 ):
     visible_report_groups = visible_report_groups or []
     selected_group = _valid_executive_selection(
@@ -2528,6 +2732,7 @@ def _render_executive_drilldown(
         months,
         month_labels,
         show_all_months=show_all_months,
+        ai_prompts=ai_prompts,
     )
 
     if not selected_group:
@@ -2570,7 +2775,7 @@ def _render_executive_drilldown(
 
     if selected_subcategory is None:
         return
-    _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory)
+    _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory, read_only=read_only)
 
 
 def _render_executive_completeness_check(
@@ -2624,11 +2829,24 @@ def _render_executive_completeness_check(
         if not row_count_frame.empty
         else 0
     )
+    setup_groups_count = 0
+    setup_categories_count = 0
+    setup_subcategories_count = 0
+    if categories_df is not None and not categories_df.empty:
+        if "report_group" in categories_df.columns:
+            setup_groups_count = len(_ordered_text_values(categories_df["report_group"].fillna("").astype(str).tolist()))
+        if "category" in categories_df.columns:
+            setup_categories_count = len(_ordered_text_values(categories_df["category"].fillna("").astype(str).tolist()))
+        if "subcategory" in categories_df.columns:
+            setup_subcategories_count = len(_ordered_text_values(categories_df["subcategory"].fillna("").astype(str).tolist()))
     render_summary_strip([
         ("Database rows", active_database_count),
         ("Executive report rows", executive_row_count),
         ("Difference", count_gap),
         ("Pending / unreviewed", pending_or_unreviewed),
+        ("Setup groups", setup_groups_count),
+        ("Setup categories", setup_categories_count),
+        ("Setup subcategories", setup_subcategories_count),
     ])
 
     if count_gap or outside_view_rows or not setup_issue_frame.empty:
@@ -2697,17 +2915,8 @@ def render_executive_report():
 
     date_values = pd.to_datetime(active_transactions.get("txn_date"), errors="coerce").dropna()
     default_end = date_values.max().date() if not date_values.empty else app_now().date()
-    requested_end = st.query_params.get("to")
-    if requested_end:
-        parsed_requested_end = pd.to_datetime(requested_end, errors="coerce")
-        if not pd.isna(parsed_requested_end):
-            default_end = parsed_requested_end.date()
-
-    if shared_report:
-        cutoff = default_end
-        st.caption(f"Report until {cutoff.strftime('%d/%m/%Y')}")
-    else:
-        cutoff = st.date_input("Report until", value=default_end, key="executive_report_until")
+    cutoff = get_configured_report_until(default_end)
+    st.caption(f"Report until {cutoff.strftime('%d/%m/%Y')} (controlled in Setup)")
     cutoff_ts = pd.Timestamp(cutoff)
     filtered = active_transactions[active_transactions["txn_date"] <= cutoff_ts].copy()
     active_database_rows = filtered.copy()
@@ -2737,7 +2946,7 @@ def render_executive_report():
         ) or report_options[0]
         show_all_months = st.toggle(
             "Analytical",
-            value=False,
+            value=True,
             key="executive_show_all_months",
         )
         if report_mode.startswith("Areti"):
@@ -2775,6 +2984,109 @@ def render_executive_report():
         categories_df=categories_df,
         show_all_months=show_all_months,
     )
+
+
+def render_third_link_report():
+    from reporting import _prepare_report_data
+
+    st.markdown(
+        """
+        <div class="third-report-header">
+            <h1 class="third-report-title">TB & NF Family Office Expenses Report</h1>
+            <div class="third-report-subtitle">
+                (includes personal accounts, B-Projects Ltd, TB Tribute Ltd, Tengri INC & Woking Way LLC)
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    render_third_report_session_line()
+
+    ensure_usd_backfilled()
+    all_transactions = get_all_transactions()
+    categories_df = get_categories(include_subcategories=True)
+    if all_transactions.empty:
+        st.info("No transactions are available for this report yet.")
+        return
+
+    all_transactions = all_transactions.copy()
+    all_transactions["txn_date"] = pd.to_datetime(all_transactions.get("txn_date"), errors="coerce")
+    status_series = (
+        all_transactions["status"]
+        if "status" in all_transactions.columns
+        else pd.Series("", index=all_transactions.index)
+    )
+    status_key = status_series.fillna("").astype(str).str.strip().str.casefold()
+    active_transactions = all_transactions[
+        all_transactions["txn_date"].notna()
+        & status_key.ne("excluded")
+    ].copy()
+    if active_transactions.empty:
+        st.info("No active transactions are available for this report yet.")
+        return
+
+    default_end = active_transactions["txn_date"].max().date()
+    cutoff = get_configured_report_until(default_end)
+    cutoff_ts = pd.Timestamp(cutoff)
+    filtered = active_transactions[active_transactions["txn_date"] <= cutoff_ts].copy()
+    if filtered.empty:
+        st.warning("No active transactions exist up to the configured report date.")
+        return
+
+    _, expenses, _, _ = _prepare_report_data(
+        filtered,
+        categories_df,
+        include_own_funds=True,
+        include_all_valid=True,
+    )
+    all_report_groups = _executive_report_group_options(categories_df, expenses)
+    visible_report_groups = _third_link_default_visible_groups(all_report_groups)
+    if not visible_report_groups:
+        st.warning("No reporting groups are selected for the third link yet. Tick at least one group in Setup.")
+        return
+
+    expenses = expenses[
+        expenses["report_group"].fillna("").astype(str).str.strip().isin(visible_report_groups)
+    ].copy()
+    if expenses.empty:
+        st.info("No active report rows match the third-link reporting groups.")
+        return
+
+    show_all_months = st.toggle("Analytical", value=False, key="third_report_analytical")
+    st.markdown(f'<div class="third-report-note">Report until {cutoff.strftime("%d/%m/%Y")}</div>', unsafe_allow_html=True)
+
+    current_month = cutoff_ts.to_period("M")
+    month_window = _executive_month_window(current_month)
+    month_labels = _executive_month_labels(month_window)
+    ai_prompts = _report_group_prompt_lookup()
+    selected_ai_group = st.session_state.get("third_report_ai_group")
+    if selected_ai_group in visible_report_groups:
+        analysis = _build_reporting_group_analysis(
+            expenses,
+            month_window,
+            month_labels,
+            selected_ai_group,
+            ai_prompts.get(selected_ai_group, ""),
+        )
+        if analysis:
+            with st.expander(f"AI report: {selected_ai_group}", expanded=True):
+                st.markdown(analysis)
+
+    _render_executive_drilldown(
+        expenses,
+        month_window,
+        month_labels,
+        visible_report_groups,
+        categories_df=categories_df,
+        show_all_months=show_all_months,
+        read_only=True,
+        ai_prompts=ai_prompts,
+    )
+
+
+if is_third_link_report_request():
+    render_third_link_report()
+    st.stop()
 
 
 if is_executive_report_request():
@@ -3884,6 +4196,20 @@ elif page == "Setup":
             + ". Replace the Rates workbook before importing statements for those currencies."
         )
 
+    st.markdown("### Report Settings")
+    configured_report_until = get_configured_report_until(app_now().date())
+    setup_report_until = st.date_input(
+        "Report until",
+        value=configured_report_until,
+        key="setup_report_until",
+        help="Executive reports and the third link read this date from Setup.",
+    )
+    if st.button("Save report date", key="save_setup_report_until"):
+        set_app_setting(REPORT_UNTIL_SETTING_KEY, setup_report_until.isoformat())
+        st.success(f"Saved report date: {setup_report_until.strftime('%d/%m/%Y')}")
+        st.cache_data.clear()
+        st.rerun()
+
     setup_report_groups = sorted(
         group
         for group in setup_categories.get("report_group", pd.Series(dtype=str)).fillna("").astype(str).str.strip().unique()
@@ -3892,51 +4218,62 @@ elif page == "Setup":
     group_settings = get_report_group_settings()
     setup_report_groups = _ordered_text_values(setup_report_groups)
     if setup_report_groups:
-        st.markdown("### Executive Report Visibility")
-        if group_settings.empty:
-            default_visible_groups = setup_report_groups
-        else:
-            default_visible_groups = (
-                group_settings[group_settings["visible"].fillna(0).astype(int) == 1]["report_group"]
-                .fillna("")
-                .astype(str)
-                .tolist()
-            )
-            default_visible_groups = [group for group in default_visible_groups if group in setup_report_groups]
-            known_setting_groups = set(group_settings["report_group"].fillna("").astype(str).str.strip())
-            default_visible_groups.extend(
-                group for group in setup_report_groups if group not in known_setting_groups
-            )
-        selected_visible_groups = _render_report_group_visibility_editor(
-            setup_report_groups,
-            default_visible_groups,
-            "setup_executive",
+        st.markdown("### Report Group Controls")
+        st.caption(
+            "Use this private Setup table to choose selected-report visibility, third-link visibility, "
+            "and the AI prompt for each reporting group."
         )
-        new_visibility_group = st.selectbox(
-            "Add existing reporting group to the visibility list",
-            [""] + setup_report_groups,
-            key="setup_add_existing_executive_group",
+        settings_lookup = {}
+        if not group_settings.empty:
+            settings_lookup = {
+                str(row.get("report_group", "") or "").strip(): row
+                for _, row in group_settings.iterrows()
+                if str(row.get("report_group", "") or "").strip()
+            }
+        settings_rows = []
+        has_existing_settings = bool(settings_lookup)
+        for group in setup_report_groups:
+            existing = settings_lookup.get(group)
+            default_third = (not has_existing_settings) and ("woking way llc" in group.casefold())
+            settings_rows.append({
+                "visible": True if existing is None else bool(int(existing.get("visible", 1) or 0)),
+                "third_link_visible": default_third if existing is None else bool(int(existing.get("third_link_visible", 0) or 0)),
+                "report_group": group,
+                "ai_prompt": "" if existing is None else str(existing.get("ai_prompt", "") or ""),
+            })
+        settings_edit = st.data_editor(
+            pd.DataFrame(settings_rows),
+            hide_index=True,
+            use_container_width=True,
+            column_order=["visible", "third_link_visible", "report_group", "ai_prompt"],
+            column_config={
+                "visible": st.column_config.CheckboxColumn("Show in selected report"),
+                "third_link_visible": st.column_config.CheckboxColumn("Show in third link"),
+                "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
+                "ai_prompt": st.column_config.TextColumn("AI prompt / instructions"),
+            },
+            disabled=["report_group"],
+            key="setup_report_group_settings_editor",
         )
         c_show, c_save = st.columns([1, 1])
         with c_show:
-            if st.button("Show all executive report groups", key="setup_show_all_executive_groups"):
-                count = _save_executive_visible_groups(setup_report_groups, setup_report_groups)
-                st.success(f"All {count} reporting groups are now shown.")
+            if st.button("Show all selected-report groups", key="setup_show_all_executive_groups"):
+                settings_edit["visible"] = True
+                count = replace_report_group_settings(settings_edit)
+                st.success(f"All {count} reporting groups are now shown in the selected report.")
                 st.cache_data.clear()
                 st.rerun()
         with c_save:
-            if st.button("Save executive report visibility"):
-                extra_group = str(new_visibility_group or "").strip()
-                visible_to_save = _ordered_text_values(selected_visible_groups + ([extra_group] if extra_group else []))
-                if not visible_to_save:
-                    st.warning("Select at least one reporting group before saving.")
+            if st.button("Save report group controls"):
+                if not settings_edit["third_link_visible"].fillna(False).astype(bool).any():
+                    st.warning("The third link must show at least one reporting group.")
                     st.stop()
-                count = _save_executive_visible_groups(setup_report_groups, visible_to_save)
-                st.success(f"Saved visibility for {count} reporting groups.")
+                count = replace_report_group_settings(settings_edit)
+                st.success(f"Saved controls for {count} reporting groups.")
                 st.cache_data.clear()
                 st.rerun()
     else:
-        st.markdown("### Executive Report Visibility")
+        st.markdown("### Report Group Controls")
         st.info("No reporting groups are loaded yet. Add them through the Expense categories file or add a category row below.")
         new_visibility_group = st.text_input("Add reporting group to the visibility list")
         if st.button("Save new executive reporting group"):
@@ -3947,27 +4284,13 @@ elif page == "Setup":
             settings_df = pd.DataFrame({
                 "report_group": [extra_group],
                 "visible": [True],
+                "third_link_visible": [False],
+                "ai_prompt": [""],
             })
             count = replace_report_group_settings(settings_df)
             st.success(f"Saved visibility for {count} reporting groups.")
             st.cache_data.clear()
             st.rerun()
-
-    st.markdown("### AI Analysis Instructions")
-    st.caption(
-        "Write the private guidance for the 1-family AI analysis here. The Executive Report shows only the "
-        "analysis button and results, not this setup prompt."
-    )
-    st.text_area(
-        "1-family AI analysis prompt",
-        value=st.session_state.get("family_analysis_prompt", ""),
-        placeholder=(
-            "Optional: describe family priorities, spending habits, recurring costs, or the type of "
-            "human recommendations the analysis should consider."
-        ),
-        height=150,
-        key="family_analysis_prompt",
-    )
 
     st.markdown("### Current Setup")
     setup_left, setup_middle, setup_right = st.columns(3)

@@ -521,14 +521,14 @@ st.markdown(
         margin: 6px 0 18px;
     }
     .third-report-title {
-        color: #6d28d9;
+        color: var(--text-main);
         font-size: 30px;
         font-weight: 820;
         line-height: 1.15;
         margin: 0;
     }
     .third-report-subtitle {
-        color: #6d28d9;
+        color: var(--text-main);
         font-size: 14px;
         font-weight: 650;
         margin-top: 5px;
@@ -537,6 +537,18 @@ st.markdown(
         color: var(--text-muted);
         font-size: 12px;
         margin: 2px 0 10px;
+    }
+    .ai-analysis-box {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin: 8px 0 12px;
+        color: var(--text-main);
+        font-family: inherit;
+        font-size: 13px;
+        line-height: 1.55;
+        font-style: normal;
     }
     .soft-panel {
         background: var(--panel);
@@ -1918,6 +1930,22 @@ def _executive_change_pct(change, previous_amount):
     return (change / abs(previous_amount)) * 100
 
 
+def _executive_status_delta(current_amount, previous_amount):
+    current = float(current_amount or 0.0)
+    previous = float(previous_amount or 0.0)
+    if abs(current) <= 0.005 and abs(previous) <= 0.005:
+        return 0.0
+    if current <= 0.005 and previous <= 0.005:
+        return abs(current) - abs(previous)
+    return current - previous
+
+
+def _executive_status_change_pct(current_amount, previous_amount):
+    if abs(previous_amount) <= 0.005:
+        return None
+    return (_executive_status_delta(current_amount, previous_amount) / abs(previous_amount)) * 100
+
+
 def _executive_signed_amount_series(frame):
     if frame.empty:
         return pd.Series(dtype=float)
@@ -1943,9 +1971,11 @@ def _executive_metric_values(frame, months, denominator=0.0, context_frame=None)
     previous_amount = month_values.get(previous_month, 0.0)
     first_amount = month_values.get(first_month, 0.0)
     change = current_amount - previous_amount
-    trend_class, trend_text = _executive_trend(change)
+    status_delta = _executive_status_delta(current_amount, previous_amount)
+    trend_class, trend_text = _executive_trend(status_delta)
     period_change = current_amount - first_amount
-    period_trend_class, period_trend_text = _executive_trend(period_change)
+    period_status_delta = _executive_status_delta(current_amount, first_amount)
+    period_trend_class, period_trend_text = _executive_trend(period_status_delta)
     return {
         "months": month_values,
         "current": current_amount,
@@ -1955,11 +1985,11 @@ def _executive_metric_values(frame, months, denominator=0.0, context_frame=None)
         "share_pct": (abs(total_amount) / denominator * 100) if denominator > 0.005 else None,
         "average": (sum(month_values.values()) / len(month_values)) if month_values else 0.0,
         "change": change,
-        "change_pct": _executive_change_pct(change, previous_amount),
+        "change_pct": _executive_status_change_pct(current_amount, previous_amount),
         "trend_class": trend_class,
         "trend_text": trend_text,
         "period_change": period_change,
-        "period_change_pct": _executive_change_pct(period_change, first_amount),
+        "period_change_pct": _executive_status_change_pct(current_amount, first_amount),
         "period_trend_class": period_trend_class,
         "period_trend_text": period_trend_text,
     }
@@ -2267,6 +2297,18 @@ def _render_executive_click_rows(title, rows, level, months, month_labels, show_
     widths = [2.4] + [width for _, _, width, _ in base_defs] + [1 for _ in display_months] + [
         width for _, _, width, _, _ in tail_defs
     ]
+    if not show_all_months:
+        st.markdown(
+            """
+            <style>
+            div[data-testid="stHorizontalBlock"]:has(.drill-cell),
+            div[data-testid="stHorizontalBlock"]:has(.summary-label) {
+                max-width: 1120px !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
     header_cols = st.columns(widths)
     col_idx = 0
     header_cols[col_idx].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
@@ -2405,13 +2447,14 @@ def _render_executive_transactions(expenses, selected_group, selected_category, 
     categories = get_categories()
     categories_df = get_categories(include_subcategories=True)
     pair_options = _category_pair_options(categories_df, categories, visible)
-    render_summary_strip([
-        ("Rows", len(visible)),
-        ("Total", _money(detail_view["_display_amount_usd"].sum())),
-        ("Category", selected_category),
-        ("Subcategory", selected_subcategory or "No subcategory"),
-    ])
-    render_wrapped_descriptions(detail_view, expanded=True)
+    if not read_only:
+        render_summary_strip([
+            ("Rows", len(visible)),
+            ("Total", _money(detail_view["_display_amount_usd"].sum())),
+            ("Category", selected_category),
+            ("Subcategory", selected_subcategory or "No subcategory"),
+        ])
+        render_wrapped_descriptions(detail_view, expanded=True)
     if read_only:
         st.dataframe(visible, use_container_width=True, hide_index=True, height=min(520, 130 + max(len(visible), 4) * 34))
     else:
@@ -2512,6 +2555,12 @@ def _format_analysis_bullets(title, rows, name_column, direction):
             f"({previous_text} to {current_text})."
         )
     return "\n".join(bullets)
+
+
+def _plain_ai_analysis_html(analysis):
+    text = str(analysis or "").replace("**", "")
+    lines = [escape(line) if line.strip() else "" for line in text.splitlines()]
+    return "<div class=\"ai-analysis-box\">" + "<br>".join(lines) + "</div>"
 
 
 def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
@@ -2689,7 +2738,8 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
         else 0.0
     )
     change = current_total - previous_total
-    trend_text = "increased" if change > 0.005 else "decreased" if change < -0.005 else "stayed broadly stable"
+    status_delta = _executive_status_delta(current_total, previous_total)
+    trend_text = "increased" if status_delta > 0.005 else "decreased" if status_delta < -0.005 else "stayed broadly stable"
 
     category_totals = (
         group_expenses.groupby("category")["_signed_report_amount"]
@@ -2711,7 +2761,7 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
         f"**{report_group} AI analysis through {month_labels.get(current_month, str(current_month))}**\n"
         f"- Signed total in this report window: {_money(total)}.\n"
         f"- Current month: {_money(current_total)}; previous month: {_money(previous_total)}.\n"
-        f"- Overall movement: {report_group} {trend_text} by {_money(abs(change))}.\n\n"
+        f"- Overall movement: {report_group} {trend_text} by {_money(abs(status_delta))}.\n\n"
         "**Main drivers by signed total**\n"
         + "\n".join(category_lines)
         + "\n\n**What to notice**\n"
@@ -3126,7 +3176,12 @@ def render_third_link_report():
         )
         if analysis:
             with st.expander(f"AI report: {selected_ai_group}", expanded=True):
-                st.markdown(analysis)
+                st.markdown(_plain_ai_analysis_html(analysis), unsafe_allow_html=True)
+                st.caption(
+                    "Custom AI instructions are edited in Setup, in the 'AI prompt / instructions' "
+                    "column for each reporting group. The default prompt uses signed total, current "
+                    "month, previous month, main drivers, what to notice, and follow-up points."
+                )
 
     _render_executive_drilldown(
         expenses,

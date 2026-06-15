@@ -1875,7 +1875,7 @@ def _executive_trend(change):
 def _executive_change_pct(change, previous_amount):
     if abs(previous_amount) <= 0.005:
         return None
-    return (change / previous_amount) * 100
+    return (change / abs(previous_amount)) * 100
 
 
 def _executive_signed_amount_series(frame):
@@ -1886,14 +1886,7 @@ def _executive_signed_amount_series(frame):
 
 
 def _executive_amount_series(frame, context_frame=None):
-    amount_series = _executive_signed_amount_series(frame)
-    context = frame if context_frame is None else context_frame
-    context_series = _executive_signed_amount_series(context)
-    has_positive = bool((context_series > 0.005).any())
-    has_negative = bool((context_series < -0.005).any())
-    if has_negative and not has_positive:
-        return amount_series.abs()
-    return amount_series
+    return _executive_signed_amount_series(frame)
 
 
 def _executive_metric_values(frame, months, denominator=0.0, context_frame=None):
@@ -1919,7 +1912,7 @@ def _executive_metric_values(frame, months, denominator=0.0, context_frame=None)
         "previous": previous_amount,
         "period_start": first_amount,
         "total": total_amount,
-        "share_pct": (total_amount / denominator * 100) if abs(denominator) > 0.005 else None,
+        "share_pct": (abs(total_amount) / denominator * 100) if denominator > 0.005 else None,
         "average": (sum(month_values.values()) / len(month_values)) if month_values else 0.0,
         "change": change,
         "change_pct": _executive_change_pct(change, previous_amount),
@@ -1970,9 +1963,16 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
                 if level_column in expenses.columns
                 else expenses.iloc[0:0].copy()
             )
-            denominator += float(_executive_amount_series(frame, context_frame=frame).sum())
+            denominator += abs(float(_executive_amount_series(frame, context_frame=frame).sum()))
     else:
-        denominator = float(_executive_amount_series(expenses, context_frame=expenses).sum())
+        denominator = 0.0
+        for label in labels:
+            frame = (
+                expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
+                if level_column in expenses.columns
+                else expenses.iloc[0:0].copy()
+            )
+            denominator += abs(float(_executive_amount_series(frame, context_frame=expenses).sum()))
     for label in labels:
         frame = (
             expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()

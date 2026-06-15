@@ -2653,11 +2653,6 @@ def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
         "**What to notice**\n" + "\n".join(subcategory_lines),
         "**How to cut down**\n" + "\n".join(cut_lines),
     ]
-    if prompt_text:
-        sections.append(
-            "**Additional instructions considered**\n"
-            + prompt_text
-        )
     analysis = "\n\n".join(sections)
 
     export_rows = []
@@ -2695,7 +2690,7 @@ def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
             "Subcategory": "",
             "Amount": "",
             "Share": "",
-            "Comment": prompt_text,
+            "Comment": "Custom instructions from Setup were applied to the analysis. The raw prompt text is not printed in the report.",
         })
 
     return analysis, pd.DataFrame(export_rows)
@@ -2766,7 +2761,20 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
     ] or ["- No category totals available."]
 
     prompt_text = str(custom_prompt or "").strip()
-    prompt_section = f"\n\n**Additional instructions considered**\n{prompt_text}" if prompt_text else ""
+    if prompt_text:
+        return _build_custom_reporting_group_analysis(
+            group_expenses,
+            category_totals,
+            report_group,
+            month_labels.get(current_month, str(current_month)),
+            total,
+            current_total,
+            previous_total,
+            status_delta,
+            trend_text,
+            prompt_text,
+        )
+
     return (
         f"**{report_group} AI analysis through {month_labels.get(current_month, str(current_month))}**\n"
         f"- Signed total in this report window: {_money(total)}.\n"
@@ -2780,7 +2788,112 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
         "**How to cut down / follow up**\n"
         "- Open the category and subcategory detail before taking action, so recurring costs are separated from one-off items.\n"
         "- Review increasing categories first and ask whether they are expected, recurring, or avoidable."
-        + prompt_section
+    )
+
+
+def _prompt_mentions(prompt_text, *needles):
+    prompt_key = str(prompt_text or "").casefold()
+    return any(str(needle or "").casefold() in prompt_key for needle in needles)
+
+
+def _transaction_total_containing(frame, *needles):
+    if frame.empty:
+        return None
+    category_text = frame.get("category", pd.Series("", index=frame.index)).fillna("").astype(str)
+    subcategory_text = frame.get("subcategory", pd.Series("", index=frame.index)).fillna("").astype(str)
+    label_text = category_text.str.cat(subcategory_text, sep=" / ").str.strip(" /")
+    label_key = label_text.str.casefold()
+    mask = pd.Series(False, index=frame.index)
+    for needle in needles:
+        needle_key = str(needle or "").casefold()
+        if needle_key:
+            mask = mask | label_key.str.contains(re.escape(needle_key), regex=True)
+    matches = frame[mask]
+    if matches.empty:
+        return None
+    labels = label_text[mask].replace("", "Unassigned")
+    label = labels.mode().iloc[0] if not labels.mode().empty else labels.iloc[0]
+    return str(label or "Unassigned"), float(matches["_signed_report_amount"].sum())
+
+
+def _build_custom_reporting_group_analysis(
+    group_expenses,
+    category_totals,
+    report_group,
+    month_label,
+    total,
+    current_total,
+    previous_total,
+    status_delta,
+    trend_text,
+    prompt_text,
+):
+    signed_amounts = group_expenses["_signed_report_amount"].astype(float)
+    total_income = float(signed_amounts[signed_amounts > 0].sum())
+    total_expenses = abs(float(signed_amounts[signed_amounts < 0].sum()))
+    coverage_pct = (total_income / total_expenses * 100) if total_expenses > 0.005 else None
+    coverage_text = _percent(coverage_pct) if coverage_pct is not None else "-"
+
+    expense_categories = category_totals[category_totals["_signed_report_amount"] < -0.005].copy()
+    income_categories = category_totals[category_totals["_signed_report_amount"] > 0.005].copy()
+    expense_categories["_abs_sort"] = expense_categories["_signed_report_amount"].abs()
+    income_categories["_abs_sort"] = income_categories["_signed_report_amount"].abs()
+    expense_categories = expense_categories.sort_values("_abs_sort", ascending=False).head(5)
+    income_categories = income_categories.sort_values("_abs_sort", ascending=False).head(5)
+
+    expense_lines = [
+        f"- {row['category'] or 'Unassigned'}: {_money(row['_signed_report_amount'])}."
+        for _, row in expense_categories.iterrows()
+    ] or ["- No expense categories found for this reporting group."]
+    income_lines = [
+        f"- {row['category'] or 'Unassigned'}: {_money(row['_signed_report_amount'])}."
+        for _, row in income_categories.iterrows()
+    ] or ["- No income categories found for this reporting group."]
+
+    notes = []
+    if _prompt_mentions(prompt_text, "insurance"):
+        insurance = _transaction_total_containing(group_expenses, "insurance")
+        if insurance:
+            notes.append(
+                f"- {insurance[0]} is {_money(insurance[1])}. Treat this as a specific review item and check whether it is one-off or recurring before forecasting future months."
+            )
+    if _prompt_mentions(prompt_text, "property tax", "property"):
+        property_tax = _transaction_total_containing(group_expenses, "property tax")
+        if property_tax:
+            notes.append(
+                f"- {property_tax[0]} is {_money(property_tax[1])}. Because this may be periodic rather than monthly, review it separately before calculating a monthly forecast."
+            )
+    if _prompt_mentions(prompt_text, "tour income", "income"):
+        if not income_categories.empty:
+            top_income = income_categories.iloc[0]
+            notes.append(
+                f"- Main income line: {top_income['category'] or 'Unassigned'} is {_money(top_income['_signed_report_amount'])}. Compare this against expenses to judge whether the house is covering its own costs."
+            )
+    if _prompt_mentions(prompt_text, "forecast", "average", "monthly"):
+        months_count = max(1, int(group_expenses["month"].nunique()))
+        notes.append(
+            f"- Simple monthly reference using all signed activity in this report window: {_money(total / months_count)} over {months_count} month(s). Exclude one-off items manually if Areti decides they should not be forecast."
+        )
+    if not notes:
+        notes.append("- The custom Setup prompt has been applied to focus this analysis on the group totals, income, expenses, and follow-up points.")
+
+    return (
+        f"**{report_group} AI analysis through {month_label}**\n"
+        f"- Total expenses in this report window: {_money(-total_expenses)}.\n"
+        f"- Total income received in this report window: {_money(total_income)}.\n"
+        f"- Income covers {coverage_text} of expenses.\n"
+        f"- Signed net total: {_money(total)}.\n"
+        f"- Current month: {_money(current_total)}; previous month: {_money(previous_total)}.\n"
+        f"- Overall movement: {report_group} {trend_text} by {_money(abs(status_delta))}.\n\n"
+        "**Expense categories to review**\n"
+        + "\n".join(expense_lines)
+        + "\n\n**Income categories to review**\n"
+        + "\n".join(income_lines)
+        + "\n\n**Analysis based on Areti's Setup prompt**\n"
+        + "\n".join(notes)
+        + "\n\n**Follow up**\n"
+        "- Open the transaction detail before making decisions, so one-off items are separated from recurring items.\n"
+        "- Use the category and subcategory rows to confirm whether each driver should remain in the forecast or be treated separately."
     )
 
 
@@ -3191,11 +3304,17 @@ def render_third_link_report():
         if analysis:
             with st.expander(f"AI report: {selected_ai_group}", expanded=True):
                 st.markdown(_plain_ai_analysis_html(analysis), unsafe_allow_html=True)
-                st.caption(
-                    "Custom AI instructions are edited in Setup, in the 'AI prompt / instructions' "
-                    "column for each reporting group. The default prompt uses signed total, current "
-                    "month, previous month, main drivers, what to notice, and follow-up points."
-                )
+                if ai_prompts.get(selected_ai_group, "").strip():
+                    st.caption(
+                        "Custom AI prompt from Setup is applied to this analysis. "
+                        "The raw prompt text is private and is not shown in the third report."
+                    )
+                else:
+                    st.caption(
+                        "Custom AI instructions are edited in Setup, in the 'AI prompt / instructions' "
+                        "column for each reporting group. The default prompt uses signed total, current "
+                        "month, previous month, main drivers, what to notice, and follow-up points."
+                    )
 
     _render_executive_drilldown(
         expenses,

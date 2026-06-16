@@ -27,7 +27,7 @@ _REQUESTED_PAGE = st.query_params.get("page")
 _THIRD_LINK_REQUEST = _REQUESTED_PAGE in THIRD_LINK_REPORT_PAGES
 
 st.set_page_config(
-    page_title="TB & NF Family Office Expenses Report" if _THIRD_LINK_REQUEST else "Statement Management",
+    page_title="TB & NF Family Office Expenses Platform" if _THIRD_LINK_REQUEST else "Statement Management",
     layout="wide",
 )
 

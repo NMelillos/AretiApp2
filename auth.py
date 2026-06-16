@@ -232,7 +232,7 @@ def require_third_report_login():
         <div class="login-brand">
             <div class="login-mark">TB</div>
             <div>
-                <div class="login-title">TB & NF Family Office Expenses Report</div>
+                <div class="login-title">TB & NF Family Office Expenses Platform</div>
                 <div class="login-subtitle">Secure report access</div>
             </div>
         </div>

@@ -3298,7 +3298,7 @@ def render_third_link_report():
     st.markdown(
         """
         <div class="third-report-header">
-            <h1 class="third-report-title">TB & NF Family Office Expenses Report</h1>
+            <h1 class="third-report-title">TB & NF Family Office Expenses Platform</h1>
             <div class="third-report-subtitle">
                 (includes personal accounts, B-Projects Ltd, TB Tribute Ltd, Tengri INC & Woking Way LLC)
             </div>

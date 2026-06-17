@@ -2406,6 +2406,57 @@ def _render_executive_click_rows(
             )
 
 
+def _executive_selected_transactions_export_sheets(visible):
+    export_visible = visible.copy()
+    export_total_usd = float(pd.to_numeric(
+        export_visible.get("_display_amount_usd", pd.Series(dtype=float)),
+        errors="coerce",
+    ).fillna(0).sum())
+    export_visible = export_visible.rename(columns={
+        "txn_date": "Date",
+        "currency": "Currency",
+        "_display_amount_usd": "Dashboard amount USD",
+        "amount": "Statement amount (original currency)",
+        "original_description": "Full statement description",
+        _CATEGORY_PAIR_COLUMN: "Category / Subcategory",
+        "reviewed": "Reviewed",
+        "id": "ID",
+        "account_name": "Account",
+        "bank": "Bank",
+        "account_number": "Account number",
+    })
+    # The dashboard totals use signed USD report amounts. Keep the original
+    # statement amount for audit, but make the matching total column explicit
+    # so Excel checks reconcile with "Sum since Jan".
+    export_order = [
+        "Date",
+        "Currency",
+        "Dashboard amount USD",
+        "Statement amount (original currency)",
+        "Full statement description",
+        "Category / Subcategory",
+        "Reviewed",
+        "ID",
+        "Account",
+        "Bank",
+        "Account number",
+    ]
+    export_visible = export_visible[[col for col in export_order if col in export_visible.columns]]
+    export_summary = pd.DataFrame([
+        {"Metric": "Rows exported", "Value": len(export_visible)},
+        {"Metric": "Dashboard total USD", "Value": round(export_total_usd, 2)},
+        {"Metric": "Excel column to sum", "Value": "Dashboard amount USD"},
+        {
+            "Metric": "Statement amount note",
+            "Value": "Original statement currency; do not use this column to reconcile dashboard USD totals.",
+        },
+    ])
+    return {
+        "Selected total": export_summary,
+        "Transactions": export_visible,
+    }
+
+
 def _render_executive_transactions(
     expenses,
     selected_group,
@@ -2543,9 +2594,10 @@ def _render_executive_transactions(
             st.success(f"Updated {count} visible transactions.")
             st.cache_data.clear()
             st.rerun()
+    export_sheets = _executive_selected_transactions_export_sheets(visible)
     st.download_button(
         "Download selected transactions Excel",
-        data=dataframe_to_excel_bytes({"Transactions": visible}),
+        data=dataframe_to_excel_bytes(export_sheets),
         file_name="executive_selected_transactions.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )

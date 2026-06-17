@@ -1966,7 +1966,10 @@ def _executive_metric_values(frame, months, denominator=0.0, context_frame=None)
         month: float(amount_series.loc[frame["month"] == month].sum())
         for month in months
     }
-    total_amount = float(amount_series.sum())
+    # "Sum since Jan" must use the same Jan-to-report-month window as the
+    # monthly columns. Summing the full frame can pull older historical rows
+    # into the dashboard total while the drill-down/export period stays Jan+.
+    total_amount = float(sum(month_values.values()))
     current_month = months[-1] if months else None
     previous_month = months[-2] if len(months) > 1 else None
     first_month = months[0] if months else None
@@ -1998,11 +2001,16 @@ def _executive_metric_values(frame, months, denominator=0.0, context_frame=None)
     }
 
 
-def _executive_share_denominator(expenses, level_column, labels):
+def _executive_share_denominator(expenses, level_column, labels, months=None):
     if expenses.empty or level_column not in expenses.columns:
         return 0.0
     amount_series = _executive_amount_series(expenses, context_frame=expenses)
-    label_series = expenses[level_column].fillna("").astype(str).str.strip()
+    if months and "month" in expenses.columns:
+        period_mask = expenses["month"].isin(months)
+        amount_series = amount_series.loc[period_mask]
+        label_series = expenses.loc[period_mask, level_column].fillna("").astype(str).str.strip()
+    else:
+        label_series = expenses[level_column].fillna("").astype(str).str.strip()
     totals = amount_series.groupby(label_series).sum()
     return float(sum(abs(float(totals.get(str(label or "").strip(), 0.0))) for label in labels))
 
@@ -2037,7 +2045,7 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
             labels = merged_labels
         else:
             labels = _ordered_text_values(labels + extra_labels)
-    denominator = _executive_share_denominator(expenses, level_column, labels)
+    denominator = _executive_share_denominator(expenses, level_column, labels, months)
     for label in labels:
         frame = (
             expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
@@ -2398,12 +2406,23 @@ def _render_executive_click_rows(
             )
 
 
-def _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory, read_only=False):
+def _render_executive_transactions(
+    expenses,
+    selected_group,
+    selected_category,
+    selected_subcategory,
+    months=None,
+    read_only=False,
+):
     detail = expenses[
         (expenses["report_group"].fillna("").astype(str).str.strip() == selected_group)
         & (expenses["category"].fillna("").astype(str).str.strip() == selected_category)
         & (expenses["subcategory"].fillna("").astype(str).str.strip() == selected_subcategory)
     ].copy()
+    if months and "month" in detail.columns:
+        # Keep the visible detail grid and its Excel export on the same
+        # Jan-to-report-month period used by the dashboard "Sum since Jan".
+        detail = detail[detail["month"].isin(months)].copy()
     if detail.empty:
         st.info("No transactions found for the selected subcategory.")
         return
@@ -3081,7 +3100,14 @@ def _render_executive_drilldown(
 
     if selected_subcategory is None:
         return
-    _render_executive_transactions(expenses, selected_group, selected_category, selected_subcategory, read_only=read_only)
+    _render_executive_transactions(
+        expenses,
+        selected_group,
+        selected_category,
+        selected_subcategory,
+        months=months,
+        read_only=read_only,
+    )
 
 
 def _render_executive_completeness_check(

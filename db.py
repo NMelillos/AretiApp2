@@ -418,6 +418,29 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_classified_status
         ON classified_transactions(status, reviewed)
     """)
+    # Read-path indexes only: these speed dashboard counts, Pending Review,
+    # Database, import history, duplicate audit, and report setup joins without
+    # changing any stored values or business rules.
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_classified_pending_sort
+        ON classified_transactions(COALESCE(status, 'pending'), COALESCE(reviewed, 0), txn_date, id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_classified_reviewed_sort
+        ON classified_transactions(COALESCE(status, ''), COALESCE(reviewed, 0), txn_date, id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_classified_report_drilldown
+        ON classified_transactions(category, subcategory, txn_date)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_classified_account_date
+        ON classified_transactions(account_name, bank, account_number, txn_date)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_classified_usd_backfill
+        ON classified_transactions(amount_usd, amount, currency, rate_type, txn_date)
+    """)
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_classified_statement
         ON classified_transactions(statement_hash)
@@ -433,6 +456,22 @@ def init_db():
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_balances_statement
         ON statement_balances(statement_hash)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_imports_imported_at
+        ON statement_imports(imported_at, id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_category_report_group
+        ON category_list(report_group, category, subcategory)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_rates_type_month
+        ON rates(rate_type, rate_month)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_change_log_transaction
+        ON transaction_change_log(transaction_id, id)
     """)
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_memory_normalized

@@ -2464,6 +2464,7 @@ def _render_executive_transactions(
     selected_subcategory,
     months=None,
     read_only=False,
+    categories_df=None,
 ):
     detail = expenses[
         (expenses["report_group"].fillna("").astype(str).str.strip() == selected_group)
@@ -2527,10 +2528,19 @@ def _render_executive_transactions(
         "_display_amount_usd",
     ]
     visible = visible[[col for col in executive_visible_cols if col in visible.columns]].copy()
-    categories = get_categories()
-    categories_df = get_categories(include_subcategories=True)
-    pair_options = _category_pair_options(categories_df, categories, visible)
     if not read_only:
+        # Reuse the setup categories already loaded by the parent report. This
+        # avoids extra DB/cache work when drilling into transaction detail while
+        # keeping the same valid category/subcategory options.
+        if categories_df is None:
+            categories_df = get_categories(include_subcategories=True)
+        if categories_df is not None and not categories_df.empty and "category" in categories_df.columns:
+            categories = _ordered_text_values(
+                categories_df["category"].fillna("").astype(str).str.strip().tolist()
+            )
+        else:
+            categories = get_categories()
+        pair_options = _category_pair_options(categories_df, categories, visible)
         render_summary_strip([
             ("Rows", len(visible)),
             ("Total", _money(detail_view["_display_amount_usd"].sum())),
@@ -3159,6 +3169,7 @@ def _render_executive_drilldown(
         selected_subcategory,
         months=months,
         read_only=read_only,
+        categories_df=categories_df,
     )
 
 

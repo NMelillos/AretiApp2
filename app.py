@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 import urllib.error
 import urllib.request
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -110,6 +111,21 @@ _db_get_saved_transactions = get_saved_transactions
 _db_get_statement_balances = get_statement_balances
 _db_get_subcategories = get_subcategories
 _db_get_transaction_change_log = get_transaction_change_log
+
+
+_USD_BACKFILL_MIN_INTERVAL_SECONDS = int(os.getenv("ARETI_USD_BACKFILL_INTERVAL_SECONDS", "300"))
+
+
+@st.cache_resource(show_spinner=False)
+def _runtime_perf_state():
+    return {"usd_backfill_checked_at": 0.0}
+
+
+def _perf_log(label, started_at):
+    if os.getenv("ARETI_PERF_LOG", "1").strip().casefold() in {"0", "false", "no", "off"}:
+        return
+    elapsed = time.perf_counter() - started_at
+    print(f"[ARETI_PERF] {label}: {elapsed:.3f}s", flush=True)
 
 
 def _last_sunday(year, month):
@@ -232,12 +248,25 @@ def get_transaction_change_log(limit=300):
 
 
 def ensure_usd_backfilled(show_message=False):
+    state = _runtime_perf_state()
+    now = time.monotonic()
+    if (
+        not show_message
+        and _USD_BACKFILL_MIN_INTERVAL_SECONDS > 0
+        and now - float(state.get("usd_backfill_checked_at", 0.0)) < _USD_BACKFILL_MIN_INTERVAL_SECONDS
+    ):
+        return 0
+    started = time.perf_counter()
     try:
         count = backfill_missing_usd_amounts()
     except Exception as exc:
+        state["usd_backfill_checked_at"] = now
+        _perf_log("usd_backfill_failed", started)
         if show_message:
             st.warning(f"Could not calculate missing USD equivalents automatically: {exc}")
         return 0
+    state["usd_backfill_checked_at"] = now
+    _perf_log("usd_backfill", started)
     if count:
         st.cache_data.clear()
         if show_message:
@@ -1960,15 +1989,7 @@ def _executive_amount_series(frame, context_frame=None):
     return _executive_signed_amount_series(frame)
 
 
-def _executive_metric_values(frame, months, denominator=0.0, context_frame=None):
-    amount_series = _executive_amount_series(frame, context_frame=context_frame)
-    month_values = {
-        month: float(amount_series.loc[frame["month"] == month].sum())
-        for month in months
-    }
-    # "Sum since Jan" must use the same Jan-to-report-month window as the
-    # monthly columns. Summing the full frame can pull older historical rows
-    # into the dashboard total while the drill-down/export period stays Jan+.
+def _executive_metric_values_from_month_values(month_values, months, denominator=0.0):
     total_amount = float(sum(month_values.values()))
     current_month = months[-1] if months else None
     previous_month = months[-2] if len(months) > 1 else None
@@ -1999,6 +2020,18 @@ def _executive_metric_values(frame, months, denominator=0.0, context_frame=None)
         "period_trend_class": period_trend_class,
         "period_trend_text": period_trend_text,
     }
+
+
+def _executive_metric_values(frame, months, denominator=0.0, context_frame=None):
+    amount_series = _executive_amount_series(frame, context_frame=context_frame)
+    month_values = {
+        month: float(amount_series.loc[frame["month"] == month].sum())
+        for month in months
+    }
+    # "Sum since Jan" must use the same Jan-to-report-month window as the
+    # monthly columns. Summing the full frame can pull older historical rows
+    # into the dashboard total while the drill-down/export period stays Jan+.
+    return _executive_metric_values_from_month_values(month_values, months, denominator)
 
 
 def _executive_share_denominator(expenses, level_column, labels, months=None):
@@ -2045,17 +2078,55 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
             labels = merged_labels
         else:
             labels = _ordered_text_values(labels + extra_labels)
-    denominator = _executive_share_denominator(expenses, level_column, labels, months)
+
+    if expenses.empty or level_column not in expenses.columns or "month" not in expenses.columns:
+        denominator = _executive_share_denominator(expenses, level_column, labels, months)
+        for label in labels:
+            frame = (
+                expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
+                if level_column in expenses.columns
+                else expenses.iloc[0:0].copy()
+            )
+            if frame.empty and label not in extra_labels:
+                continue
+            metric_context = frame if level_column == "report_group" else expenses
+            metrics = _executive_metric_values(frame, months, denominator, context_frame=metric_context)
+            metrics["label"] = label or "No subcategory"
+            metrics["value"] = label
+            rows.append(metrics)
+        rows.sort(key=lambda row: (row["share_pct"] or 0.0, row["total"]), reverse=True)
+        return rows
+
+    label_series = expenses[level_column].fillna("").astype(str).str.strip()
+    amount_series = _executive_amount_series(expenses, context_frame=expenses)
+    grouped_source = pd.DataFrame({
+        "_label": label_series,
+        "_month": expenses["month"],
+        "_amount": amount_series,
+    })
+    grouped = (
+        grouped_source
+        .groupby(["_label", "_month"], dropna=False)["_amount"]
+        .sum()
+        .unstack(fill_value=0.0)
+    )
+    period_columns = [month for month in months if month in grouped.columns]
+    if period_columns:
+        period_totals = grouped[period_columns].sum(axis=1)
+    else:
+        period_totals = pd.Series(0.0, index=grouped.index)
+    denominator = float(sum(abs(float(period_totals.get(str(label or "").strip(), 0.0))) for label in labels))
+
     for label in labels:
-        frame = (
-            expenses[expenses[level_column].fillna("").astype(str).str.strip() == label].copy()
-            if level_column in expenses.columns
-            else expenses.iloc[0:0].copy()
-        )
-        if frame.empty and label not in extra_labels:
+        label_key = str(label or "").strip()
+        if label_key not in grouped.index and label not in extra_labels:
             continue
-        metric_context = frame if level_column == "report_group" else expenses
-        metrics = _executive_metric_values(frame, months, denominator, context_frame=metric_context)
+        if label_key in grouped.index:
+            month_row = grouped.loc[label_key]
+            month_values = {month: float(month_row.get(month, 0.0)) for month in months}
+        else:
+            month_values = {month: 0.0 for month in months}
+        metrics = _executive_metric_values_from_month_values(month_values, months, denominator)
         metrics["label"] = label or "No subcategory"
         metrics["value"] = label
         rows.append(metrics)
@@ -3384,6 +3455,7 @@ def render_executive_report():
 def render_third_link_report():
     from reporting import _prepare_report_data
 
+    total_started = time.perf_counter()
     st.markdown(
         """
         <div class="third-report-header">
@@ -3397,13 +3469,19 @@ def render_third_link_report():
     )
     render_third_report_session_line()
 
+    step_started = time.perf_counter()
     ensure_usd_backfilled()
+    _perf_log("third_link.ensure_usd_backfilled", step_started)
+    step_started = time.perf_counter()
     all_transactions = get_all_transactions()
     categories_df = get_categories(include_subcategories=True)
+    _perf_log("third_link.load_setup_and_transactions", step_started)
     if all_transactions.empty:
         st.info("No transactions are available for this report yet.")
+        _perf_log("third_link.total_empty", total_started)
         return
 
+    step_started = time.perf_counter()
     all_transactions = all_transactions.copy()
     all_transactions["txn_date"] = pd.to_datetime(all_transactions.get("txn_date"), errors="coerce")
     status_series = (
@@ -3416,35 +3494,48 @@ def render_third_link_report():
         all_transactions["txn_date"].notna()
         & status_key.ne("excluded")
     ].copy()
+    _perf_log("third_link.prepare_active_transactions", step_started)
     if active_transactions.empty:
         st.info("No active transactions are available for this report yet.")
+        _perf_log("third_link.total_no_active", total_started)
         return
 
+    step_started = time.perf_counter()
     default_end = active_transactions["txn_date"].max().date()
     cutoff = get_configured_report_until(default_end)
     cutoff_ts = pd.Timestamp(cutoff)
     filtered = active_transactions[active_transactions["txn_date"] <= cutoff_ts].copy()
+    _perf_log("third_link.apply_cutoff", step_started)
     if filtered.empty:
         st.warning("No active transactions exist up to the configured report date.")
+        _perf_log("third_link.total_no_filtered", total_started)
         return
 
+    step_started = time.perf_counter()
     _, expenses, _, _ = _prepare_report_data(
         filtered,
         categories_df,
         include_own_funds=True,
         include_all_valid=True,
     )
+    _perf_log("third_link.prepare_report_data", step_started)
+    step_started = time.perf_counter()
     all_report_groups = _executive_report_group_options(categories_df, expenses)
     visible_report_groups = _third_link_default_visible_groups(all_report_groups)
+    _perf_log("third_link.resolve_visible_groups", step_started)
     if not visible_report_groups:
         st.warning("No reporting groups are selected for the third link yet. Tick at least one group in Setup.")
+        _perf_log("third_link.total_no_visible_groups", total_started)
         return
 
+    step_started = time.perf_counter()
     expenses = expenses[
         expenses["report_group"].fillna("").astype(str).str.strip().isin(visible_report_groups)
     ].copy()
+    _perf_log("third_link.filter_visible_groups", step_started)
     if expenses.empty:
         st.info("No active report rows match the third-link reporting groups.")
+        _perf_log("third_link.total_no_expenses", total_started)
         return
 
     show_all_months = st.toggle("Analytical", value=False, key="third_report_analytical")
@@ -3478,6 +3569,7 @@ def render_third_link_report():
                         "month, previous month, main drivers, what to notice, and follow-up points."
                     )
 
+    step_started = time.perf_counter()
     _render_executive_drilldown(
         expenses,
         month_window,
@@ -3489,6 +3581,8 @@ def render_third_link_report():
         ai_prompts=ai_prompts,
         show_zero_explanations=False,
     )
+    _perf_log("third_link.render_drilldown", step_started)
+    _perf_log("third_link.total", total_started)
 
 
 if is_third_link_report_request():

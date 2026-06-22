@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 from html import escape
 from io import BytesIO
 import json
@@ -126,6 +127,22 @@ def _perf_log(label, started_at):
         return
     elapsed = time.perf_counter() - started_at
     print(f"[ARETI_PERF] {label}: {elapsed:.3f}s", flush=True)
+
+
+def _dataframe_signature(frame, columns):
+    if frame is None or frame.empty:
+        return "0:empty"
+    available_columns = [column for column in columns if column in frame.columns]
+    if not available_columns:
+        return f"{len(frame)}:no-columns"
+    compact = frame[available_columns].copy()
+    for column in available_columns:
+        if pd.api.types.is_datetime64_any_dtype(compact[column]):
+            compact[column] = pd.to_datetime(compact[column], errors="coerce").dt.strftime("%Y-%m-%d")
+        else:
+            compact[column] = compact[column].fillna("").astype(str)
+    hashed = pd.util.hash_pandas_object(compact, index=False).values
+    return f"{len(frame)}:{hashlib.sha256(hashed.tobytes()).hexdigest()}"
 
 
 def _last_sunday(year, month):
@@ -3122,6 +3139,58 @@ def _build_custom_reporting_group_analysis(
     return _run_custom_ai_prompt(prompt_text, data_context)
 
 
+def _reporting_group_analysis_cache_key(expenses, months, report_group, prompt_text):
+    group_key = str(report_group or "").strip()
+    group_expenses = expenses[
+        expenses["report_group"].fillna("").astype(str).str.strip().eq(group_key)
+    ].copy()
+    data_signature = _dataframe_signature(
+        group_expenses,
+        [
+            "id",
+            "txn_date",
+            "month",
+            "report_group",
+            "category",
+            "subcategory",
+            "report_amount",
+            "expense_usd",
+            "amount_usd",
+            "amount",
+            "currency",
+            "full_statement_description",
+            "account",
+            "account_name",
+        ],
+    )
+    prompt_signature = hashlib.sha256(str(prompt_text or "").encode("utf-8")).hexdigest()
+    months_signature = ",".join(str(month) for month in months)
+    return "|".join([group_key.casefold(), months_signature, data_signature, prompt_signature])
+
+
+def _get_reporting_group_analysis(expenses, months, month_labels, report_group, custom_prompt=""):
+    started = time.perf_counter()
+    cache = st.session_state.setdefault("third_report_ai_cache", {})
+    cache_key = _reporting_group_analysis_cache_key(expenses, months, report_group, custom_prompt)
+    if cache_key in cache:
+        _perf_log("third_link.ai_report.cache_hit", started)
+        return cache[cache_key], True
+    analysis = _build_reporting_group_analysis(
+        expenses,
+        months,
+        month_labels,
+        report_group,
+        custom_prompt,
+    )
+    cache[cache_key] = analysis
+    # Keep the per-session cache small; entries are keyed by data+prompt, so stale reports are not reused.
+    if len(cache) > 12:
+        for old_key in list(cache.keys())[:-12]:
+            cache.pop(old_key, None)
+    _perf_log("third_link.ai_report.generated", started)
+    return analysis, False
+
+
 def _render_executive_drilldown(
     expenses,
     months,
@@ -3468,19 +3537,24 @@ def render_third_link_report():
         unsafe_allow_html=True,
     )
     render_third_report_session_line()
+    status_slot = st.empty()
+    status_slot.info("Loading report data...")
 
     step_started = time.perf_counter()
     ensure_usd_backfilled()
     _perf_log("third_link.ensure_usd_backfilled", step_started)
+    status_slot.info("Loading setup and transactions...")
     step_started = time.perf_counter()
     all_transactions = get_all_transactions()
     categories_df = get_categories(include_subcategories=True)
     _perf_log("third_link.load_setup_and_transactions", step_started)
     if all_transactions.empty:
+        status_slot.empty()
         st.info("No transactions are available for this report yet.")
         _perf_log("third_link.total_empty", total_started)
         return
 
+    status_slot.info("Preparing active transactions...")
     step_started = time.perf_counter()
     all_transactions = all_transactions.copy()
     all_transactions["txn_date"] = pd.to_datetime(all_transactions.get("txn_date"), errors="coerce")
@@ -3496,10 +3570,12 @@ def render_third_link_report():
     ].copy()
     _perf_log("third_link.prepare_active_transactions", step_started)
     if active_transactions.empty:
+        status_slot.empty()
         st.info("No active transactions are available for this report yet.")
         _perf_log("third_link.total_no_active", total_started)
         return
 
+    status_slot.info("Applying report date...")
     step_started = time.perf_counter()
     default_end = active_transactions["txn_date"].max().date()
     cutoff = get_configured_report_until(default_end)
@@ -3507,10 +3583,12 @@ def render_third_link_report():
     filtered = active_transactions[active_transactions["txn_date"] <= cutoff_ts].copy()
     _perf_log("third_link.apply_cutoff", step_started)
     if filtered.empty:
+        status_slot.empty()
         st.warning("No active transactions exist up to the configured report date.")
         _perf_log("third_link.total_no_filtered", total_started)
         return
 
+    status_slot.info("Preparing report calculations...")
     step_started = time.perf_counter()
     _, expenses, _, _ = _prepare_report_data(
         filtered,
@@ -3524,16 +3602,19 @@ def render_third_link_report():
     visible_report_groups = _third_link_default_visible_groups(all_report_groups)
     _perf_log("third_link.resolve_visible_groups", step_started)
     if not visible_report_groups:
+        status_slot.empty()
         st.warning("No reporting groups are selected for the third link yet. Tick at least one group in Setup.")
         _perf_log("third_link.total_no_visible_groups", total_started)
         return
 
+    status_slot.info("Filtering visible reporting groups...")
     step_started = time.perf_counter()
     expenses = expenses[
         expenses["report_group"].fillna("").astype(str).str.strip().isin(visible_report_groups)
     ].copy()
     _perf_log("third_link.filter_visible_groups", step_started)
     if expenses.empty:
+        status_slot.empty()
         st.info("No active report rows match the third-link reporting groups.")
         _perf_log("third_link.total_no_expenses", total_started)
         return
@@ -3546,16 +3627,21 @@ def render_third_link_report():
     month_labels = _executive_month_labels(month_window)
     ai_prompts = _report_group_prompt_lookup()
     selected_ai_group = st.session_state.get("third_report_ai_group")
-    if selected_ai_group in visible_report_groups:
-        analysis = _build_reporting_group_analysis(
-            expenses,
-            month_window,
-            month_labels,
-            selected_ai_group,
-            ai_prompts.get(selected_ai_group, ""),
-        )
-        if analysis:
-            with st.expander(f"AI report: {selected_ai_group}", expanded=True):
+    if selected_ai_group in visible_report_groups and expenses["report_group"].fillna("").astype(str).str.strip().eq(str(selected_ai_group).strip()).any():
+        status_slot.empty()
+        with st.expander(f"AI report: {selected_ai_group}", expanded=True):
+            ai_status = st.empty()
+            ai_status.info("Preparing AI report...")
+            with st.spinner("Generating AI report..."):
+                analysis, _from_cache = _get_reporting_group_analysis(
+                    expenses,
+                    month_window,
+                    month_labels,
+                    selected_ai_group,
+                    ai_prompts.get(selected_ai_group, ""),
+                )
+            ai_status.empty()
+            if analysis:
                 st.markdown(_plain_ai_analysis_html(analysis), unsafe_allow_html=True)
                 if ai_prompts.get(selected_ai_group, "").strip():
                     st.caption(
@@ -3568,7 +3654,7 @@ def render_third_link_report():
                         "column for each reporting group. The default prompt uses signed total, current "
                         "month, previous month, main drivers, what to notice, and follow-up points."
                     )
-
+    status_slot.info("Rendering reporting groups...")
     step_started = time.perf_counter()
     _render_executive_drilldown(
         expenses,
@@ -3581,6 +3667,7 @@ def render_third_link_report():
         ai_prompts=ai_prompts,
         show_zero_explanations=False,
     )
+    status_slot.empty()
     _perf_log("third_link.render_drilldown", step_started)
     _perf_log("third_link.total", total_started)
 

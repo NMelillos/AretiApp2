@@ -2870,7 +2870,7 @@ def _openai_retry_delay(exc):
     return max(0.0, min(delay, float(os.environ.get("OPENAI_MAX_RETRY_SECONDS", "5") or "5")))
 
 
-def _request_openai_report(prompt_text, data_context, model, max_output_tokens, timeout_seconds):
+def _request_openai_report(prompt_text, data_context, model, max_output_tokens, timeout_seconds, api_key):
     body = {
         "model": model,
         "instructions": str(prompt_text or "").strip(),
@@ -2895,8 +2895,8 @@ def _request_openai_report(prompt_text, data_context, model, max_output_tokens, 
 
 
 @st.cache_data(show_spinner=False, ttl=3600, max_entries=64)
-def _request_openai_report_cached(prompt_text, data_context, model, max_output_tokens, timeout_seconds):
-    return _request_openai_report(prompt_text, data_context, model, max_output_tokens, timeout_seconds)
+def _request_openai_report_cached(prompt_text, data_context, model, max_output_tokens, timeout_seconds, api_key):
+    return _request_openai_report(prompt_text, data_context, model, max_output_tokens, timeout_seconds, api_key)
 
 
 def _run_custom_ai_prompt(prompt_text, data_context):
@@ -2917,6 +2917,7 @@ def _run_custom_ai_prompt(prompt_text, data_context):
             model,
             max_output_tokens,
             timeout_seconds,
+            api_key,
         )
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
@@ -2928,6 +2929,7 @@ def _run_custom_ai_prompt(prompt_text, data_context):
                     model,
                     max_output_tokens,
                     timeout_seconds,
+                    api_key,
                 )
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, _AIServiceError) as retry_exc:
                 if isinstance(retry_exc, urllib.error.HTTPError):

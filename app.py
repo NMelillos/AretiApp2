@@ -3128,22 +3128,7 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
         for _, row in top_categories.iterrows()
     ] or ["- No category totals available."]
 
-    prompt_text = str(custom_prompt or "").strip()
-    if prompt_text:
-        return _build_custom_reporting_group_analysis(
-            group_expenses,
-            category_totals,
-            report_group,
-            month_labels.get(current_month, str(current_month)),
-            total,
-            current_total,
-            previous_total,
-            status_delta,
-            trend_text,
-            prompt_text,
-        )
-
-    return (
+    default_analysis = (
         f"**{report_group} AI analysis through {month_labels.get(current_month, str(current_month))}**\n"
         f"- Signed total in this report window: {_money(total)}.\n"
         f"- Current month: {_money(current_total)}; previous month: {_money(previous_total)}.\n"
@@ -3157,6 +3142,30 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
         "- Open the category and subcategory detail before taking action, so recurring costs are separated from one-off items.\n"
         "- Review increasing categories first and ask whether they are expected, recurring, or avoidable."
     )
+    prompt_text = str(custom_prompt or "").strip()
+    if prompt_text:
+        custom_analysis = _build_custom_reporting_group_analysis(
+            group_expenses,
+            category_totals,
+            report_group,
+            month_labels.get(current_month, str(current_month)),
+            total,
+            current_total,
+            previous_total,
+            status_delta,
+            trend_text,
+            prompt_text,
+        )
+        if not str(custom_analysis or "").startswith("The AI service could not generate the report right now"):
+            return custom_analysis
+        return (
+            f"**AI provider note**\n"
+            f"- The external AI service could not generate the custom prompt result at this moment.\n"
+            f"- Showing the built-in analysis below so the AI button remains usable from the report data.\n\n"
+            f"{default_analysis}"
+        )
+
+    return default_analysis
 
 
 def _build_custom_reporting_group_analysis(
@@ -3227,7 +3236,8 @@ def _get_reporting_group_analysis(expenses, months, month_labels, report_group, 
         report_group,
         custom_prompt,
     )
-    if not str(analysis or "").startswith("The AI service could not generate the report right now"):
+    analysis_text = str(analysis or "")
+    if not analysis_text.startswith("The AI service could not generate the report right now") and "**AI provider note**" not in analysis_text:
         cache[cache_key] = analysis
         # Keep the per-session cache small; entries are keyed by data+prompt, so stale reports are not reused.
         if len(cache) > 12:

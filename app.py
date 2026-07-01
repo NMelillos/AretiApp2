@@ -2857,17 +2857,20 @@ def _extract_openai_response_text(payload):
     return "\n\n".join(text_parts).strip()
 
 
-def _run_custom_ai_prompt(prompt_text, data_context):
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        return (
-            "Custom AI prompt is saved for this reporting group, but the AI service is not configured on the server. "
-            "Set OPENAI_API_KEY on Render to generate the report using Areti's prompt only."
-        )
+class _AIServiceError(Exception):
+    pass
 
-    model = os.environ.get("OPENAI_MODEL", "gpt-5.2").strip() or "gpt-5.2"
-    max_output_tokens = int(os.environ.get("OPENAI_MAX_OUTPUT_TOKENS", "2200") or "2200")
-    timeout_seconds = int(os.environ.get("OPENAI_TIMEOUT_SECONDS", "45") or "45")
+
+def _openai_retry_delay(exc):
+    retry_after = exc.headers.get("Retry-After") if getattr(exc, "headers", None) else None
+    try:
+        delay = float(retry_after)
+    except (TypeError, ValueError):
+        delay = float(os.environ.get("OPENAI_RETRY_SECONDS", "2") or "2")
+    return max(0.0, min(delay, float(os.environ.get("OPENAI_MAX_RETRY_SECONDS", "5") or "5")))
+
+
+def _request_openai_report(prompt_text, data_context, model, max_output_tokens, timeout_seconds):
     body = {
         "model": model,
         "instructions": str(prompt_text or "").strip(),
@@ -2883,16 +2886,55 @@ def _run_custom_ai_prompt(prompt_text, data_context):
         },
         method="POST",
     )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    text = _extract_openai_response_text(payload)
+    if text:
+        return text
+    raise _AIServiceError("The AI service responded, but no report text was returned.")
+
+
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=64)
+def _request_openai_report_cached(prompt_text, data_context, model, max_output_tokens, timeout_seconds):
+    return _request_openai_report(prompt_text, data_context, model, max_output_tokens, timeout_seconds)
+
+
+def _run_custom_ai_prompt(prompt_text, data_context):
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return (
+            "Custom AI prompt is saved for this reporting group, but the AI service is not configured on the server. "
+            "Set OPENAI_API_KEY on Render to generate the report using Areti's prompt only."
+        )
+
+    model = os.environ.get("OPENAI_MODEL", "gpt-5.2").strip() or "gpt-5.2"
+    max_output_tokens = int(os.environ.get("OPENAI_MAX_OUTPUT_TOKENS", "2200") or "2200")
+    timeout_seconds = int(os.environ.get("OPENAI_TIMEOUT_SECONDS", "45") or "45")
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        text = _extract_openai_response_text(payload)
-        if text:
-            return text
-        return "The AI service responded, but no report text was returned."
+        return _request_openai_report_cached(
+            str(prompt_text or "").strip(),
+            str(data_context or "").strip(),
+            model,
+            max_output_tokens,
+            timeout_seconds,
+        )
     except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            time.sleep(_openai_retry_delay(exc))
+            try:
+                return _request_openai_report(
+                    str(prompt_text or "").strip(),
+                    str(data_context or "").strip(),
+                    model,
+                    max_output_tokens,
+                    timeout_seconds,
+                )
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, _AIServiceError) as retry_exc:
+                if isinstance(retry_exc, urllib.error.HTTPError):
+                    return f"The AI service could not generate the report right now. HTTP {retry_exc.code}."
+                return f"The AI service could not generate the report right now: {type(retry_exc).__name__}."
         return f"The AI service could not generate the report right now. HTTP {exc.code}."
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+    except (urllib.error.URLError, TimeoutError, ValueError, _AIServiceError) as exc:
         return f"The AI service could not generate the report right now: {type(exc).__name__}."
 
 
@@ -3182,11 +3224,12 @@ def _get_reporting_group_analysis(expenses, months, month_labels, report_group, 
         report_group,
         custom_prompt,
     )
-    cache[cache_key] = analysis
-    # Keep the per-session cache small; entries are keyed by data+prompt, so stale reports are not reused.
-    if len(cache) > 12:
-        for old_key in list(cache.keys())[:-12]:
-            cache.pop(old_key, None)
+    if not str(analysis or "").startswith("The AI service could not generate the report right now"):
+        cache[cache_key] = analysis
+        # Keep the per-session cache small; entries are keyed by data+prompt, so stale reports are not reused.
+        if len(cache) > 12:
+            for old_key in list(cache.keys())[:-12]:
+                cache.pop(old_key, None)
     _perf_log("third_link.ai_report.generated", started)
     return analysis, False
 

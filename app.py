@@ -2447,6 +2447,7 @@ def _render_executive_click_rows(
                 with ai_col:
                     if st.button("AI", key=f"executive_ai_{idx}", help=f"Open AI report for {row['label']}", use_container_width=True):
                         st.session_state["third_report_ai_group"] = row["value"]
+                        st.session_state["third_report_ai_requested"] = True
                         st.rerun()
             else:
                 if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
@@ -3672,23 +3673,46 @@ def render_third_link_report():
     month_labels = _executive_month_labels(month_window)
     ai_prompts = _report_group_prompt_lookup()
     selected_ai_group = st.session_state.get("third_report_ai_group")
+    ai_requested = bool(st.session_state.pop("third_report_ai_requested", False))
     if selected_ai_group in visible_report_groups and expenses["report_group"].fillna("").astype(str).str.strip().eq(str(selected_ai_group).strip()).any():
         status_slot.empty()
         with st.expander(f"AI report: {selected_ai_group}", expanded=True):
-            ai_status = st.empty()
-            ai_status.info("Preparing AI report...")
-            with st.spinner("Generating AI report..."):
-                analysis, _from_cache = _get_reporting_group_analysis(
-                    expenses,
-                    month_window,
-                    month_labels,
-                    selected_ai_group,
-                    ai_prompts.get(selected_ai_group, ""),
-                )
-            ai_status.empty()
+            selected_prompt = ai_prompts.get(selected_ai_group, "")
+            ai_cache_key = _reporting_group_analysis_cache_key(
+                expenses,
+                month_window,
+                selected_ai_group,
+                selected_prompt,
+            )
+            ai_cache = st.session_state.setdefault("third_report_ai_cache", {})
+            last_ai_result = st.session_state.get("third_report_ai_last_result", {})
+            analysis = ""
+            if ai_requested:
+                ai_status = st.empty()
+                ai_status.info("Preparing AI report...")
+                with st.spinner("Generating AI report..."):
+                    analysis, _from_cache = _get_reporting_group_analysis(
+                        expenses,
+                        month_window,
+                        month_labels,
+                        selected_ai_group,
+                        selected_prompt,
+                    )
+                ai_status.empty()
+                # Keep the visible result across unrelated Streamlit reruns without triggering AI again.
+                st.session_state["third_report_ai_last_result"] = {
+                    "cache_key": ai_cache_key,
+                    "analysis": analysis,
+                }
+            elif ai_cache_key in ai_cache:
+                analysis = ai_cache[ai_cache_key]
+            elif last_ai_result.get("cache_key") == ai_cache_key:
+                analysis = last_ai_result.get("analysis", "")
+            else:
+                st.info("Click the AI button next to a reporting group to generate this analysis.")
             if analysis:
                 st.markdown(_plain_ai_analysis_html(analysis), unsafe_allow_html=True)
-                if ai_prompts.get(selected_ai_group, "").strip():
+                if str(selected_prompt or "").strip():
                     st.caption(
                         "Only the custom AI prompt from Setup is used for this analysis. "
                         "The raw prompt text is private and is not shown in the third report."

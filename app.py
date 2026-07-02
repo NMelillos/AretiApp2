@@ -2877,6 +2877,33 @@ def _openai_key_fingerprint(api_key):
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:8]
 
 
+def _openai_endpoint():
+    return "https://api.openai.com/v1/responses"
+
+
+def _openai_header_snapshot(headers):
+    try:
+        items = dict(headers.items())
+    except Exception:
+        items = {}
+    return {str(key): str(value) for key, value in items.items()}
+
+
+def _read_openai_error_payload(exc):
+    raw_text = ""
+    payload = {}
+    try:
+        raw_text = exc.read().decode("utf-8")
+        parsed = json.loads(raw_text)
+        payload = parsed if isinstance(parsed, dict) else {"raw": parsed}
+    except Exception:
+        payload = {}
+    error = payload.get("error", {}) if isinstance(payload, dict) else {}
+    if not isinstance(error, dict):
+        error = {}
+    return raw_text, payload, error
+
+
 def _log_openai_diagnostic(event, **fields):
     safe_fields = {"event": event, **fields}
     print("[ARETI_AI_DIAGNOSTIC] " + json.dumps(safe_fields, ensure_ascii=False, sort_keys=True))
@@ -2887,9 +2914,8 @@ def _openai_http_error_message(exc):
     error_type = ""
     error_code = ""
     error_message = ""
+    raw_error, payload, error = _read_openai_error_payload(exc)
     try:
-        payload = json.loads(exc.read().decode("utf-8"))
-        error = payload.get("error", {}) if isinstance(payload, dict) else {}
         error_type = str(error.get("type") or "").strip()
         error_code = str(error.get("code") or "").strip()
         error_message = str(error.get("message") or "").strip()
@@ -2908,6 +2934,10 @@ def _openai_http_error_message(exc):
         error_type=error_type,
         error_code=error_code,
         error_message=error_message,
+        request_id=getattr(exc, "headers", {}).get("x-request-id", ""),
+        headers=_openai_header_snapshot(getattr(exc, "headers", {})),
+        complete_json_response=payload,
+        raw_response=raw_error,
     )
     if exc.code == 429:
         guidance = " This usually means the server-side AI API key has hit a rate, token, quota, or billing limit."
@@ -2929,7 +2959,7 @@ def _request_openai_report(prompt_text, data_context, model, max_output_tokens, 
         "max_output_tokens": max_output_tokens,
     }
     request = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
+        _openai_endpoint(),
         data=json.dumps(body).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -2950,6 +2980,64 @@ def _request_openai_report_cached(prompt_text, data_context, model, max_output_t
     return _request_openai_report(prompt_text, data_context, model, max_output_tokens, timeout_seconds, api_key)
 
 
+def _run_openai_minimal_diagnostic(api_key, model, timeout_seconds):
+    body = {
+        "model": model,
+        "instructions": "Reply with OK.",
+        "input": "Hello",
+        "max_output_tokens": 16,
+    }
+    request = urllib.request.Request(
+        _openai_endpoint(),
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            raw_text = response.read().decode("utf-8")
+            try:
+                payload = json.loads(raw_text)
+            except Exception:
+                payload = {}
+            _log_openai_diagnostic(
+                "openai_minimal_test_success",
+                endpoint=_openai_endpoint(),
+                model=model,
+                status_code=getattr(response, "status", None),
+                request_id=response.headers.get("x-request-id", ""),
+                headers=_openai_header_snapshot(response.headers),
+                complete_json_response=payload,
+                raw_response=raw_text,
+            )
+    except urllib.error.HTTPError as exc:
+        raw_error, payload, error = _read_openai_error_payload(exc)
+        _log_openai_diagnostic(
+            "openai_minimal_test_error",
+            endpoint=_openai_endpoint(),
+            model=model,
+            status_code=getattr(exc, "code", None),
+            error_type=str(error.get("type") or ""),
+            error_code=str(error.get("code") or ""),
+            error_message=str(error.get("message") or ""),
+            request_id=getattr(exc, "headers", {}).get("x-request-id", ""),
+            headers=_openai_header_snapshot(getattr(exc, "headers", {})),
+            complete_json_response=payload,
+            raw_response=raw_error,
+        )
+    except Exception as exc:
+        _log_openai_diagnostic(
+            "openai_minimal_test_exception",
+            endpoint=_openai_endpoint(),
+            model=model,
+            exception_type=type(exc).__name__,
+            exception_message=str(exc),
+        )
+
+
 def _run_custom_ai_prompt(prompt_text, data_context):
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     _log_openai_diagnostic(
@@ -2966,6 +3054,17 @@ def _run_custom_ai_prompt(prompt_text, data_context):
     model = os.environ.get("OPENAI_MODEL", "gpt-5.2").strip() or "gpt-5.2"
     max_output_tokens = int(os.environ.get("OPENAI_MAX_OUTPUT_TOKENS", "2200") or "2200")
     timeout_seconds = int(os.environ.get("OPENAI_TIMEOUT_SECONDS", "45") or "45")
+    _log_openai_diagnostic(
+        "openai_request_config",
+        endpoint=_openai_endpoint(),
+        client_library="urllib.request",
+        openai_python_package="not_installed",
+        model=model,
+        openai_organization=os.environ.get("OPENAI_ORGANIZATION") or os.environ.get("OPENAI_ORG_ID") or "",
+        openai_project=os.environ.get("OPENAI_PROJECT") or os.environ.get("OPENAI_PROJECT_ID") or "",
+        openai_base_url=os.environ.get("OPENAI_BASE_URL", ""),
+        azure_openai_config_present=bool(os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("AZURE_OPENAI_ENDPOINT")),
+    )
     try:
         return _request_openai_report_cached(
             str(prompt_text or "").strip(),
@@ -2989,11 +3088,13 @@ def _run_custom_ai_prompt(prompt_text, data_context):
             )
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, _AIServiceError) as retry_exc:
                 if isinstance(retry_exc, urllib.error.HTTPError):
+                    _run_openai_minimal_diagnostic(api_key, model, timeout_seconds)
                     return _openai_http_error_message(retry_exc)
                 return (
                     f"The approved custom AI prompt could not be generated right now: {type(retry_exc).__name__}. "
                     "No alternative AI analysis was generated."
                 )
+        _run_openai_minimal_diagnostic(api_key, model, timeout_seconds)
         return _openai_http_error_message(exc)
     except (urllib.error.URLError, TimeoutError, ValueError, _AIServiceError) as exc:
         return (

@@ -2871,21 +2871,44 @@ def _openai_retry_delay(exc):
     return max(0.0, min(delay, float(os.environ.get("OPENAI_MAX_RETRY_SECONDS", "5") or "5")))
 
 
+def _openai_key_fingerprint(api_key):
+    if not api_key:
+        return ""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:8]
+
+
+def _log_openai_diagnostic(event, **fields):
+    safe_fields = {"event": event, **fields}
+    print("[ARETI_AI_DIAGNOSTIC] " + json.dumps(safe_fields, ensure_ascii=False, sort_keys=True))
+
+
 def _openai_http_error_message(exc):
     detail = ""
+    error_type = ""
+    error_code = ""
+    error_message = ""
     try:
         payload = json.loads(exc.read().decode("utf-8"))
         error = payload.get("error", {}) if isinstance(payload, dict) else {}
-        message = str(error.get("message") or "").strip()
-        code = str(error.get("code") or error.get("type") or "").strip()
-        if message and code:
-            detail = f" ({code}: {message})"
-        elif message:
-            detail = f" ({message})"
-        elif code:
-            detail = f" ({code})"
+        error_type = str(error.get("type") or "").strip()
+        error_code = str(error.get("code") or "").strip()
+        error_message = str(error.get("message") or "").strip()
+        display_code = error_code or error_type
+        if error_message and display_code:
+            detail = f" ({display_code}: {error_message})"
+        elif error_message:
+            detail = f" ({error_message})"
+        elif display_code:
+            detail = f" ({display_code})"
     except Exception:
         detail = ""
+    _log_openai_diagnostic(
+        "openai_http_error",
+        status_code=getattr(exc, "code", None),
+        error_type=error_type,
+        error_code=error_code,
+        error_message=error_message,
+    )
     if exc.code == 429:
         guidance = " This usually means the server-side AI API key has hit a rate, token, quota, or billing limit."
     elif exc.code in {401, 403}:
@@ -2929,6 +2952,11 @@ def _request_openai_report_cached(prompt_text, data_context, model, max_output_t
 
 def _run_custom_ai_prompt(prompt_text, data_context):
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    _log_openai_diagnostic(
+        "openai_key_loaded",
+        openai_api_key_present=bool(api_key),
+        openai_api_key_fingerprint=_openai_key_fingerprint(api_key),
+    )
     if not api_key:
         return (
             "Custom AI prompt is saved for this reporting group, but the AI service is not configured on the server. "

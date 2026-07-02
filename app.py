@@ -2871,6 +2871,33 @@ def _openai_retry_delay(exc):
     return max(0.0, min(delay, float(os.environ.get("OPENAI_MAX_RETRY_SECONDS", "5") or "5")))
 
 
+def _openai_http_error_message(exc):
+    detail = ""
+    try:
+        payload = json.loads(exc.read().decode("utf-8"))
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        message = str(error.get("message") or "").strip()
+        code = str(error.get("code") or error.get("type") or "").strip()
+        if message and code:
+            detail = f" ({code}: {message})"
+        elif message:
+            detail = f" ({message})"
+        elif code:
+            detail = f" ({code})"
+    except Exception:
+        detail = ""
+    if exc.code == 429:
+        guidance = " This usually means the server-side AI API key has hit a rate, token, quota, or billing limit."
+    elif exc.code in {401, 403}:
+        guidance = " This usually means the server-side AI API key or model access is not accepted."
+    else:
+        guidance = ""
+    return (
+        f"The approved custom AI prompt could not be generated right now. HTTP {exc.code}{detail}."
+        f"{guidance} No alternative AI analysis was generated."
+    )
+
+
 def _request_openai_report(prompt_text, data_context, model, max_output_tokens, timeout_seconds, api_key):
     body = {
         "model": model,
@@ -2931,14 +2958,20 @@ def _run_custom_ai_prompt(prompt_text, data_context):
                     max_output_tokens,
                     timeout_seconds,
                     api_key,
-                )
+            )
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, _AIServiceError) as retry_exc:
                 if isinstance(retry_exc, urllib.error.HTTPError):
-                    return f"The AI service could not generate the report right now. HTTP {retry_exc.code}."
-                return f"The AI service could not generate the report right now: {type(retry_exc).__name__}."
-        return f"The AI service could not generate the report right now. HTTP {exc.code}."
+                    return _openai_http_error_message(retry_exc)
+                return (
+                    f"The approved custom AI prompt could not be generated right now: {type(retry_exc).__name__}. "
+                    "No alternative AI analysis was generated."
+                )
+        return _openai_http_error_message(exc)
     except (urllib.error.URLError, TimeoutError, ValueError, _AIServiceError) as exc:
-        return f"The AI service could not generate the report right now: {type(exc).__name__}."
+        return (
+            f"The approved custom AI prompt could not be generated right now: {type(exc).__name__}. "
+            "No alternative AI analysis was generated."
+        )
 
 
 def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
@@ -3099,6 +3132,12 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
     ].copy()
     if group_expenses.empty:
         return ""
+    prompt_text = str(custom_prompt or "").strip()
+    if not prompt_text:
+        return (
+            "No approved custom AI prompt is saved for this reporting group. "
+            "No alternative AI analysis was generated."
+        )
 
     group_expenses["_signed_report_amount"] = _executive_signed_amount_series(group_expenses).values
     current_month = months[-1] if months else group_expenses["month"].max()
@@ -3128,36 +3167,18 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
         for _, row in top_categories.iterrows()
     ] or ["- No category totals available."]
 
-    default_analysis = (
-        f"**{report_group} AI analysis through {month_labels.get(current_month, str(current_month))}**\n"
-        f"- Signed total in this report window: {_money(total)}.\n"
-        f"- Current month: {_money(current_total)}; previous month: {_money(previous_total)}.\n"
-        f"- Overall movement: {report_group} {trend_text} by {_money(abs(status_delta))}.\n\n"
-        "**Main drivers by signed total**\n"
-        + "\n".join(category_lines)
-        + "\n\n**What to notice**\n"
-        "- Positive rows increase the signed total; negative rows decrease it. Check unusual movements in transaction detail.\n"
-        "- Focus first on categories with the largest signed movement and any change from the previous month.\n\n"
-        "**How to cut down / follow up**\n"
-        "- Open the category and subcategory detail before taking action, so recurring costs are separated from one-off items.\n"
-        "- Review increasing categories first and ask whether they are expected, recurring, or avoidable."
+    return _build_custom_reporting_group_analysis(
+        group_expenses,
+        category_totals,
+        report_group,
+        month_labels.get(current_month, str(current_month)),
+        total,
+        current_total,
+        previous_total,
+        status_delta,
+        trend_text,
+        prompt_text,
     )
-    prompt_text = str(custom_prompt or "").strip()
-    if prompt_text:
-        return _build_custom_reporting_group_analysis(
-            group_expenses,
-            category_totals,
-            report_group,
-            month_labels.get(current_month, str(current_month)),
-            total,
-            current_total,
-            previous_total,
-            status_delta,
-            trend_text,
-            prompt_text,
-        )
-
-    return default_analysis
 
 
 def _build_custom_reporting_group_analysis(
@@ -3229,7 +3250,7 @@ def _get_reporting_group_analysis(expenses, months, month_labels, report_group, 
         custom_prompt,
     )
     analysis_text = str(analysis or "")
-    if not analysis_text.startswith("The AI service could not generate the report right now"):
+    if not analysis_text.startswith("The AI service could not generate the report right now") and not analysis_text.startswith("The approved custom AI prompt could not be generated"):
         cache[cache_key] = analysis
         # Keep the per-session cache small; entries are keyed by data+prompt, so stale reports are not reused.
         if len(cache) > 12:

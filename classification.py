@@ -66,12 +66,17 @@ MERCHANT_SIGNATURE_STOP_WORDS = {
     "WITHDRAWAL",
 }
 MERCHANT_BRANDS = {
+    "ADOBE": "ADOBE",
     "AMBER AND JOE": "AMBER JOE",
     "AMBER JOE": "AMBER JOE",
     "BOLT": "BOLT",
+    "KREA AI": "KREA AI",
+    "KREA": "KREA AI",
     "REPLIT": "REPLIT",
     "WOLT": "WOLT",
 }
+MERCHANT_HISTORY_MIN_MATCHES = 3
+MERCHANT_HISTORY_CONFIDENCE_THRESHOLD = 0.80
 
 
 def _merchant_signature(description):
@@ -206,7 +211,7 @@ def keyword_category_guess(normalized_description, beneficiary, categories):
 
 def _memory_indexes(memory_df):
     if memory_df.empty:
-        return {}, {}, {}, [], {}
+        return {}, {}, {}, [], {}, {}
 
     memory = memory_df.copy()
     for column in [
@@ -233,6 +238,7 @@ def _memory_indexes(memory_df):
     descriptions_by_type = {}
     all_descriptions = []
     best_by_signature = {}
+    signature_history = {}
 
     for _, row in memory.iterrows():
         item = row.to_dict()
@@ -244,13 +250,51 @@ def _memory_indexes(memory_df):
             all_descriptions.append(desc)
         if signature and signature not in best_by_signature:
             best_by_signature[signature] = item
+        if signature:
+            signature_history.setdefault(signature, []).append(item)
         best_by_type_desc.setdefault(tx_type, {})
         descriptions_by_type.setdefault(tx_type, [])
         if desc not in best_by_type_desc[tx_type]:
             best_by_type_desc[tx_type][desc] = item
             descriptions_by_type[tx_type].append(desc)
 
-    return exact, best_by_type_desc, descriptions_by_type, all_descriptions, best_by_signature
+    return exact, best_by_type_desc, descriptions_by_type, all_descriptions, best_by_signature, signature_history
+
+
+def _consistent_merchant_history(signature, signature_history, categories):
+    rows = signature_history.get(signature, [])
+    if not rows:
+        return None
+
+    category_lookup = _category_lookup(categories)
+    totals = {}
+    references = {}
+    total_seen = 0.0
+    for row in rows:
+        category = category_lookup.get(str(row.get("category", "")).strip().casefold(), "")
+        subcategory = str(row.get("subcategory", "") or "").strip()
+        if not category or not subcategory:
+            continue
+        weight = float(row.get("times_seen", 0) or 0) or 1.0
+        key = (category, subcategory)
+        totals[key] = totals.get(key, 0.0) + weight
+        total_seen += weight
+        references.setdefault(key, row)
+
+    if total_seen < MERCHANT_HISTORY_MIN_MATCHES or not totals:
+        return None
+
+    best_key, best_seen = max(totals.items(), key=lambda item: item[1])
+    confidence_ratio = best_seen / total_seen if total_seen else 0
+    if best_seen < MERCHANT_HISTORY_MIN_MATCHES or confidence_ratio < MERCHANT_HISTORY_CONFIDENCE_THRESHOLD:
+        return None
+
+    reference = dict(references[best_key])
+    reference["category"] = best_key[0]
+    reference["subcategory"] = best_key[1]
+    reference["score"] = round(min(0.99, 0.82 + confidence_ratio * 0.15), 2)
+    reference["history_count"] = int(best_seen)
+    return reference
 
 
 def _similar_from_index(
@@ -286,7 +330,14 @@ def _similar_from_index(
 def classify_transactions(df, memory_df):
     categories = get_categories()
     category_lookup = _category_lookup(categories)
-    exact_index, best_by_type_desc, descriptions_by_type, all_descriptions, best_by_signature = _memory_indexes(memory_df)
+    (
+        exact_index,
+        best_by_type_desc,
+        descriptions_by_type,
+        all_descriptions,
+        best_by_signature,
+        signature_history,
+    ) = _memory_indexes(memory_df)
     suggestions = []
 
     def active_category(category):
@@ -313,15 +364,35 @@ def classify_transactions(df, memory_df):
             continue
 
         merchant_signature = _merchant_signature(normalized)
+        historical = (
+            _consistent_merchant_history(merchant_signature, signature_history, categories)
+            if merchant_signature
+            else None
+        )
+        historical_category = active_category(historical.get("category", "")) if historical else ""
+        if historical and historical_category:
+            suggestions.append({
+                "suggested_category": historical_category,
+                "suggested_subcategory": historical.get("subcategory", ""),
+                "match_type": "similar",
+                "matched_reference": (
+                    historical.get("original_description")
+                    or historical.get("normalized_description")
+                    or f"Consistent merchant history: {merchant_signature}"
+                ),
+                "confidence": float(historical.get("score", 0.94) or 0.94),
+            })
+            continue
+
         merchant = best_by_signature.get(merchant_signature) if merchant_signature else None
         merchant_category = active_category(merchant.get("category", "")) if merchant else ""
         if merchant and merchant_category:
             suggestions.append({
                 "suggested_category": merchant_category,
-                "suggested_subcategory": merchant.get("subcategory", ""),
+                "suggested_subcategory": "",
                 "match_type": "similar",
                 "matched_reference": merchant.get("original_description") or merchant["normalized_description"],
-                "confidence": 0.88,
+                "confidence": 0.78,
             })
             continue
 

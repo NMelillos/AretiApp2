@@ -86,6 +86,7 @@ from db import (
     save_statement_balance,
     save_reviewed_rows,
     set_app_setting,
+    split_transaction,
     statement_balance_exists,
     statement_already_imported,
     update_database_rows,
@@ -1711,6 +1712,137 @@ def render_bulk_categorise_panel(df, categories, key_prefix, expanded=False, inl
                 st.rerun()
             else:
                 st.warning("No transactions were updated.")
+
+
+def render_transaction_split_panel(df, categories_df, categories, key_prefix):
+    if df.empty or "id" not in df.columns or not categories:
+        return
+    working = df.dropna(subset=["id"]).copy()
+    if working.empty:
+        return
+    working["id"] = working["id"].astype(int)
+    if "status" in working.columns:
+        working["_status_key"] = working["status"].fillna("pending").astype(str).str.strip().str.casefold()
+        working = working[working["_status_key"] != "excluded"].copy()
+    if "split_parent_id" in working.columns:
+        split_parent_ids = pd.to_numeric(working["split_parent_id"], errors="coerce")
+        working = working[split_parent_ids.isna()].copy()
+    if working.empty:
+        return
+
+    with st.expander("Split one transaction into multiple allocations"):
+        st.caption(
+            "Choose one transaction by ID, enter positive allocation amounts, and choose valid "
+            "Category / Subcategory pairs. The app keeps the original transaction sign and excludes "
+            "the original row from active reports so it is not counted twice."
+        )
+        labels = {_transaction_label(row): int(row["id"]) for _, row in working.iterrows()}
+        selected_label = st.selectbox(
+            "Transaction to split",
+            list(labels.keys()),
+            key=f"{key_prefix}_split_transaction",
+        )
+        selected_id = labels[selected_label]
+        selected_row = working[working["id"] == selected_id].iloc[0]
+        original_amount_value = pd.to_numeric(selected_row.get("amount", 0), errors="coerce")
+        original_amount = 0.0 if pd.isna(original_amount_value) else float(original_amount_value)
+        target_amount = abs(original_amount)
+        st.info(
+            f"Original transaction ID {selected_id}: {format_currency(original_amount)}. "
+            f"Allocation total must equal {format_currency(target_amount)}."
+        )
+        allocation_count = int(st.number_input(
+            "Number of split rows",
+            min_value=2,
+            max_value=12,
+            value=2,
+            step=1,
+            key=f"{key_prefix}_split_count",
+        ))
+        default_rows = pd.DataFrame({
+            "amount": [0.0] * allocation_count,
+            _CATEGORY_PAIR_COLUMN: [""] * allocation_count,
+        })
+        pair_options = _category_pair_options(categories_df, categories)
+        split_edit = st.data_editor(
+            default_rows,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            column_config={
+                "amount": st.column_config.NumberColumn(
+                    "Split amount",
+                    min_value=0.0,
+                    step=1.0,
+                    format="%.2f",
+                    help="Enter a positive amount. The original transaction sign is preserved automatically.",
+                ),
+                _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
+                    "Category / Subcategory",
+                    options=pair_options,
+                    required=True,
+                ),
+            },
+            key=f"{key_prefix}_split_editor_{selected_id}_{allocation_count}",
+        )
+        split_preview = _apply_category_pair_values(split_edit)
+        entered_total = float(pd.to_numeric(split_preview.get("amount"), errors="coerce").fillna(0).sum())
+        difference = round(target_amount - entered_total, 2)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Original amount", format_currency(target_amount))
+        c2.metric("Split total", format_currency(entered_total))
+        c3.metric("Difference", format_currency(difference))
+
+        parsed_pairs = []
+        duplicate_pairs = set()
+        seen_pairs = set()
+        for _, row in split_preview.iterrows():
+            category = str(row.get("category", "") or "").strip()
+            subcategory = str(row.get("subcategory", "") or "").strip()
+            if category:
+                pair_key = (category.casefold(), subcategory.casefold())
+                if pair_key in seen_pairs:
+                    duplicate_pairs.add(_category_pair_label(category, subcategory))
+                seen_pairs.add(pair_key)
+            parsed_pairs.append((category, subcategory))
+        invalid_rows = []
+        for position, (_, row) in enumerate(split_preview.iterrows()):
+            amount = pd.to_numeric(row.get("amount"), errors="coerce")
+            category, _ = parsed_pairs[position]
+            if pd.isna(amount) or float(amount) <= 0 or not category:
+                invalid_rows.append(position + 1)
+        if invalid_rows:
+            st.warning(f"Rows {', '.join(map(str, invalid_rows))} need a positive amount and category.")
+        if duplicate_pairs:
+            st.warning("Duplicate allocations are not allowed: " + ", ".join(sorted(duplicate_pairs)))
+        if abs(difference) > 0.005:
+            st.warning("The split total must exactly equal the original transaction amount before saving.")
+
+        can_save = not invalid_rows and not duplicate_pairs and abs(difference) <= 0.005
+        if st.button(
+            "Create split allocations",
+            type="primary",
+            disabled=not can_save,
+            key=f"{key_prefix}_split_apply",
+        ):
+            allocations = []
+            for _, row in split_preview.iterrows():
+                category, subcategory = _parse_category_pair_label(row.get(_CATEGORY_PAIR_COLUMN, ""))
+                allocations.append({
+                    "amount": float(pd.to_numeric(row.get("amount"), errors="coerce")),
+                    "category": category,
+                    "subcategory": subcategory,
+                })
+            try:
+                result = split_transaction(selected_id, allocations)
+                st.success(
+                    f"Transaction {selected_id} was split into {result['inserted']} allocation rows. "
+                    "The original row remains traceable and is excluded from active reports to avoid double counting."
+                )
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
 
 
 def render_manual_transaction_form(categories, subcategories):
@@ -4433,6 +4565,7 @@ elif page == "Database":
             inline=True,
         )
         render_bulk_categorise_panel(db_view, categories, "database", expanded=True, inline=True)
+        render_transaction_split_panel(db_view, categories_df, categories, "database")
         render_transaction_exclusion_panel(db_view, "database")
         db_view = _with_category_pair_column(db_view)
         pair_options = _category_pair_options(categories_df, categories, db_view)

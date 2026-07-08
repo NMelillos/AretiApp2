@@ -361,6 +361,10 @@ def init_db():
         "status": "TEXT DEFAULT 'pending'",
         "dup_flag": "INTEGER DEFAULT 0",
         "reviewed_at": "TEXT",
+        "split_parent_id": "INTEGER",
+        "split_group_id": "TEXT",
+        "split_allocation_index": "INTEGER",
+        "split_original_amount": "REAL",
     }.items():
         _ensure_column(cur, "classified_transactions", column_name, definition)
 
@@ -448,6 +452,14 @@ def init_db():
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_classified_row_hash
         ON classified_transactions(row_hash)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_classified_split_parent
+        ON classified_transactions(split_parent_id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_classified_split_group
+        ON classified_transactions(split_group_id)
     """)
     cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_balances_account
@@ -597,7 +609,7 @@ def _existing_transaction_line_lookup(cur, include_account=True, amount_sign="si
                amount, currency, bank, account_number, account_name
         FROM classified_transactions
         WHERE amount IS NOT NULL
-          AND COALESCE(status, '') <> 'excluded'
+          AND (COALESCE(status, '') <> 'excluded' OR COALESCE(split_group_id, '') <> '')
     """)
     columns = [desc[0] for desc in cur.description]
     lookup = {}
@@ -2244,6 +2256,231 @@ def get_all_transactions():
     finally:
         conn.close()
     return df
+
+
+def _category_pair_exists(cur, category, subcategory):
+    category = _clean(category)
+    subcategory = _clean(subcategory)
+    if not category:
+        return False
+    if subcategory:
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM category_list
+            WHERE category = ? AND COALESCE(subcategory, '') = ?
+        """, (category, subcategory))
+        return int(cur.fetchone()[0] or 0) > 0
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM category_list
+        WHERE category = ?
+    """, (category,))
+    return int(cur.fetchone()[0] or 0) > 0
+
+
+def split_transaction(transaction_id, allocations):
+    tx_id = int(transaction_id)
+    cleaned_allocations = []
+    seen_pairs = set()
+    for index, allocation in enumerate(allocations, start=1):
+        amount = _float_or_none(allocation.get("amount"))
+        category = _clean(allocation.get("category"))
+        subcategory = _clean(allocation.get("subcategory"))
+        if amount is None or amount <= 0:
+            raise ValueError("Every split amount must be a positive number.")
+        if not category:
+            raise ValueError("Every split row must have a category.")
+        pair_key = (category.casefold(), subcategory.casefold())
+        if pair_key in seen_pairs:
+            raise ValueError("Duplicate category/subcategory allocations are not allowed in one split.")
+        seen_pairs.add(pair_key)
+        cleaned_allocations.append({
+            "amount": float(amount),
+            "category": category,
+            "subcategory": subcategory,
+            "index": index,
+        })
+
+    if len(cleaned_allocations) < 2:
+        raise ValueError("A split must contain at least two allocation rows.")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM classified_transactions WHERE id = ?", (tx_id,))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Transaction ID {tx_id} was not found.")
+        columns = [desc[0] for desc in cur.description]
+        parent = dict(zip(columns, row))
+
+        if parent.get("split_parent_id"):
+            raise ValueError("This row is already a split allocation and cannot be split again.")
+        cur.execute("SELECT COUNT(*) FROM classified_transactions WHERE split_parent_id = ?", (tx_id,))
+        if int(cur.fetchone()[0] or 0) > 0:
+            raise ValueError("This transaction has already been split.")
+        if _clean(parent.get("status")).casefold() == "excluded":
+            raise ValueError("Excluded transactions cannot be split.")
+
+        original_amount = _float_or_none(parent.get("amount")) or 0.0
+        if abs(original_amount) <= 0.005:
+            raise ValueError("Zero-amount transactions cannot be split.")
+        target_cents = int(round(abs(original_amount) * 100))
+        allocated_cents = [int(round(item["amount"] * 100)) for item in cleaned_allocations]
+        total_cents = sum(allocated_cents)
+        if total_cents != target_cents:
+            difference = (target_cents - total_cents) / 100
+            raise ValueError(
+                "Split amounts must equal the original transaction amount. "
+                f"Current difference: {difference:.2f}."
+            )
+
+        for item in cleaned_allocations:
+            if not _category_pair_exists(cur, item["category"], item["subcategory"]):
+                label = item["category"] if not item["subcategory"] else f"{item['category']} / {item['subcategory']}"
+                raise ValueError(f"Invalid category/subcategory allocation: {label}.")
+
+        now = _now()
+        split_group_id = hashlib.sha256(f"{tx_id}|{now}|{target_cents}".encode("utf-8")).hexdigest()[:16]
+        sign = -1 if original_amount < 0 else 1
+        parent_amount_usd = _float_or_none(parent.get("amount_usd"))
+        parent_fx_rate = _float_or_none(parent.get("fx_rate"))
+        parent_reviewed = int(parent.get("reviewed") or 0)
+        parent_status = _clean(parent.get("status")).casefold() or ("reviewed" if parent_reviewed else "pending")
+        child_reviewed = 1 if parent_reviewed or parent_status == "reviewed" else 0
+        child_status = "reviewed" if child_reviewed else "pending"
+        reviewed_at = now if child_reviewed else None
+
+        cur.execute("""
+            UPDATE classified_transactions
+            SET status = 'excluded',
+                split_group_id = ?,
+                split_original_amount = ?
+            WHERE id = ?
+        """, (split_group_id, original_amount, tx_id))
+        _audit_transaction_change(cur, tx_id, "status", parent.get("status", ""), "excluded", "transaction_split")
+        _audit_transaction_change(cur, tx_id, "split_group_id", parent.get("split_group_id", ""), split_group_id, "transaction_split")
+
+        insert_columns = [
+            "statement_hash",
+            "statement_name",
+            "row_hash",
+            "txn_date",
+            "original_description",
+            "normalized_description",
+            "amount",
+            "currency",
+            "rate_type",
+            "fx_rate",
+            "amount_usd",
+            "account_name",
+            "bank",
+            "account_number",
+            "beneficiary",
+            "transaction_type",
+            "category",
+            "subcategory",
+            "suggested_category",
+            "suggested_subcategory",
+            "match_type",
+            "confidence",
+            "reviewed",
+            "status",
+            "dup_flag",
+            "created_at",
+            "reviewed_at",
+            "split_parent_id",
+            "split_group_id",
+            "split_allocation_index",
+            "split_original_amount",
+        ]
+        placeholders = ", ".join(["?"] * len(insert_columns))
+        inserted = 0
+        for item, cents in zip(cleaned_allocations, allocated_cents):
+            child_amount = sign * (cents / 100)
+            if parent_amount_usd is not None and abs(original_amount) > 0.005:
+                child_amount_usd = round(parent_amount_usd * (child_amount / original_amount), 2)
+            else:
+                child_amount_usd = _usd_from_amount(child_amount, parent_fx_rate)
+            row_hash_src = "|".join([
+                str(parent.get("row_hash", "")),
+                split_group_id,
+                str(item["index"]),
+                item["category"],
+                item["subcategory"],
+                f"{child_amount:.2f}",
+            ])
+            child_row_hash = hashlib.sha256(row_hash_src.encode("utf-8")).hexdigest()
+            description = _clean(parent.get("original_description"))
+            split_description = (
+                f"{description} | Split {item['index']}/{len(cleaned_allocations)} "
+                f"from transaction {tx_id}"
+            )
+            values = {
+                "statement_hash": parent.get("statement_hash"),
+                "statement_name": parent.get("statement_name"),
+                "row_hash": child_row_hash,
+                "txn_date": parent.get("txn_date"),
+                "original_description": split_description,
+                "normalized_description": parent.get("normalized_description"),
+                "amount": child_amount,
+                "currency": parent.get("currency"),
+                "rate_type": parent.get("rate_type"),
+                "fx_rate": parent.get("fx_rate"),
+                "amount_usd": child_amount_usd,
+                "account_name": parent.get("account_name"),
+                "bank": parent.get("bank"),
+                "account_number": parent.get("account_number"),
+                "beneficiary": parent.get("beneficiary"),
+                "transaction_type": parent.get("transaction_type"),
+                "category": item["category"],
+                "subcategory": item["subcategory"],
+                "suggested_category": item["category"],
+                "suggested_subcategory": item["subcategory"],
+                "match_type": "split",
+                "confidence": 1.0,
+                "reviewed": child_reviewed,
+                "status": child_status,
+                "dup_flag": 0,
+                "created_at": now,
+                "reviewed_at": reviewed_at,
+                "split_parent_id": tx_id,
+                "split_group_id": split_group_id,
+                "split_allocation_index": item["index"],
+                "split_original_amount": original_amount,
+            }
+            cur.execute(
+                f"""
+                INSERT INTO classified_transactions
+                ({', '.join(insert_columns)})
+                VALUES ({placeholders})
+                """,
+                [values[column] for column in insert_columns],
+            )
+            inserted += cur.rowcount
+            if child_reviewed:
+                _remember_transaction_with_cursor(
+                    cur,
+                    split_description,
+                    parent.get("normalized_description") or "",
+                    parent.get("beneficiary") or "",
+                    parent.get("transaction_type") or "",
+                    item["category"],
+                    item["subcategory"],
+                )
+
+        conn.commit()
+        return {
+            "parent_id": tx_id,
+            "split_group_id": split_group_id,
+            "inserted": inserted,
+            "original_amount": original_amount,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def exclude_transactions(transaction_ids, reason=""):

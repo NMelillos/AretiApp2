@@ -1714,6 +1714,34 @@ def render_bulk_categorise_panel(df, categories, key_prefix, expanded=False, inl
                 st.warning("No transactions were updated.")
 
 
+def _parse_split_amount_input(value):
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    text = re.sub(r"[\s$€£]", "", text)
+    if text.startswith("-"):
+        return None
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        parts = text.split(",")
+        if len(parts) == 2 and 1 <= len(parts[1]) <= 2:
+            text = f"{parts[0]}.{parts[1]}"
+        else:
+            text = "".join(parts)
+    amount = pd.to_numeric(text, errors="coerce")
+    if pd.isna(amount):
+        return None
+    return float(amount)
+
+
 def render_transaction_split_panel(df, categories_df, categories, key_prefix):
     if df.empty or "id" not in df.columns or not categories:
         return
@@ -1759,8 +1787,9 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
             step=1,
             key=f"{key_prefix}_split_count",
         ))
+        amount_column = "amount"
         default_rows = pd.DataFrame({
-            "amount": [0.0] * allocation_count,
+            amount_column: [""] * allocation_count,
             _CATEGORY_PAIR_COLUMN: [""] * allocation_count,
         })
         pair_options = _category_pair_options(categories_df, categories)
@@ -1770,12 +1799,12 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
             hide_index=True,
             num_rows="fixed",
             column_config={
-                "amount": st.column_config.NumberColumn(
+                amount_column: st.column_config.TextColumn(
                     "Split amount",
-                    min_value=0.0,
-                    step=1.0,
-                    format="%.2f",
-                    help="Enter a positive amount. The original transaction sign is preserved automatically.",
+                    help=(
+                        "Enter a positive amount. Decimal dot and decimal comma are both accepted, "
+                        "for example 4233.06 or 4233,06. The original transaction sign is preserved automatically."
+                    ),
                 ),
                 _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
                     "Category / Subcategory",
@@ -1786,7 +1815,8 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
             key=f"{key_prefix}_split_editor_{selected_id}_{allocation_count}",
         )
         split_preview = _apply_category_pair_values(split_edit)
-        entered_total = float(pd.to_numeric(split_preview.get("amount"), errors="coerce").fillna(0).sum())
+        parsed_amounts = split_preview[amount_column].apply(_parse_split_amount_input)
+        entered_total = float(parsed_amounts.fillna(0).sum())
         difference = round(target_amount - entered_total, 2)
         c1, c2, c3 = st.columns(3)
         c1.metric("Original amount", format_currency(target_amount))
@@ -1807,12 +1837,15 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
             parsed_pairs.append((category, subcategory))
         invalid_rows = []
         for position, (_, row) in enumerate(split_preview.iterrows()):
-            amount = pd.to_numeric(row.get("amount"), errors="coerce")
+            amount = parsed_amounts.iloc[position]
             category, _ = parsed_pairs[position]
-            if pd.isna(amount) or float(amount) <= 0 or not category:
+            if amount is None or pd.isna(amount) or float(amount) <= 0 or not category:
                 invalid_rows.append(position + 1)
         if invalid_rows:
-            st.warning(f"Rows {', '.join(map(str, invalid_rows))} need a positive amount and category.")
+            st.warning(
+                f"Rows {', '.join(map(str, invalid_rows))} need a positive amount and category. "
+                "Use decimal dot or comma, for example 4233.06 or 4233,06."
+            )
         if duplicate_pairs:
             st.warning("Duplicate allocations are not allowed: " + ", ".join(sorted(duplicate_pairs)))
         if abs(difference) > 0.005:
@@ -1826,10 +1859,10 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
             key=f"{key_prefix}_split_apply",
         ):
             allocations = []
-            for _, row in split_preview.iterrows():
+            for position, (_, row) in enumerate(split_preview.iterrows()):
                 category, subcategory = _parse_category_pair_label(row.get(_CATEGORY_PAIR_COLUMN, ""))
                 allocations.append({
-                    "amount": float(pd.to_numeric(row.get("amount"), errors="coerce")),
+                    "amount": parsed_amounts.iloc[position],
                     "category": category,
                     "subcategory": subcategory,
                 })

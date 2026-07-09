@@ -516,6 +516,34 @@ def _float_or_none(value):
     return float(number)
 
 
+def _split_amount_or_none(value):
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    text = re.sub(r"[\s$€£]", "", text)
+    if text.startswith("-"):
+        return None
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        parts = text.split(",")
+        if len(parts) == 2 and 1 <= len(parts[1]) <= 2:
+            text = f"{parts[0]}.{parts[1]}"
+        else:
+            text = "".join(parts)
+    number = pd.to_numeric(text, errors="coerce")
+    if pd.isna(number):
+        return None
+    return float(number)
+
+
 def _canonical_date(value):
     parsed = pd.to_datetime(value, errors="coerce")
     if not pd.isna(parsed):
@@ -2283,7 +2311,7 @@ def split_transaction(transaction_id, allocations):
     cleaned_allocations = []
     seen_pairs = set()
     for index, allocation in enumerate(allocations, start=1):
-        amount = _float_or_none(allocation.get("amount"))
+        amount = _split_amount_or_none(allocation.get("amount"))
         category = _clean(allocation.get("category"))
         subcategory = _clean(allocation.get("subcategory"))
         if amount is None or amount <= 0:

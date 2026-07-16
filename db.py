@@ -627,6 +627,19 @@ def _transaction_line_key(row, include_account=True, amount_sign="signed"):
     return key
 
 
+def _transaction_account_match_scope(row):
+    account_number = _canonical_account_number(row.get("account_number", ""))
+    account_name = _canonical_text(row.get("account_name", ""))
+    # If the selected/imported row has an account number, duplicate matching must
+    # stay on that exact account. Relaxing to account-name or bank-level matching
+    # can hide legitimate same-amount transactions from a different account.
+    if account_number:
+        return "exact_account"
+    if account_name:
+        return "account_name"
+    return "bank_only"
+
+
 def _existing_transaction_line_keys(cur, include_account=True):
     return set(_existing_transaction_line_lookup(cur, include_account=include_account))
 
@@ -697,21 +710,30 @@ def mark_duplicate_transactions(df):
             source_statements.append("")
             source_ids.append("")
             continue
+        match_scope = _transaction_account_match_scope(row)
         existing_match = existing_lookup.get(key)
-        if not existing_match:
+        if not existing_match and match_scope != "exact_account":
             existing_match = relaxed_lookup.get(_transaction_line_key(row, include_account=False))
-        if not existing_match and _canonical_text(row.get("bank", "")):
+        if (
+            not existing_match
+            and match_scope == "bank_only"
+            and _canonical_text(row.get("bank", ""))
+        ):
             existing_match = bank_level_lookup.get(_transaction_line_key(row, include_account=None))
         duplicate_reason = "Already imported / overlapping statement"
         if not existing_match and _is_revolut_transaction_row(row):
             existing_match = revolut_abs_lookup.get(
                 _transaction_line_key(row, amount_sign="absolute")
             )
-            if not existing_match:
+            if not existing_match and match_scope != "exact_account":
                 existing_match = revolut_relaxed_abs_lookup.get(
                     _transaction_line_key(row, include_account=False, amount_sign="absolute")
                 )
-            if not existing_match and _canonical_text(row.get("bank", "")):
+            if (
+                not existing_match
+                and match_scope == "bank_only"
+                and _canonical_text(row.get("bank", ""))
+            ):
                 existing_match = revolut_bank_abs_lookup.get(
                     _transaction_line_key(row, include_account=None, amount_sign="absolute")
                 )
@@ -2153,17 +2175,26 @@ def save_pending_transactions(df, statement_name, statement_hash):
 
     for idx, row in df.reset_index(drop=True).iterrows():
         transaction_key = _transaction_line_key(row)
-        relaxed_key = _transaction_line_key(row, include_account=False)
-        bank_level_key = _transaction_line_key(row, include_account=None) if _canonical_text(row.get("bank", "")) else None
+        match_scope = _transaction_account_match_scope(row)
+        relaxed_key = (
+            _transaction_line_key(row, include_account=False)
+            if match_scope != "exact_account"
+            else None
+        )
+        bank_level_key = (
+            _transaction_line_key(row, include_account=None)
+            if match_scope == "bank_only" and _canonical_text(row.get("bank", ""))
+            else None
+        )
         is_revolut = _is_revolut_transaction_row(row)
         revolut_abs_key = _transaction_line_key(row, amount_sign="absolute") if is_revolut else None
         revolut_relaxed_abs_key = (
             _transaction_line_key(row, include_account=False, amount_sign="absolute")
-            if is_revolut else None
+            if is_revolut and match_scope != "exact_account" else None
         )
         revolut_bank_abs_key = (
             _transaction_line_key(row, include_account=None, amount_sign="absolute")
-            if is_revolut and _canonical_text(row.get("bank", "")) else None
+            if is_revolut and match_scope == "bank_only" and _canonical_text(row.get("bank", "")) else None
         )
         row_hash_src = "|".join([
             statement_hash,

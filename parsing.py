@@ -31,6 +31,7 @@ DEBIT_NAMES = {"debit", "withdrawal", "paid out", "out"}
 CREDIT_NAMES = {"credit", "deposit", "paid in", "in"}
 CURRENCY_NAMES = {"currency", "curr", "ccy", "transaction currency", "original currency"}
 IGNORE_TEXT_HINTS = {"balance", "currency", "rate", "account", "iban", "number"}
+MINUS_CHARS_RE = re.compile(r"[\u2212\u2010\u2011\u2012\u2013\u2014\u2015\uFE58\uFE63\uFF0D]")
 MONTH_DATE_RE = re.compile(
     r"^(?P<date>(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+"
     r"\d{1,2},\s+\d{4})\s+(?P<rest>.+)$",
@@ -160,14 +161,16 @@ def _parse_amount(value):
         return 0.0
     if isinstance(value, (int, float)):
         return float(value)
-    text = str(value).strip()
+    text = MINUS_CHARS_RE.sub("-", str(value).strip())
     if not text:
         return 0.0
     negative = text.startswith("(") and text.endswith(")")
-    if text.replace(" ", "").startswith("-"):
+    compact_sign_text = text.replace(" ", "")
+    if "-" in compact_sign_text:
         negative = True
     text = text.replace("(", "").replace(")", "")
     text = re.sub(r"[^0-9,\.\-]", "", text)
+    text = text.replace("-", "")
     if "," in text and "." in text:
         if text.rfind(",") > text.rfind("."):
             text = text.replace(".", "").replace(",", ".")
@@ -1068,6 +1071,18 @@ def detect_columns(df):
     return date_col, desc_cols, amount_col, debit_col, credit_col
 
 
+def _detect_currency_column(df):
+    for col in df.columns:
+        name = _norm_col(col)
+        if (
+            name in CURRENCY_NAMES
+            or "currency" in name
+            or re.search(r"\b(?:curr|ccy)\b", name)
+        ):
+            return col
+    return None
+
+
 def _combine_description(row, desc_cols):
     parts = []
     for col in desc_cols:
@@ -1088,6 +1103,8 @@ def prepare_dataframe_from_tabular(df):
     card_member_col = columns.get("card member")
     source_account_col = columns.get("account #") or columns.get("account number")
     currency_col = next((columns.get(name) for name in CURRENCY_NAMES if columns.get(name)), None)
+    if currency_col is None:
+        currency_col = _detect_currency_column(df)
     generated_amount_from_debit_credit = False
 
     if amount_col is None and debit_col and credit_col:

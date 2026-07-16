@@ -2965,6 +2965,7 @@ def backfill_missing_usd_amounts():
               AND (
                   amount_usd IS NULL
                   OR CAST(amount_usd AS TEXT) = ''
+                  OR UPPER(TRIM(CAST(amount_usd AS TEXT))) IN ('NONE', 'NULL', 'NAN', 'N/A')
                   OR (ABS(COALESCE(amount_usd, 0)) <= 0.005 AND ABS(COALESCE(amount, 0)) > 0.005)
               )
         """, conn)

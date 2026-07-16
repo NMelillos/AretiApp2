@@ -4591,17 +4591,29 @@ elif page == "Database":
             ("Reviewed", int((db_view["status"].fillna("") == "reviewed").sum()) if "status" in db_view else 0),
             ("Excluded", excluded_total),
         ])
-        if "amount_usd" in db_view.columns and "amount" in db_view.columns:
-            missing_usd_mask = (
-                pd.to_numeric(db_view["amount"], errors="coerce").fillna(0).abs().gt(0.005)
-                & pd.to_numeric(db_view["amount_usd"], errors="coerce").isna()
+
+        def visible_missing_usd_details(frame):
+            if "amount_usd" not in frame.columns or "amount" not in frame.columns:
+                return pd.Series(False, index=frame.index), []
+            mask = (
+                pd.to_numeric(frame["amount"], errors="coerce").fillna(0).abs().gt(0.005)
+                & pd.to_numeric(frame["amount_usd"], errors="coerce").isna()
             )
+            missing_rate_types = set()
+            if mask.any():
+                rows = frame.loc[mask].copy()
+                for _, missing_row in rows.iterrows():
+                    rate_type = str(missing_row.get("rate_type", "") or "").strip().upper()
+                    currency = str(missing_row.get("currency", "") or "").strip().upper()
+                    if not rate_type and currency:
+                        rate_type = "USD/USD" if currency == "USD" else f"{currency}/USD"
+                    if rate_type:
+                        missing_rate_types.add(rate_type)
+            return mask, sorted(missing_rate_types)
+
+        if "amount_usd" in db_view.columns and "amount" in db_view.columns:
+            missing_usd_mask, missing_rate_types = visible_missing_usd_details(db_view)
             if missing_usd_mask.any():
-                missing_rate_types = sorted(
-                    value
-                    for value in db_view.loc[missing_usd_mask, "rate_type"].fillna("").astype(str).str.strip().unique()
-                    if value
-                ) if "rate_type" in db_view.columns else []
                 rate_note = f" Missing rate type(s): {', '.join(missing_rate_types)}." if missing_rate_types else ""
                 st.warning(
                     f"{int(missing_usd_mask.sum())} visible row(s) still have no USD equivalent after automatic backfill."
@@ -4697,9 +4709,20 @@ elif page == "Database":
                 st.rerun()
 
         if st.button("Fill missing USD equivalents"):
+            missing_before, inferred_missing_rates = visible_missing_usd_details(db_view)
             count = backfill_missing_usd_amounts()
             if count:
                 st.success(f"Calculated USD equivalents for {count} rows.")
+            elif missing_before.any():
+                rate_note = (
+                    f" Missing or unresolved rate type(s): {', '.join(inferred_missing_rates)}."
+                    if inferred_missing_rates
+                    else ""
+                )
+                st.error(
+                    f"{int(missing_before.sum())} visible row(s) still need USD equivalents, but no rows could be updated."
+                    f"{rate_note} Please check Setup > Rates for these transaction dates."
+                )
             else:
                 st.info("No rows needed USD equivalent backfill.")
             st.cache_data.clear()

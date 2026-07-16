@@ -2149,8 +2149,11 @@ def _executive_status_delta(current_amount, previous_amount):
     previous = float(previous_amount or 0.0)
     if abs(current) <= 0.005 and abs(previous) <= 0.005:
         return 0.0
-    if current <= 0.005 and previous <= 0.005:
-        return abs(current) - abs(previous)
+    # For expense/funding rows, negative values are outflows and positive
+    # values can be returns/refunds. Compare the movement as cost exposure,
+    # so a return after historical outflows is a decrease, not an increase.
+    if previous < -0.005 or (abs(previous) <= 0.005 and current < -0.005):
+        return previous - current
     return current - previous
 
 
@@ -2183,12 +2186,10 @@ def _executive_metric_values_from_month_values(month_values, months, denominator
         if previous_trend_values
         else current_amount
     )
-    change = current_amount - previous_amount
-    status_delta = _executive_status_delta(current_amount, previous_amount)
-    trend_class, trend_text = _executive_trend(status_delta)
-    period_change = current_amount - trend_baseline
-    period_status_delta = _executive_status_delta(current_amount, trend_baseline)
-    period_trend_class, period_trend_text = _executive_trend(period_status_delta)
+    change = _executive_status_delta(current_amount, previous_amount)
+    trend_class, trend_text = _executive_trend(change)
+    period_change = _executive_status_delta(current_amount, trend_baseline)
+    period_trend_class, period_trend_text = _executive_trend(period_change)
     return {
         "months": month_values,
         "current": current_amount,

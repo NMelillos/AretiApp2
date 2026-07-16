@@ -48,9 +48,15 @@ def main():
     previous_average = sum(values[month] for month in months[:-1]) / 5
 
     assert_close("trend baseline is average of previous months", metrics["period_start"], previous_average)
-    assert_close("trend change compares current to previous average", metrics["period_change"], 5464.0 - previous_average)
-    assert_close("trend percent compares current to previous average", metrics["period_change_pct"], 120.72)
-    assert_equal("trend status uses previous average comparison", metrics["period_trend_text"], "Increasing")
+    assert_close("trend change treats return after outflows as decrease", metrics["period_change"], previous_average - 5464.0)
+    assert_close("trend percent treats return after outflows as decrease", metrics["period_change_pct"], -120.72)
+    assert_equal("trend status treats return after outflows as decrease", metrics["period_trend_text"], "Decreasing")
+    assert_close("previous month change treats return after outflow as decrease", metrics["change"], -88595.0)
+    assert_equal("previous month status treats return after outflow as decrease", metrics["trend_text"], "Decreasing")
+
+    income_metrics = metric_values({"2026-01": 100.0, "2026-02": 150.0}, ["2026-01", "2026-02"])
+    assert_close("positive income still increases normally", income_metrics["period_change"], 50.0)
+    assert_equal("positive income status still increases normally", income_metrics["period_trend_text"], "Increasing")
 
     single_month = metric_values({"2026-01": -100.0}, ["2026-01"])
     assert_close("single month trend change is neutral", single_month["period_change"], 0.0)

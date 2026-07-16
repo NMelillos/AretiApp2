@@ -2175,21 +2175,25 @@ def _executive_metric_values_from_month_values(month_values, months, denominator
     total_amount = float(sum(month_values.values()))
     current_month = months[-1] if months else None
     previous_month = months[-2] if len(months) > 1 else None
-    first_month = months[0] if months else None
     current_amount = month_values.get(current_month, 0.0)
     previous_amount = month_values.get(previous_month, 0.0)
-    first_amount = month_values.get(first_month, 0.0)
+    previous_trend_values = [month_values.get(month, 0.0) for month in months[:-1]]
+    trend_baseline = (
+        sum(previous_trend_values) / len(previous_trend_values)
+        if previous_trend_values
+        else current_amount
+    )
     change = current_amount - previous_amount
     status_delta = _executive_status_delta(current_amount, previous_amount)
     trend_class, trend_text = _executive_trend(status_delta)
-    period_change = current_amount - first_amount
-    period_status_delta = _executive_status_delta(current_amount, first_amount)
+    period_change = current_amount - trend_baseline
+    period_status_delta = _executive_status_delta(current_amount, trend_baseline)
     period_trend_class, period_trend_text = _executive_trend(period_status_delta)
     return {
         "months": month_values,
         "current": current_amount,
         "previous": previous_amount,
-        "period_start": first_amount,
+        "period_start": trend_baseline,
         "total": total_amount,
         "share_pct": (abs(total_amount) / denominator * 100) if denominator > 0.005 else None,
         "average": (sum(month_values.values()) / len(month_values)) if month_values else 0.0,
@@ -2198,7 +2202,11 @@ def _executive_metric_values_from_month_values(month_values, months, denominator
         "trend_class": trend_class,
         "trend_text": trend_text,
         "period_change": period_change,
-        "period_change_pct": _executive_status_change_pct(current_amount, first_amount),
+        "period_change_pct": (
+            _executive_status_change_pct(current_amount, trend_baseline)
+            if previous_trend_values
+            else None
+        ),
         "period_trend_class": period_trend_class,
         "period_trend_text": period_trend_text,
     }
@@ -2543,22 +2551,27 @@ def _render_executive_click_rows(
         return
     display_months = months if show_all_months else months[-1:]
     trend_start = _executive_short_month_label(months[0] if months else None)
-    trend_end = _executive_short_month_label(months[-1] if months else None)
+    trend_average_end = _executive_short_month_label(months[-2] if len(months) > 1 else None)
+    trend_average_label = (
+        f"AVG {trend_start}-{trend_average_end}"
+        if trend_start and trend_average_end
+        else "AVG PREVIOUS MONTHS"
+    )
     if show_all_months:
         tail_defs = [
             ("change", "CHANGE FROM PREVIOUS MONTH", 1.25, lambda row: _money(row["change"]), "trend_class"),
             ("change_pct", "% CHANGE FROM PREVIOUS MONTH", 0.95, lambda row: _percent(row["change_pct"]), "trend_class"),
             ("trend_text", "STATUS FROM PREVIOUS MONTH", 1.25, lambda row: row["trend_text"], "trend_class"),
-            ("period_change", f"TREND {trend_start}-{trend_end}", 1.25, lambda row: _money(row["period_change"]), "period_trend_class"),
+            ("period_change", f"TREND VS {trend_average_label}", 1.25, lambda row: _money(row["period_change"]), "period_trend_class"),
             ("period_change_pct", "% CHANGE IN TREND", 0.95, lambda row: _percent(row["period_change_pct"]), "period_trend_class"),
-            ("period_trend_text", "TREND STATUS SINCE JAN 26", 1.15, lambda row: row["period_trend_text"], "period_trend_class"),
+            ("period_trend_text", "TREND STATUS VS AVG", 1.15, lambda row: row["period_trend_text"], "period_trend_class"),
         ]
     else:
         tail_defs = [
             ("change_pct", "% CHANGE FROM PREVIOUS MONTH", 0.95, lambda row: _percent(row["change_pct"]), "trend_class"),
             ("trend_text", "STATUS FROM PREVIOUS MONTH", 1.25, lambda row: row["trend_text"], "trend_class"),
             ("period_change_pct", "% CHANGE IN TREND", 0.95, lambda row: _percent(row["period_change_pct"]), "period_trend_class"),
-            ("period_trend_text", "TREND STATUS SINCE JAN 26", 1.15, lambda row: row["period_trend_text"], "period_trend_class"),
+            ("period_trend_text", "TREND STATUS VS AVG", 1.15, lambda row: row["period_trend_text"], "period_trend_class"),
         ]
     base_defs = []
     if show_all_months:

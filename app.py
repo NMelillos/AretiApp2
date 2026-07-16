@@ -4001,6 +4001,11 @@ if page == "Import":
         if statement_already_imported(statement_hash):
             record_duplicate_statement_attempt(statement_hash)
             st.warning("This statement already exists. It was not imported again.")
+            st.info(
+                "This exact file is already in the import history, so the app blocks it to prevent duplicate "
+                "transactions. If you corrected those transactions manually in the Database, you do not need to "
+                "import the same file again; the next new statement can be imported normally."
+            )
             if not statement_balance_exists(statement_hash):
                 existing_account = get_statement_account(statement_hash)
                 duplicate_balance = parse_statement_balance(file_bytes, uploaded_statement.name)

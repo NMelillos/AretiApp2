@@ -75,6 +75,7 @@ MERCHANT_BRANDS = {
     "REPLIT": "REPLIT",
     "WOLT": "WOLT",
 }
+MERCHANT_BRAND_SIGNATURES = set(MERCHANT_BRANDS.values())
 MERCHANT_HISTORY_MIN_MATCHES = 3
 MERCHANT_HISTORY_CONFIDENCE_THRESHOLD = 0.80
 
@@ -157,8 +158,7 @@ def conservative_rule_category(normalized_description, categories, amount=0, tra
         token in text for token in ["INTEREST", "CREDIT LINE"]
     ):
         return "Interest paid (including Credit Line)", "rule", 0.95
-    bank_charge = _active_category("Interest, fees and charges", categories)
-    if bank_charge and any(
+    bank_fee_text = any(
         token in text
         for token in [
             "BANK FEE",
@@ -175,8 +175,23 @@ def conservative_rule_category(normalized_description, categories, amount=0, tra
             " FEES",
             " FEE",
         ]
-    ):
-        return bank_charge, "rule", 0.95
+    )
+    if bank_fee_text:
+        bank_charge = _active_category("Interest, fees and charges", categories)
+        if not bank_charge:
+            bank_charge = next(
+                (
+                    category
+                    for category in categories
+                    if any(token in str(category).upper() for token in ["FEE", "FEES", "CHARGE", "CHARGES", "COMMISSION"])
+                ),
+                "",
+            )
+        if bank_charge:
+            return bank_charge, "rule", 0.95
+        unidentified = _active_category("UNIDENTIFIED EXPENSES", categories)
+        if unidentified:
+            return unidentified, "new", 0.0
     return None, None, 0.0
 
 
@@ -281,12 +296,15 @@ def _consistent_merchant_history(signature, signature_history, categories):
         total_seen += weight
         references.setdefault(key, row)
 
-    if total_seen < MERCHANT_HISTORY_MIN_MATCHES or not totals:
+    min_matches = 2 if signature in MERCHANT_BRAND_SIGNATURES else MERCHANT_HISTORY_MIN_MATCHES
+    threshold = 0.75 if signature in MERCHANT_BRAND_SIGNATURES else MERCHANT_HISTORY_CONFIDENCE_THRESHOLD
+
+    if total_seen < min_matches or not totals:
         return None
 
     best_key, best_seen = max(totals.items(), key=lambda item: item[1])
     confidence_ratio = best_seen / total_seen if total_seen else 0
-    if best_seen < MERCHANT_HISTORY_MIN_MATCHES or confidence_ratio < MERCHANT_HISTORY_CONFIDENCE_THRESHOLD:
+    if best_seen < min_matches or confidence_ratio < threshold:
         return None
 
     reference = dict(references[best_key])

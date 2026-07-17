@@ -24,15 +24,20 @@ def assert_true(name, condition, details=""):
 def _load_report_group_helpers():
     source = Path("app.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    names = {"_report_group_subcategory_key", "category_pair_report_group_maps", "add_report_group_column"}
+    names = {
+        "_report_group_subcategory_key",
+        "category_pair_report_group_maps",
+        "add_report_group_column",
+        "report_group_consistency_audit",
+    }
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
         type_ignores=[],
     )
     ast.fix_missing_locations(module)
-    namespace = {"pd": pd}
+    namespace = {"pd": pd, "_NO_SUBCATEGORY_LABEL": "No subcategory"}
     exec(compile(module, "app.py", "exec"), namespace)
-    return namespace["add_report_group_column"]
+    return namespace["add_report_group_column"], namespace["report_group_consistency_audit"]
 
 
 def _rendered_text(at):
@@ -232,16 +237,19 @@ def test_category_save_shapes_persist():
 
 
 def test_report_group_uses_exact_category_subcategory_pair():
-    add_report_group_column = _load_report_group_helpers()
+    add_report_group_column, report_group_consistency_audit = _load_report_group_helpers()
     categories_df = pd.DataFrame([
         {"category": "Business travel", "subcategory": "", "report_group": ""},
         {"category": "Business travel", "subcategory": "Dubai", "report_group": "2-business"},
         {"category": "Business expenses", "subcategory": "", "report_group": "2-business"},
+        {"category": "Mixed setup", "subcategory": "", "report_group": "1-family"},
+        {"category": "Mixed setup", "subcategory": "Needs setup", "report_group": ""},
     ])
     transactions = pd.DataFrame([
-        {"category": "Business travel", "subcategory": "Dubai"},
-        {"category": "Business expenses", "subcategory": ""},
-        {"category": "Business expenses", "subcategory": "No subcategory"},
+        {"id": 1, "category": "Business travel", "subcategory": "Dubai"},
+        {"id": 2, "category": "Business expenses", "subcategory": ""},
+        {"id": 3, "category": "Business expenses", "subcategory": "No subcategory"},
+        {"id": 4, "category": "Mixed setup", "subcategory": "Needs setup"},
     ])
     mapped = add_report_group_column(transactions, categories_df)
     assert_true(
@@ -250,14 +258,50 @@ def test_report_group_uses_exact_category_subcategory_pair():
         mapped.iloc[0].to_dict(),
     )
     assert_true(
-        "blank subcategory falls back to category group",
+        "blank subcategory uses blank setup row",
         mapped.iloc[1]["report_group"] == "2-business",
         mapped.iloc[1].to_dict(),
     )
     assert_true(
-        "legacy no-subcategory text falls back to blank setup row",
+        "legacy no-subcategory text uses blank setup row",
         mapped.iloc[2]["report_group"] == "2-business",
         mapped.iloc[2].to_dict(),
+    )
+    assert_true(
+        "explicit blank setup reporting group is not guessed",
+        mapped.iloc[3]["report_group"] == "",
+        mapped.iloc[3].to_dict(),
+    )
+
+    audit = report_group_consistency_audit(transactions, categories_df)
+    assert_true(
+        "blank exact setup reporting group is audited",
+        "Category/subcategory exists in Setup but reporting group is blank" in audit["status"].tolist(),
+        audit.to_dict("records"),
+    )
+
+
+def test_report_group_audit_flags_missing_setup_pairs():
+    _, report_group_consistency_audit = _load_report_group_helpers()
+    categories_df = pd.DataFrame([
+        {"category": "Business travel", "subcategory": "Dubai", "report_group": ""},
+        {"category": "Known category", "subcategory": "", "report_group": "1-family"},
+    ])
+    transactions = pd.DataFrame([
+        {"id": 10, "category": "Known category", "subcategory": "Not in setup"},
+        {"id": 11, "category": "Unknown category", "subcategory": ""},
+    ])
+    audit = report_group_consistency_audit(transactions, categories_df)
+    statuses = audit["status"].tolist()
+    assert_true(
+        "category fallback is visible for non-setup pair",
+        "Category/subcategory pair is not in Setup; using category fallback" in statuses,
+        audit.to_dict("records"),
+    )
+    assert_true(
+        "unknown category is visible in audit",
+        "Category is not in Setup" in statuses,
+        audit.to_dict("records"),
     )
 
 
@@ -281,6 +325,7 @@ def main():
     test_database_category_enforcement()
     test_category_save_shapes_persist()
     test_report_group_uses_exact_category_subcategory_pair()
+    test_report_group_audit_flags_missing_setup_pairs()
     test_csv_amounts()
     print("TOP_PRIORITY_QA_COMPLETE")
 

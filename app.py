@@ -991,11 +991,15 @@ def add_report_group_column(df, categories_df):
     exact_group_map, category_group_map = category_pair_report_group_maps(categories_df)
     categories = out.get("category", pd.Series("", index=out.index)).fillna("").astype(str)
     subcategories = out.get("subcategory", pd.Series("", index=out.index)).fillna("").astype(str)
-    out["report_group"] = [
-        exact_group_map.get((category.strip().casefold(), _report_group_subcategory_key(subcategory)))
-        or category_group_map.get(category.strip().casefold(), "")
-        for category, subcategory in zip(categories, subcategories)
-    ]
+    groups = []
+    for category, subcategory in zip(categories, subcategories):
+        category_key = category.strip().casefold()
+        pair_key = (category_key, _report_group_subcategory_key(subcategory))
+        if pair_key in exact_group_map:
+            groups.append(exact_group_map[pair_key])
+        else:
+            groups.append(category_group_map.get(category_key, ""))
+    out["report_group"] = groups
     return out
 
 
@@ -1011,9 +1015,66 @@ def _setup_category_pair_reference(categories_df):
         category_key = category.casefold()
         category_keys.add(category_key)
         subcategory = str(row.get("subcategory", "") or "").strip()
-        if subcategory:
-            pair_keys.add((category_key, subcategory.casefold()))
+        pair_keys.add((category_key, _report_group_subcategory_key(subcategory)))
     return category_keys, pair_keys
+
+
+def report_group_consistency_audit(transactions_df, categories_df):
+    columns = [
+        "category",
+        "subcategory",
+        "transaction_rows",
+        "setup_report_group",
+        "status",
+        "sample_ids",
+    ]
+    if transactions_df is None or transactions_df.empty:
+        return pd.DataFrame(columns=columns)
+    exact_group_map, category_group_map = category_pair_report_group_maps(categories_df)
+    frame = transactions_df.copy()
+    frame["_category"] = frame.get("category", pd.Series("", index=frame.index)).fillna("").astype(str).str.strip()
+    frame["_subcategory"] = frame.get("subcategory", pd.Series("", index=frame.index)).fillna("").astype(str).str.strip()
+    rows = []
+    grouped = frame.groupby(["_category", "_subcategory"], dropna=False, sort=True)
+    for (category, subcategory), group in grouped:
+        category_text = str(category or "").strip()
+        subcategory_text = str(subcategory or "").strip()
+        category_key = category_text.casefold()
+        subcategory_key = _report_group_subcategory_key(subcategory_text)
+        pair_key = (category_key, subcategory_key)
+        sample_ids = ""
+        if "id" in group.columns:
+            sample_ids = ", ".join(group["id"].dropna().astype(int).astype(str).head(8).tolist())
+
+        if not category_text:
+            setup_group = ""
+            status = "Missing category on transaction"
+        elif pair_key in exact_group_map:
+            setup_group = exact_group_map[pair_key]
+            status = "OK" if setup_group else "Category/subcategory exists in Setup but reporting group is blank"
+        elif category_key in category_group_map:
+            setup_group = category_group_map.get(category_key, "")
+            status = (
+                "Category/subcategory pair is not in Setup; using category fallback"
+                if setup_group
+                else "Category exists in Setup but reporting group is blank"
+            )
+        else:
+            setup_group = ""
+            status = "Category is not in Setup"
+
+        if status != "OK":
+            rows.append(
+                {
+                    "category": category_text,
+                    "subcategory": subcategory_text or _NO_SUBCATEGORY_LABEL,
+                    "transaction_rows": len(group),
+                    "setup_report_group": setup_group,
+                    "status": status,
+                    "sample_ids": sample_ids,
+                }
+            )
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _category_pair_status(category, subcategory, category_keys, pair_keys):
@@ -1024,9 +1085,10 @@ def _category_pair_status(category, subcategory, category_keys, pair_keys):
     category_key = category_text.casefold()
     if category_key not in category_keys:
         return "Category not in Setup"
-    if not subcategory_text:
+    subcategory_key = _report_group_subcategory_key(subcategory_text)
+    if not subcategory_key:
         return "No subcategory"
-    if (category_key, subcategory_text.casefold()) not in pair_keys:
+    if (category_key, subcategory_key) not in pair_keys:
         return "Subcategory not linked to category"
     return "OK"
 
@@ -4623,6 +4685,19 @@ elif page == "Database":
             ("Reviewed", int((db_view["status"].fillna("") == "reviewed").sum()) if "status" in db_view else 0),
             ("Excluded", excluded_total),
         ])
+        report_group_audit = report_group_consistency_audit(all_tx, categories_df)
+        with st.expander("Reporting group consistency check"):
+            st.caption(
+                "Read-only check against Setup / Categories. It lists category-subcategory pairs "
+                "whose reporting group cannot be resolved exactly from the current Setup mapping."
+            )
+            if report_group_audit.empty:
+                st.success("All visible active category/subcategory pairs resolve to a Setup reporting group.")
+            else:
+                st.warning(
+                    f"{len(report_group_audit)} category/subcategory pair(s) need Setup/reporting-group review."
+                )
+                st.dataframe(report_group_audit, use_container_width=True, hide_index=True)
 
         def visible_missing_usd_details(frame):
             if "amount_usd" not in frame.columns or "amount" not in frame.columns:

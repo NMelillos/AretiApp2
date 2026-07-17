@@ -268,15 +268,15 @@ def test_report_group_uses_exact_category_subcategory_pair():
         mapped.iloc[2].to_dict(),
     )
     assert_true(
-        "explicit blank setup reporting group is not guessed",
-        mapped.iloc[3]["report_group"] == "",
+        "explicit blank setup reporting group uses category fallback",
+        mapped.iloc[3]["report_group"] == "1-family",
         mapped.iloc[3].to_dict(),
     )
 
     audit = report_group_consistency_audit(transactions, categories_df)
     assert_true(
-        "blank exact setup reporting group is audited",
-        "Category/subcategory exists in Setup but reporting group is blank" in audit["status"].tolist(),
+        "blank exact setup reporting group fallback is audited",
+        "Category/subcategory exists in Setup with blank reporting group; using category fallback" in audit["status"].tolist(),
         audit.to_dict("records"),
     )
 

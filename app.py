@@ -995,10 +995,9 @@ def add_report_group_column(df, categories_df):
     for category, subcategory in zip(categories, subcategories):
         category_key = category.strip().casefold()
         pair_key = (category_key, _report_group_subcategory_key(subcategory))
-        if pair_key in exact_group_map:
-            groups.append(exact_group_map[pair_key])
-        else:
-            groups.append(category_group_map.get(category_key, ""))
+        # Some Expenses spreadsheets leave the reporting-group cell blank on
+        # subcategory rows. In that case use the category's non-empty group.
+        groups.append(exact_group_map.get(pair_key) or category_group_map.get(category_key, ""))
     out["report_group"] = groups
     return out
 
@@ -1050,8 +1049,13 @@ def report_group_consistency_audit(transactions_df, categories_df):
             setup_group = ""
             status = "Missing category on transaction"
         elif pair_key in exact_group_map:
-            setup_group = exact_group_map[pair_key]
-            status = "OK" if setup_group else "Category/subcategory exists in Setup but reporting group is blank"
+            setup_group = exact_group_map[pair_key] or category_group_map.get(category_key, "")
+            if exact_group_map[pair_key]:
+                status = "OK"
+            elif setup_group:
+                status = "Category/subcategory exists in Setup with blank reporting group; using category fallback"
+            else:
+                status = "Category/subcategory exists in Setup but reporting group is blank"
         elif category_key in category_group_map:
             setup_group = category_group_map.get(category_key, "")
             status = (

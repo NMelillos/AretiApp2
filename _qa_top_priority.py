@@ -24,7 +24,7 @@ def assert_true(name, condition, details=""):
 def _load_report_group_helpers():
     source = Path("app.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    names = {"category_pair_report_group_maps", "add_report_group_column"}
+    names = {"_report_group_subcategory_key", "category_pair_report_group_maps", "add_report_group_column"}
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
         type_ignores=[],
@@ -241,6 +241,7 @@ def test_report_group_uses_exact_category_subcategory_pair():
     transactions = pd.DataFrame([
         {"category": "Business travel", "subcategory": "Dubai"},
         {"category": "Business expenses", "subcategory": ""},
+        {"category": "Business expenses", "subcategory": "No subcategory"},
     ])
     mapped = add_report_group_column(transactions, categories_df)
     assert_true(
@@ -252,6 +253,11 @@ def test_report_group_uses_exact_category_subcategory_pair():
         "blank subcategory falls back to category group",
         mapped.iloc[1]["report_group"] == "2-business",
         mapped.iloc[1].to_dict(),
+    )
+    assert_true(
+        "legacy no-subcategory text falls back to blank setup row",
+        mapped.iloc[2]["report_group"] == "2-business",
+        mapped.iloc[2].to_dict(),
     )
 
 

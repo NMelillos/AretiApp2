@@ -959,6 +959,13 @@ def category_report_group_map(categories_df):
     return mapping
 
 
+def _report_group_subcategory_key(value):
+    text = str(value or "").strip()
+    if text.casefold() in {"no subcategory", "no sub", "none", "nan"}:
+        return ""
+    return text.casefold()
+
+
 def category_pair_report_group_maps(categories_df):
     exact_map = {}
     category_map = {}
@@ -971,7 +978,7 @@ def category_pair_report_group_maps(categories_df):
         subcategory = str(row.get("subcategory", "") or "").strip()
         group = str(row.get("report_group", "") or "").strip() if "report_group" in categories_df.columns else ""
         category_key = category.casefold()
-        pair_key = (category_key, subcategory.casefold())
+        pair_key = (category_key, _report_group_subcategory_key(subcategory))
         if pair_key not in exact_map or (not exact_map[pair_key] and group):
             exact_map[pair_key] = group
         if category_key not in category_map or (not category_map[category_key] and group):
@@ -985,7 +992,7 @@ def add_report_group_column(df, categories_df):
     categories = out.get("category", pd.Series("", index=out.index)).fillna("").astype(str)
     subcategories = out.get("subcategory", pd.Series("", index=out.index)).fillna("").astype(str)
     out["report_group"] = [
-        exact_group_map.get((category.strip().casefold(), subcategory.strip().casefold()))
+        exact_group_map.get((category.strip().casefold(), _report_group_subcategory_key(subcategory)))
         or category_group_map.get(category.strip().casefold(), "")
         for category, subcategory in zip(categories, subcategories)
     ]

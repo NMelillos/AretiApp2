@@ -1398,10 +1398,16 @@ def editable_pending_table(df, categories, subcategories, key):
         "confidence",
     ]
     table = table[[col for col in visible_cols if col in table.columns]]
+    editor_key = _scoped_editor_key(key, table)
+    st.session_state[f"{key}__active_editor_key"] = editor_key
+    table = _apply_data_editor_state(table, editor_key)
+    table = _refresh_category_pair_derived_columns(table, categories_df)
 
     return st.data_editor(
         table,
-        key=key,
+        key=editor_key,
+        on_change=_capture_data_editor_state,
+        args=(editor_key,),
         use_container_width=True,
         hide_index=True,
         height=min(680, 105 + max(len(table), 4) * 36),
@@ -1417,6 +1423,7 @@ def editable_pending_table(df, categories, subcategories, key):
             "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
             "amount_usd": st.column_config.NumberColumn("USD amount", format="%.2f", disabled=True),
             "original_description": st.column_config.TextColumn("Full statement description", disabled=True, width="large"),
+            "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
             "match_type": st.column_config.TextColumn("Match", disabled=True, width="small"),
             "confidence": st.column_config.NumberColumn("Confidence", format="%.2f", disabled=True, width="small"),
             "category": st.column_config.SelectboxColumn(
@@ -1546,6 +1553,90 @@ def _apply_category_pair_values(df):
     return out
 
 
+def _editor_row_signature(df):
+    if df is None or df.empty:
+        return "empty"
+    if "id" in df.columns:
+        values = df["id"].fillna("").astype(str).tolist()
+    else:
+        values = [str(value) for value in df.index.tolist()]
+    digest = hashlib.sha1("|".join(values).encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def _scoped_editor_key(base_key, df):
+    return f"{base_key}_{_editor_row_signature(df)}"
+
+
+def _capture_data_editor_state(editor_key):
+    state = st.session_state.get(editor_key)
+    if not isinstance(state, dict):
+        return
+    st.session_state[f"{editor_key}__captured_state"] = {
+        "edited_rows": dict(state.get("edited_rows") or {}),
+        "added_rows": list(state.get("added_rows") or []),
+        "deleted_rows": list(state.get("deleted_rows") or []),
+    }
+
+
+def _apply_data_editor_state(df, editor_key):
+    state = st.session_state.get(editor_key)
+    captured_state = st.session_state.get(f"{editor_key}__captured_state")
+    if isinstance(captured_state, dict) and captured_state.get("edited_rows"):
+        state = captured_state
+    if not isinstance(state, dict):
+        return df
+    edited_rows = state.get("edited_rows") or {}
+    if not edited_rows:
+        return df
+    out = df.copy()
+    columns = list(out.columns)
+    for raw_position, changes in edited_rows.items():
+        if not isinstance(changes, dict):
+            continue
+        try:
+            position = int(raw_position)
+        except (TypeError, ValueError):
+            continue
+        if position < 0 or position >= len(out):
+            continue
+        for column, value in changes.items():
+            if column in columns:
+                out.iat[position, columns.index(column)] = value
+    return out
+
+
+def _refresh_category_pair_derived_columns(df, categories_df):
+    out = _apply_category_pair_values(df)
+    if {"category", "subcategory"}.issubset(out.columns):
+        out = add_report_group_column(out, categories_df)
+    if _CATEGORY_PAIR_COLUMN in out.columns and {"category", "subcategory"}.issubset(out.columns):
+        out[_CATEGORY_PAIR_COLUMN] = out.apply(
+            lambda row: _category_pair_label(row.get("category", ""), row.get("subcategory", "")),
+            axis=1,
+        )
+    return out
+
+
+def _resolve_report_group_for_pair(category, subcategory, categories_df=None):
+    if categories_df is None:
+        categories_df = get_categories(include_subcategories=True)
+    exact_group_map, category_group_map = category_pair_report_group_maps(categories_df)
+    category_key = str(category or "").strip().casefold()
+    if not category_key:
+        return ""
+    pair_key = (category_key, _report_group_subcategory_key(subcategory))
+    return exact_group_map.get(pair_key) or category_group_map.get(category_key, "")
+
+
+def _render_report_group_preview(category, subcategory, key_prefix, categories_df=None):
+    if not category:
+        return
+    report_group = _resolve_report_group_for_pair(category, subcategory, categories_df)
+    label = report_group or "Unassigned reporting group"
+    st.caption(f"Reporting group after save: {label}")
+
+
 def render_wrapped_descriptions(df, expanded=False):
     preview = df[["txn_date", "amount", "original_description"]].head(80).copy()
     rows = []
@@ -1635,6 +1726,7 @@ def render_category_correction_panel(
                 current_subcategory if current_subcategory in subcategory_options else ""
             )
         subcategory = st.selectbox("Subcategory", subcategory_options, key=subcategory_key)
+        _render_report_group_preview(category, subcategory, key_prefix)
 
         st.text_area(
             "Full statement description",
@@ -1788,6 +1880,7 @@ def render_bulk_categorise_panel(df, categories, key_prefix, expanded=False, inl
         )
         if category and len(subcategory_options) <= 1:
             st.info("No subcategories are defined for this category in Setup.")
+        _render_report_group_preview(category, subcategory, f"{key_prefix}_bulk")
         disabled = not category
         if st.button(
             f"Apply to {len(df)} visible rows and mark reviewed",
@@ -1890,6 +1983,7 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
             _CATEGORY_PAIR_COLUMN: [""] * allocation_count,
         })
         pair_options = _category_pair_options(categories_df, categories)
+        split_editor_key = f"{key_prefix}_split_editor_{selected_id}_{allocation_count}"
         split_edit = st.data_editor(
             default_rows,
             use_container_width=True,
@@ -1909,9 +2003,12 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
                     required=True,
                 ),
             },
-            key=f"{key_prefix}_split_editor_{selected_id}_{allocation_count}",
+            key=split_editor_key,
+            on_change=_capture_data_editor_state,
+            args=(split_editor_key,),
         )
-        split_preview = _apply_category_pair_values(split_edit)
+        split_edit = _apply_data_editor_state(split_edit, split_editor_key)
+        split_preview = _refresh_category_pair_derived_columns(split_edit, categories_df)
         parsed_amounts = split_preview[amount_column].apply(_parse_split_amount_input)
         entered_total = float(parsed_amounts.fillna(0).sum())
         difference = round(target_amount - entered_total, 2)
@@ -1947,6 +2044,14 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
             st.warning("Duplicate allocations are not allowed: " + ", ".join(sorted(duplicate_pairs)))
         if abs(difference) > 0.005:
             st.warning("The split total must exactly equal the original transaction amount before saving.")
+        if "report_group" in split_preview.columns and split_preview["category"].fillna("").astype(str).str.strip().any():
+            st.dataframe(
+                split_preview[[
+                    col for col in [amount_column, _CATEGORY_PAIR_COLUMN, "report_group"] if col in split_preview.columns
+                ]],
+                use_container_width=True,
+                hide_index=True,
+            )
 
         can_save = not invalid_rows and not duplicate_pairs and abs(difference) <= 0.005
         if st.button(
@@ -1998,6 +2103,7 @@ def render_manual_transaction_form(categories, subcategories):
             manual_subcategory_options,
             key="manual_subcategory",
         )
+        _render_report_group_preview(manual_category, manual_subcategory, "manual")
         if st.button("Save manual transaction", type="primary", key="manual_save"):
             inserted = insert_manual_transaction(
                 manual_date,
@@ -2926,8 +3032,13 @@ def _render_executive_transactions(
         )
         render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=True, inline=True)
         st.caption("Use Category / Subcategory to choose only valid combinations from Setup.")
+        editor_visible = visible.copy()
+        editor_visible["report_group"] = selected_group
+        executive_editor_key = _scoped_editor_key("executive_detail_editor", editor_visible)
+        editor_visible = _apply_data_editor_state(editor_visible, executive_editor_key)
+        editor_visible = _refresh_category_pair_derived_columns(editor_visible, categories_df)
         edited_detail = st.data_editor(
-            visible,
+            editor_visible,
             use_container_width=True,
             hide_index=True,
             height=min(640, 130 + max(len(visible), 4) * 34),
@@ -2940,6 +3051,7 @@ def _render_executive_transactions(
                 "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
                 "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
                 "_display_amount_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
+                "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
                 _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
                     "Category / Subcategory",
                     options=pair_options,
@@ -2956,10 +3068,15 @@ def _render_executive_transactions(
                     width="large",
                 ),
             },
-            key="executive_detail_editor",
+            key=executive_editor_key,
+            on_change=_capture_data_editor_state,
+            args=(executive_editor_key,),
         )
+        edited_detail = _apply_data_editor_state(edited_detail, executive_editor_key)
+        edited_detail = _refresh_category_pair_derived_columns(edited_detail, categories_df)
         if st.button("Apply transaction detail edits", type="primary", key="executive_detail_apply"):
-            edited_detail = _apply_category_pair_values(edited_detail)
+            edited_detail = _apply_data_editor_state(edited_detail, executive_editor_key)
+            edited_detail = _refresh_category_pair_derived_columns(edited_detail, categories_df)
             save_cols = [col for col in ["id", "category", "subcategory", "reviewed"] if col in edited_detail.columns]
             save_df = edited_detail[save_cols].copy()
             if "reviewed" not in save_df.columns:
@@ -4640,6 +4757,13 @@ elif page == "Pending Review":
         bottom_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_bottom")
 
         if top_save or bottom_save:
+            pending_editor_key = st.session_state.get("pending_editor__active_editor_key")
+            if pending_editor_key:
+                edited_pending = _apply_data_editor_state(edited_pending, pending_editor_key)
+                edited_pending = _refresh_category_pair_derived_columns(
+                    edited_pending,
+                    get_categories(include_subcategories=True),
+                )
             with st.spinner("Saving reviewed rows..."):
                 saved = save_reviewed_rows(_apply_category_pair_values(edited_pending))
             if saved:
@@ -4760,8 +4884,12 @@ elif page == "Database":
             "match_type",
         ]
         st.caption("Use Category / Subcategory to choose only valid combinations from Setup.")
+        db_editor_base = db_view[[col for col in editable_cols if col in db_view.columns]].copy()
+        db_editor_key = _scoped_editor_key("database_editor", db_editor_base)
+        db_editor_frame = _apply_data_editor_state(db_editor_base, db_editor_key)
+        db_editor_frame = _refresh_category_pair_derived_columns(db_editor_frame, categories_df)
         db_edit = st.data_editor(
-            db_view[[col for col in editable_cols if col in db_view.columns]],
+            db_editor_frame,
             use_container_width=True,
             hide_index=True,
             height=620,
@@ -4785,8 +4913,12 @@ elif page == "Database":
                 ),
                 "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
             },
-            key="database_editor",
+            key=db_editor_key,
+            on_change=_capture_data_editor_state,
+            args=(db_editor_key,),
         )
+        db_edit = _apply_data_editor_state(db_edit, db_editor_key)
+        db_edit = _refresh_category_pair_derived_columns(db_edit, categories_df)
         original_status = {}
         if "id" in db_view.columns and "status" in db_view.columns:
             original_status = {
@@ -4814,7 +4946,9 @@ elif page == "Database":
             if edited_excluded_ids and not confirm_editor_exclude:
                 st.error("No changes applied. Please confirm excluded status changes first.")
             else:
-                count = update_database_rows(_apply_category_pair_values(db_edit))
+                db_save = _apply_data_editor_state(db_edit, db_editor_key)
+                db_save = _refresh_category_pair_derived_columns(db_save, categories_df)
+                count = update_database_rows(_apply_category_pair_values(db_save))
                 st.success(f"Updated {count} rows.")
                 st.cache_data.clear()
                 st.rerun()

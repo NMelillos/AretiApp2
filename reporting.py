@@ -67,17 +67,45 @@ def get_report_groups(categories):
     return [group for group in groups if group and not group.lower().startswith("0-")]
 
 
-def _category_group_map(categories):
+def _report_group_subcategory_key(value):
+    text = _clean_text(value)
+    if text.casefold() in {"no subcategory", "no sub", "none", "nan"}:
+        return ""
+    return text.casefold()
+
+
+def _category_group_maps(categories):
     if categories.empty or "category" not in categories.columns:
-        return {}
-    mapping = {}
+        return {}, {}
+    exact_map = {}
+    category_map = {}
     for _, row in categories.iterrows():
         category = str(row.get("category", "")).strip()
         if not category:
             continue
+        subcategory = str(row.get("subcategory", "")).strip() if "subcategory" in categories.columns else ""
         group = str(row.get(REPORT_GROUP_COLUMN, "")).strip() if REPORT_GROUP_COLUMN in categories.columns else ""
-        mapping.setdefault(category.casefold(), group)
-    return mapping
+        category_key = category.casefold()
+        pair_key = (category_key, _report_group_subcategory_key(subcategory))
+        if pair_key not in exact_map or (not exact_map[pair_key] and group):
+            exact_map[pair_key] = group
+        if category_key not in category_map or (not category_map[category_key] and group):
+            category_map[category_key] = group
+    return exact_map, category_map
+
+
+def _assign_report_groups(tx, categories):
+    exact_group_map, category_group_map = _category_group_maps(categories)
+    category_values = tx.get("category", pd.Series("", index=tx.index)).fillna("").astype(str).str.strip()
+    subcategory_values = tx.get("subcategory", pd.Series("", index=tx.index)).fillna("").astype(str).str.strip()
+
+    groups = []
+    for category, subcategory in zip(category_values, subcategory_values):
+        category_key = category.casefold()
+        pair_key = (category_key, _report_group_subcategory_key(subcategory))
+        groups.append(exact_group_map.get(pair_key) or category_group_map.get(category_key, ""))
+    tx["report_group"] = pd.Series(groups, index=tx.index).replace("", UNASSIGNED_GROUP)
+    return tx
 
 
 def _month_context(expenses):
@@ -118,9 +146,7 @@ def _prepare_report_data(transactions, categories, report_group=None, include_ow
     tx["report_amount"] = tx["report_amount"].fillna(0)
     tx = tx.dropna(subset=["txn_date"]).copy()
 
-    group_map = _category_group_map(categories)
-    tx["report_group"] = tx["category"].map(lambda value: group_map.get(str(value).casefold(), ""))
-    tx["report_group"] = tx["report_group"].replace("", UNASSIGNED_GROUP)
+    tx = _assign_report_groups(tx, categories)
 
     positive_amount = tx["report_amount"] > 0
     income_like = tx.apply(
@@ -462,11 +488,9 @@ def _prepare_verification_data(transactions, categories, report_group=None):
     tx.loc[usd_fallback, "amount_source"] = "statement amount (USD)"
     tx["report_amount"] = tx["report_amount"].fillna(0)
 
-    group_map = _category_group_map(categories)
     tx["category"] = tx["category"].fillna("").astype(str).str.strip()
     tx["subcategory"] = tx["subcategory"].fillna("").astype(str).str.strip()
-    tx["report_group"] = tx["category"].map(lambda value: group_map.get(str(value).casefold(), ""))
-    tx["report_group"] = tx["report_group"].replace("", UNASSIGNED_GROUP)
+    tx = _assign_report_groups(tx, categories)
 
     tx["in_report_group_scope"] = True if not report_group else tx["report_group"].eq(report_group)
     tx["valid_for_report"] = tx["parsed_date"].notna() & (

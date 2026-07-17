@@ -12,6 +12,7 @@ import pandas as pd
 from streamlit.testing.v1 import AppTest
 
 import db
+import reporting
 from parsing import _parse_amount, parse_csv
 
 
@@ -21,22 +22,37 @@ def assert_true(name, condition, details=""):
     print(f"PASS: {name}" + (f" | {details}" if details else ""))
 
 
-def _load_report_group_helpers():
+def _load_report_group_namespace():
     source = Path("app.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     names = {
+        "_parse_category_pair_label",
+        "_category_pair_label",
+        "_apply_category_pair_values",
         "_report_group_subcategory_key",
         "category_pair_report_group_maps",
         "add_report_group_column",
         "report_group_consistency_audit",
+        "_refresh_category_pair_derived_columns",
+        "_apply_data_editor_state",
     }
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
         type_ignores=[],
     )
     ast.fix_missing_locations(module)
-    namespace = {"pd": pd, "_NO_SUBCATEGORY_LABEL": "No subcategory"}
+    namespace = {
+        "pd": pd,
+        "_CATEGORY_PAIR_COLUMN": "category_subcategory",
+        "_NO_SUBCATEGORY_LABEL": "No subcategory",
+        "st": type("FakeStreamlit", (), {"session_state": {}})(),
+    }
     exec(compile(module, "app.py", "exec"), namespace)
+    return namespace
+
+
+def _load_report_group_helpers():
+    namespace = _load_report_group_namespace()
     return namespace["add_report_group_column"], namespace["report_group_consistency_audit"]
 
 
@@ -281,6 +297,117 @@ def test_report_group_uses_exact_category_subcategory_pair():
     )
 
 
+def test_editor_refresh_updates_derived_report_group_before_save():
+    namespace = _load_report_group_namespace()
+    refresh = namespace["_refresh_category_pair_derived_columns"]
+    categories_df = pd.DataFrame([
+        {"category": "Business exps General", "subcategory": "", "report_group": "2-business"},
+        {"category": "Lifestyle", "subcategory": "", "report_group": "1-family"},
+        {"category": "Lifestyle", "subcategory": "Beauty and SPA", "report_group": "1-family"},
+    ])
+    editor_rows = pd.DataFrame([
+        {
+            "id": 1,
+            "category": "Lifestyle",
+            "subcategory": "",
+            "category_subcategory": "Business exps General / No subcategory",
+            "report_group": "",
+        },
+        {
+            "id": 2,
+            "category": "Business exps General",
+            "subcategory": "",
+            "category_subcategory": "Lifestyle / Beauty and SPA",
+            "report_group": "stale group",
+        },
+    ])
+    refreshed = refresh(editor_rows, categories_df)
+    first = refreshed.iloc[0].to_dict()
+    second = refreshed.iloc[1].to_dict()
+    assert_true("editor category changes before save", first["category"] == "Business exps General", first)
+    assert_true("editor no-subcategory clears before save", first["subcategory"] == "", first)
+    assert_true("editor report group refreshes before save", first["report_group"] == "2-business", first)
+    assert_true("editor subcategory changes before save", second["subcategory"] == "Beauty and SPA", second)
+    assert_true("stale report group is replaced before save", second["report_group"] == "1-family", second)
+
+
+def test_captured_editor_state_is_used_before_save():
+    namespace = _load_report_group_namespace()
+    apply_editor_state = namespace["_apply_data_editor_state"]
+    refresh = namespace["_refresh_category_pair_derived_columns"]
+    fake_st = namespace["st"]
+    fake_st.session_state.clear()
+    editor_key = "database_editor_uat"
+    fake_st.session_state[f"{editor_key}__captured_state"] = {
+        "edited_rows": {1: {"category_subcategory": "Business exps General / Dubai"}},
+        "added_rows": [],
+        "deleted_rows": [],
+    }
+    categories_df = pd.DataFrame([
+        {"category": "Business exps General", "subcategory": "", "report_group": "2-business"},
+        {"category": "Business exps General", "subcategory": "Dubai", "report_group": "2-business Dubai"},
+        {"category": "Lifestyle", "subcategory": "", "report_group": "1-family"},
+    ])
+    editor_rows = pd.DataFrame([
+        {
+            "id": 1,
+            "category": "Lifestyle",
+            "subcategory": "",
+            "category_subcategory": "Lifestyle / No subcategory",
+            "report_group": "1-family",
+        },
+        {
+            "id": 2,
+            "category": "Lifestyle",
+            "subcategory": "",
+            "category_subcategory": "Lifestyle / No subcategory",
+            "report_group": "1-family",
+        },
+    ])
+    resolved = refresh(apply_editor_state(editor_rows, editor_key), categories_df)
+    edited = resolved.iloc[1].to_dict()
+    assert_true("captured editor state changes category", edited["category"] == "Business exps General", edited)
+    assert_true("captured editor state changes subcategory", edited["subcategory"] == "Dubai", edited)
+    assert_true("captured editor state refreshes report group", edited["report_group"] == "2-business Dubai", edited)
+
+
+def test_sample_report_uses_category_subcategory_mapping():
+    categories_df = pd.DataFrame([
+        {"category": "Business exps General", "subcategory": "", "report_group": "2-business"},
+        {"category": "Business travel", "subcategory": "", "report_group": ""},
+        {"category": "Business travel", "subcategory": "Dubai", "report_group": "2-business travel"},
+    ])
+    transactions = pd.DataFrame([
+        {
+            "id": 1,
+            "txn_date": "2026-06-01",
+            "amount": -5.02,
+            "amount_usd": -5.02,
+            "currency": "USD",
+            "category": "Business exps General",
+            "subcategory": "",
+        },
+        {
+            "id": 2,
+            "txn_date": "2026-06-02",
+            "amount": -100,
+            "amount_usd": -100,
+            "currency": "USD",
+            "category": "Business travel",
+            "subcategory": "Dubai",
+        },
+    ])
+    prepared, expenses, _, _ = reporting._prepare_report_data(
+        transactions,
+        categories_df,
+        include_all_valid=True,
+    )
+    groups = prepared.set_index("id")["report_group"].to_dict()
+    assert_true("sample report no-subcategory uses category fallback", groups[1] == "2-business", groups)
+    assert_true("sample report exact subcategory group is used", groups[2] == "2-business travel", groups)
+    assert_true("sample report expenses keep refreshed groups", set(expenses["report_group"]) == {"2-business", "2-business travel"}, expenses.to_dict("records"))
+
+
 def test_report_group_audit_flags_missing_setup_pairs():
     _, report_group_consistency_audit = _load_report_group_helpers()
     categories_df = pd.DataFrame([
@@ -325,6 +452,9 @@ def main():
     test_database_category_enforcement()
     test_category_save_shapes_persist()
     test_report_group_uses_exact_category_subcategory_pair()
+    test_editor_refresh_updates_derived_report_group_before_save()
+    test_captured_editor_state_is_used_before_save()
+    test_sample_report_uses_category_subcategory_mapping()
     test_report_group_audit_flags_missing_setup_pairs()
     test_csv_amounts()
     print("TOP_PRIORITY_QA_COMPLETE")

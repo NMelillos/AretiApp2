@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 from pathlib import Path
@@ -18,6 +19,20 @@ def assert_true(name, condition, details=""):
     if not condition:
         raise AssertionError(f"{name} failed. {details}")
     print(f"PASS: {name}" + (f" | {details}" if details else ""))
+
+
+def _load_report_group_helpers():
+    source = Path("app.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    names = {"category_pair_report_group_maps", "add_report_group_column"}
+    module = ast.Module(
+        body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
+        type_ignores=[],
+    )
+    ast.fix_missing_locations(module)
+    namespace = {"pd": pd}
+    exec(compile(module, "app.py", "exec"), namespace)
+    return namespace["add_report_group_column"]
 
 
 def _rendered_text(at):
@@ -216,6 +231,30 @@ def test_category_save_shapes_persist():
     assert_true("database no-subcategory remains blank", second["subcategory"] == "", second)
 
 
+def test_report_group_uses_exact_category_subcategory_pair():
+    add_report_group_column = _load_report_group_helpers()
+    categories_df = pd.DataFrame([
+        {"category": "Business travel", "subcategory": "", "report_group": ""},
+        {"category": "Business travel", "subcategory": "Dubai", "report_group": "2-business"},
+        {"category": "Business expenses", "subcategory": "", "report_group": "2-business"},
+    ])
+    transactions = pd.DataFrame([
+        {"category": "Business travel", "subcategory": "Dubai"},
+        {"category": "Business expenses", "subcategory": ""},
+    ])
+    mapped = add_report_group_column(transactions, categories_df)
+    assert_true(
+        "exact subcategory report group is used",
+        mapped.iloc[0]["report_group"] == "2-business",
+        mapped.iloc[0].to_dict(),
+    )
+    assert_true(
+        "blank subcategory falls back to category group",
+        mapped.iloc[1]["report_group"] == "2-business",
+        mapped.iloc[1].to_dict(),
+    )
+
+
 def test_csv_amounts():
     assert_true("European amount with thousands", abs(_parse_amount("2.000,00") - 2000.0) < 0.001)
     assert_true("US amount with thousands", abs(_parse_amount("1,234.56") - 1234.56) < 0.001)
@@ -235,6 +274,7 @@ def main():
     test_executive_trust_text()
     test_database_category_enforcement()
     test_category_save_shapes_persist()
+    test_report_group_uses_exact_category_subcategory_pair()
     test_csv_amounts()
     print("TOP_PRIORITY_QA_COMPLETE")
 

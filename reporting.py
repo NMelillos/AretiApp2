@@ -6,6 +6,8 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from db import filter_financially_active_transactions
+
 
 REPORT_GROUP_COLUMN = "report_group"
 UNASSIGNED_GROUP = "Unassigned reporting group"
@@ -116,7 +118,9 @@ def _month_context(expenses):
 
 
 def _prepare_report_data(transactions, categories, report_group=None, include_own_funds=False, include_all_valid=False):
-    tx = transactions.copy()
+    # Split parents remain available in the database for audit, but financial
+    # reports must use only active transactions: normal rows plus split children.
+    tx = filter_financially_active_transactions(transactions).copy()
     for column in ["txn_date", "amount", "amount_usd", "currency", "category", "subcategory"]:
         if column not in tx.columns:
             tx[column] = ""
@@ -433,7 +437,7 @@ def _write_report_sheet(ws, title, sections, summary_rows, months, month_labels)
 
 
 def _prepare_verification_data(transactions, categories, report_group=None):
-    tx = transactions.copy()
+    tx = filter_financially_active_transactions(transactions).copy()
     original_count = len(tx)
     for column in [
         "id",

@@ -53,6 +53,42 @@ def _filter_hidden_transactions(df):
     return df[~pd.to_numeric(df["id"], errors="coerce").isin(ids)].copy()
 
 
+def _financially_active_sql(alias=""):
+    prefix = f"{alias}." if alias else ""
+    return f"""
+        COALESCE({prefix}status, '') <> 'excluded'
+        AND NOT (
+            COALESCE(CAST({prefix}split_group_id AS TEXT), '') <> ''
+            AND {prefix}split_parent_id IS NULL
+            AND {prefix}split_allocation_index IS NULL
+        )
+    """
+
+
+def filter_financially_active_transactions(df):
+    if df is None or df.empty:
+        return df
+    active = df.copy()
+    if "status" in active.columns:
+        status_key = active["status"].fillna("").astype(str).str.strip().str.casefold()
+    else:
+        status_key = pd.Series("", index=active.index)
+    if "split_group_id" in active.columns:
+        split_group = active["split_group_id"].fillna("").astype(str).str.strip()
+    else:
+        split_group = pd.Series("", index=active.index)
+    if "split_parent_id" in active.columns:
+        split_parent = pd.to_numeric(active["split_parent_id"], errors="coerce")
+    else:
+        split_parent = pd.Series(pd.NA, index=active.index)
+    if "split_allocation_index" in active.columns:
+        split_allocation = pd.to_numeric(active["split_allocation_index"], errors="coerce")
+    else:
+        split_allocation = pd.Series(pd.NA, index=active.index)
+    completed_split_parent = split_group.ne("") & split_parent.isna() & split_allocation.isna()
+    return active[status_key.ne("excluded") & ~completed_split_parent].copy()
+
+
 def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -2273,10 +2309,13 @@ def get_pending_transactions():
     conn = get_connection()
     try:
         hidden_sql, hidden_params = _hidden_filter_sql()
+        active_sql = _financially_active_sql()
         df = pd.read_sql_query(f"""
             SELECT *
             FROM classified_transactions
-            WHERE COALESCE(status, 'pending') = 'pending' AND COALESCE(reviewed, 0) = 0
+            WHERE {active_sql}
+              AND COALESCE(status, 'pending') = 'pending'
+              AND COALESCE(reviewed, 0) = 0
             {hidden_sql}
             ORDER BY txn_date, id
         """, conn, params=hidden_params)
@@ -2289,10 +2328,11 @@ def get_saved_transactions():
     conn = get_connection()
     try:
         hidden_sql, hidden_params = _hidden_filter_sql()
+        active_sql = _financially_active_sql()
         df = pd.read_sql_query(f"""
             SELECT *
             FROM classified_transactions
-            WHERE COALESCE(status, '') <> 'excluded'
+            WHERE {active_sql}
               AND (COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1)
               {hidden_sql}
             ORDER BY txn_date DESC, id DESC
@@ -2622,6 +2662,7 @@ def get_dashboard_counts():
         cur = conn.cursor()
         counts = {}
         hidden_sql, hidden_params = _hidden_filter_sql()
+        active_sql = _financially_active_sql()
         queries = {
             "categories": ("SELECT COUNT(*) FROM category_list", []),
             "accounts": ("SELECT COUNT(*) FROM account_list", []),
@@ -2629,14 +2670,15 @@ def get_dashboard_counts():
             "pending": (f"""
                 SELECT COUNT(*)
                 FROM classified_transactions
-                WHERE COALESCE(status, 'pending') = 'pending'
+                WHERE {active_sql}
+                  AND COALESCE(status, 'pending') = 'pending'
                   AND COALESCE(reviewed, 0) = 0
                   {hidden_sql}
             """, hidden_params),
             "reviewed": (f"""
                 SELECT COUNT(*)
                 FROM classified_transactions
-                WHERE COALESCE(status, '') <> 'excluded'
+                WHERE {active_sql}
                   AND (COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1)
                   {hidden_sql}
             """, hidden_params),

@@ -50,6 +50,7 @@ from db import (
     build_statement_hash,
     dataframe_to_excel_bytes,
     exclude_transactions,
+    filter_financially_active_transactions,
     full_reset_database,
     get_accounts,
     get_all_transactions,
@@ -178,6 +179,10 @@ def _parse_report_until(value, fallback_date):
 def get_configured_report_until(fallback_date=None):
     fallback = fallback_date or app_now().date()
     return _parse_report_until(get_app_setting(REPORT_UNTIL_SETTING_KEY, ""), fallback)
+
+
+def active_financial_transactions(df):
+    return filter_financially_active_transactions(df)
 
 
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
@@ -3888,24 +3893,9 @@ def render_executive_report():
         st.info("No transactions are available for the executive report yet.")
         return
 
-    all_transactions = all_transactions.copy()
+    all_transactions = active_financial_transactions(all_transactions)
     all_transactions["txn_date"] = pd.to_datetime(all_transactions.get("txn_date"), errors="coerce")
-    status_series = (
-        all_transactions["status"]
-        if "status" in all_transactions.columns
-        else pd.Series("", index=all_transactions.index)
-    )
-    all_transactions["_status_key"] = (
-        status_series
-        .fillna("")
-        .astype(str)
-        .str.strip()
-        .str.casefold()
-    )
-    active_transactions = all_transactions[
-        all_transactions["txn_date"].notna()
-        & all_transactions["_status_key"].ne("excluded")
-    ].drop(columns=["_status_key"], errors="ignore")
+    active_transactions = all_transactions[all_transactions["txn_date"].notna()].copy()
     if active_transactions.empty:
         st.info("No active transactions are available for the executive report yet.")
         return
@@ -4018,18 +4008,9 @@ def render_third_link_report():
 
     status_slot.info("Preparing active transactions...")
     step_started = time.perf_counter()
-    all_transactions = all_transactions.copy()
+    all_transactions = active_financial_transactions(all_transactions)
     all_transactions["txn_date"] = pd.to_datetime(all_transactions.get("txn_date"), errors="coerce")
-    status_series = (
-        all_transactions["status"]
-        if "status" in all_transactions.columns
-        else pd.Series("", index=all_transactions.index)
-    )
-    status_key = status_series.fillna("").astype(str).str.strip().str.casefold()
-    active_transactions = all_transactions[
-        all_transactions["txn_date"].notna()
-        & status_key.ne("excluded")
-    ].copy()
+    active_transactions = all_transactions[all_transactions["txn_date"].notna()].copy()
     _perf_log("third_link.prepare_active_transactions", step_started)
     if active_transactions.empty:
         status_slot.empty()
@@ -4789,14 +4770,15 @@ elif page == "Database":
     else:
         all_tx = all_tx_raw.copy()
         all_tx["_status_key"] = all_tx["status"].fillna("pending").astype(str).str.strip().str.casefold()
-        excluded_total = int((all_tx["_status_key"] == "excluded").sum())
+        active_tx = active_financial_transactions(all_tx)
+        excluded_total = len(all_tx) - len(active_tx)
         show_excluded = st.checkbox(
             "Show excluded transactions",
             value=False,
             help="Excluded rows are recoverable but hidden from active reports, Pending Review, and duplicate checks.",
         )
         if not show_excluded:
-            all_tx = all_tx[all_tx["_status_key"] != "excluded"].copy()
+            all_tx = active_tx
         all_tx = all_tx.drop(columns=["_status_key"], errors="ignore")
         all_tx = add_report_group_column(all_tx, categories_df)
         db_filtered = transaction_filter_controls(all_tx, "database", include_category=True)

@@ -371,6 +371,38 @@ def test_captured_editor_state_is_used_before_save():
     assert_true("captured editor state refreshes report group", edited["report_group"] == "2-business Dubai", edited)
 
 
+def test_raw_category_subcategory_edits_sync_pair_before_save():
+    namespace = _load_report_group_namespace()
+    apply_editor_state = namespace["_apply_data_editor_state"]
+    refresh = namespace["_refresh_category_pair_derived_columns"]
+    fake_st = namespace["st"]
+    fake_st.session_state.clear()
+    editor_key = "executive_detail_editor_uat"
+    fake_st.session_state[f"{editor_key}__captured_state"] = {
+        "edited_rows": {0: {"subcategory": "Dubai"}},
+        "added_rows": [],
+        "deleted_rows": [],
+    }
+    categories_df = pd.DataFrame([
+        {"category": "Business exps General", "subcategory": "", "report_group": "2-business"},
+        {"category": "Business exps General", "subcategory": "Dubai", "report_group": "2-business Dubai"},
+    ])
+    editor_rows = pd.DataFrame([
+        {
+            "id": 1,
+            "category": "Business exps General",
+            "subcategory": "",
+            "category_subcategory": "Business exps General / No subcategory",
+            "report_group": "2-business",
+        },
+    ])
+    resolved = refresh(apply_editor_state(editor_rows, editor_key), categories_df)
+    edited = resolved.iloc[0].to_dict()
+    assert_true("raw subcategory edit updates helper pair", edited["category_subcategory"] == "Business exps General / Dubai", edited)
+    assert_true("raw subcategory edit persists through refresh", edited["subcategory"] == "Dubai", edited)
+    assert_true("raw subcategory edit refreshes report group", edited["report_group"] == "2-business Dubai", edited)
+
+
 def test_sample_report_uses_category_subcategory_mapping():
     categories_df = pd.DataFrame([
         {"category": "Business exps General", "subcategory": "", "report_group": "2-business"},
@@ -454,6 +486,7 @@ def main():
     test_report_group_uses_exact_category_subcategory_pair()
     test_editor_refresh_updates_derived_report_group_before_save()
     test_captured_editor_state_is_used_before_save()
+    test_raw_category_subcategory_edits_sync_pair_before_save()
     test_sample_report_uses_category_subcategory_mapping()
     test_report_group_audit_flags_missing_setup_pairs()
     test_csv_amounts()

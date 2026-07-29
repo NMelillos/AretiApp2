@@ -1608,6 +1608,14 @@ def _apply_data_editor_state(df, editor_key):
         for column, value in changes.items():
             if column in columns:
                 out.iat[position, columns.index(column)] = value
+        if (
+            _CATEGORY_PAIR_COLUMN in columns
+            and _CATEGORY_PAIR_COLUMN not in changes
+            and ("category" in changes or "subcategory" in changes)
+        ):
+            category = out.iat[position, columns.index("category")] if "category" in columns else ""
+            subcategory = out.iat[position, columns.index("subcategory")] if "subcategory" in columns else ""
+            out.iat[position, columns.index(_CATEGORY_PAIR_COLUMN)] = _category_pair_label(category, subcategory)
     return out
 
 

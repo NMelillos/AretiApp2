@@ -35,6 +35,8 @@ def _load_report_group_namespace():
         "report_group_consistency_audit",
         "_refresh_category_pair_derived_columns",
         "_apply_data_editor_state",
+        "_edited_data_editor_rows",
+        "_clear_data_editor_state",
     }
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
@@ -403,6 +405,34 @@ def test_raw_category_subcategory_edits_sync_pair_before_save():
     assert_true("raw subcategory edit refreshes report group", edited["report_group"] == "2-business Dubai", edited)
 
 
+def test_only_changed_editor_rows_are_saved_and_state_is_cleared():
+    namespace = _load_report_group_namespace()
+    edited_rows = namespace["_edited_data_editor_rows"]
+    clear_state = namespace["_clear_data_editor_state"]
+    fake_st = namespace["st"]
+    fake_st.session_state.clear()
+    editor_key = "executive_detail_editor_save_scope_uat"
+    fake_st.session_state[f"{editor_key}__captured_state"] = {
+        "edited_rows": {1: {"category_subcategory": "Business exps General / Dubai"}},
+        "added_rows": [],
+        "deleted_rows": [],
+    }
+    frame = pd.DataFrame([
+        {"id": 1, "category": "Lifestyle", "subcategory": ""},
+        {"id": 2, "category": "Business exps General", "subcategory": "Dubai"},
+        {"id": 3, "category": "Own funds", "subcategory": ""},
+    ])
+    changed = edited_rows(frame, editor_key)
+    assert_true("only edited row is selected for save", changed["id"].tolist() == [2], changed.to_dict("records"))
+    clear_state(editor_key)
+    assert_true(
+        "editor state is cleared after save",
+        editor_key not in fake_st.session_state
+        and f"{editor_key}__captured_state" not in fake_st.session_state,
+        fake_st.session_state,
+    )
+
+
 def test_sample_report_uses_category_subcategory_mapping():
     categories_df = pd.DataFrame([
         {"category": "Business exps General", "subcategory": "", "report_group": "2-business"},
@@ -487,6 +517,7 @@ def main():
     test_editor_refresh_updates_derived_report_group_before_save()
     test_captured_editor_state_is_used_before_save()
     test_raw_category_subcategory_edits_sync_pair_before_save()
+    test_only_changed_editor_rows_are_saved_and_state_is_cleared()
     test_sample_report_uses_category_subcategory_mapping()
     test_report_group_audit_flags_missing_setup_pairs()
     test_csv_amounts()

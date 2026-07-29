@@ -1619,6 +1619,43 @@ def _apply_data_editor_state(df, editor_key):
     return out
 
 
+def _edited_data_editor_rows(df, editor_key):
+    state = st.session_state.get(editor_key)
+    captured_state = st.session_state.get(f"{editor_key}__captured_state")
+    if isinstance(captured_state, dict) and captured_state.get("edited_rows"):
+        state = captured_state
+    if not isinstance(state, dict):
+        return df.iloc[0:0].copy()
+    positions = []
+    for raw_position in (state.get("edited_rows") or {}):
+        try:
+            position = int(raw_position)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= position < len(df):
+            positions.append(position)
+    if not positions:
+        return df.iloc[0:0].copy()
+    return df.iloc[sorted(set(positions))].copy()
+
+
+def _clear_data_editor_state(editor_key):
+    st.session_state.pop(editor_key, None)
+    st.session_state.pop(f"{editor_key}__captured_state", None)
+
+
+def _clear_transaction_read_caches():
+    for cached_reader in [
+        get_all_transactions,
+        get_dashboard_counts,
+        get_memory,
+        get_pending_transactions,
+        get_saved_transactions,
+        get_transaction_change_log,
+    ]:
+        cached_reader.clear()
+
+
 def _refresh_category_pair_derived_columns(df, categories_df):
     out = _apply_category_pair_values(df)
     if {"category", "subcategory"}.issubset(out.columns):
@@ -3090,15 +3127,33 @@ def _render_executive_transactions(
         if st.button("Apply transaction detail edits", type="primary", key="executive_detail_apply"):
             edited_detail = _apply_data_editor_state(edited_detail, executive_editor_key)
             edited_detail = _refresh_category_pair_derived_columns(edited_detail, categories_df)
-            save_cols = [col for col in ["id", "category", "subcategory", "reviewed"] if col in edited_detail.columns]
-            save_df = edited_detail[save_cols].copy()
-            if "reviewed" not in save_df.columns:
-                save_df["reviewed"] = True
-            save_df["status"] = save_df["reviewed"].map(lambda value: "reviewed" if bool(value) else "pending")
-            count = update_database_rows(save_df)
-            st.success(f"Updated {count} visible transactions.")
-            st.cache_data.clear()
-            st.rerun()
+            changed_rows = _edited_data_editor_rows(edited_detail, executive_editor_key)
+            if changed_rows.empty:
+                st.info("No transaction detail changes to apply.")
+            else:
+                with st.status("Saving transaction detail changes...", expanded=True) as save_status:
+                    save_cols = [
+                        col
+                        for col in ["id", "category", "subcategory", "reviewed"]
+                        if col in changed_rows.columns
+                    ]
+                    save_df = changed_rows[save_cols].copy()
+                    if "reviewed" not in save_df.columns:
+                        save_df["reviewed"] = True
+                    save_df["status"] = save_df["reviewed"].map(
+                        lambda value: "reviewed" if bool(value) else "pending"
+                    )
+                    count = update_database_rows(save_df)
+                    save_status.update(
+                        label=f"Saved {count} transaction detail change(s). Refreshing the report...",
+                        state="complete",
+                    )
+                _clear_data_editor_state(executive_editor_key)
+                st.session_state["executive_detail_save_message"] = (
+                    f"Saved {count} transaction detail change(s). The refreshed report is now complete."
+                )
+                _clear_transaction_read_caches()
+                st.rerun()
     export_sheets = _executive_selected_transactions_export_sheets(visible)
     st.download_button(
         "Download selected transactions Excel",
@@ -3893,6 +3948,10 @@ def render_executive_report():
 
     shared_report = _is_shared_executive_report_request()
     st.subheader("TB Family Office Executive Expenses Report" if shared_report else "Executive Summary")
+    if not shared_report:
+        saved_message = st.session_state.pop("executive_detail_save_message", "")
+        if saved_message:
+            st.success(saved_message)
 
     ensure_usd_backfilled()
     all_transactions = get_all_transactions()
@@ -4765,6 +4824,9 @@ elif page == "Pending Review":
 
 elif page == "Database":
     st.subheader("Database")
+    saved_message = st.session_state.pop("database_edit_save_message", "")
+    if saved_message:
+        st.success(saved_message)
     ensure_usd_backfilled(show_message=True)
     all_tx_raw = get_all_transactions()
     categories_df = get_categories(include_subcategories=True)
@@ -4938,10 +5000,22 @@ elif page == "Database":
             else:
                 db_save = _apply_data_editor_state(db_edit, db_editor_key)
                 db_save = _refresh_category_pair_derived_columns(db_save, categories_df)
-                count = update_database_rows(_apply_category_pair_values(db_save))
-                st.success(f"Updated {count} rows.")
-                st.cache_data.clear()
-                st.rerun()
+                changed_rows = _edited_data_editor_rows(db_save, db_editor_key)
+                if changed_rows.empty:
+                    st.info("No database changes to apply.")
+                else:
+                    with st.status("Saving database changes...", expanded=True) as save_status:
+                        count = update_database_rows(_apply_category_pair_values(changed_rows))
+                        save_status.update(
+                            label=f"Saved {count} database change(s). Refreshing the table...",
+                            state="complete",
+                        )
+                    _clear_data_editor_state(db_editor_key)
+                    st.session_state["database_edit_save_message"] = (
+                        f"Saved {count} database change(s). The refreshed database view is now complete."
+                    )
+                    _clear_transaction_read_caches()
+                    st.rerun()
 
         if st.button("Fill missing USD equivalents"):
             missing_before, inferred_missing_rates = visible_missing_usd_details(db_view)

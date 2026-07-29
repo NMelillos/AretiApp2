@@ -27,6 +27,15 @@ _POSTGRES_POOL = None
 DEFAULT_HIDDEN_TRANSACTION_IDS = "3421,3422,3423"
 
 
+class ConcurrentTransactionEditError(RuntimeError):
+    def __init__(self, transaction_id):
+        super().__init__(
+            f"Transaction ID {int(transaction_id)} changed in another tab or session. "
+            "Reload the report and apply the edit again."
+        )
+        self.transaction_id = int(transaction_id)
+
+
 def _hidden_transaction_ids():
     raw = os.getenv("HIDDEN_TRANSACTION_IDS", DEFAULT_HIDDEN_TRANSACTION_IDS).strip()
     if raw.casefold() in {"", "0", "false", "none"}:
@@ -2357,6 +2366,27 @@ def get_all_transactions():
     return df
 
 
+def get_transaction_edit_states(transaction_ids):
+    ids = sorted({int(value) for value in transaction_ids if pd.notna(value)})
+    if not ids:
+        return pd.DataFrame(columns=["id", "category", "subcategory", "reviewed", "status"])
+    placeholders = ", ".join(["?"] * len(ids))
+    conn = get_connection()
+    try:
+        return pd.read_sql_query(
+            f"""
+            SELECT id, category, subcategory, reviewed, status
+            FROM classified_transactions
+            WHERE id IN ({placeholders})
+            ORDER BY id
+            """,
+            conn,
+            params=ids,
+        )
+    finally:
+        conn.close()
+
+
 def _category_pair_exists(cur, category, subcategory):
     category = _clean(category)
     subcategory = _clean(subcategory)
@@ -2763,8 +2793,6 @@ def update_database_rows(df):
     conn = get_connection()
     cur = conn.cursor()
     updated = 0
-    rate_lookup = _load_rate_lookup()
-    subcategory_parent_lookup = _subcategory_parent_lookup(cur)
     text_columns = [
         "txn_date",
         "original_description",
@@ -2781,6 +2809,12 @@ def update_database_rows(df):
     number_columns = ["amount", "fx_rate", "amount_usd", "confidence"]
     bool_columns = ["reviewed", "dup_flag"]
     account_update_columns = {"txn_date", "amount", "currency", "rate_type", "account_name", "bank", "account_number"}
+    rate_lookup = (
+        _load_rate_lookup()
+        if any(column in df.columns for column in account_update_columns)
+        else {}
+    )
+    subcategory_parent_lookup = _subcategory_parent_lookup(cur)
     affected_statement_hashes = set()
 
     for _, row in df.iterrows():
@@ -2902,15 +2936,48 @@ def update_database_rows(df):
         if not assignments:
             continue
 
+        expected_category = (
+            _clean(row_values.get("_expected_category"))
+            if "_expected_category" in row_values
+            else None
+        )
+        expected_subcategory = (
+            _clean(row_values.get("_expected_subcategory"))
+            if "_expected_subcategory" in row_values
+            else None
+        )
+        expected_reviewed = (
+            int(_bool_from_value(row_values.get("_expected_reviewed")))
+            if "_expected_reviewed" in row_values
+            else None
+        )
         params.append(row_id)
+        where_parts = ["id = ?"]
+        if expected_category is not None:
+            where_parts.append("COALESCE(category, '') = ?")
+            params.append(expected_category)
+        if expected_subcategory is not None:
+            where_parts.append("COALESCE(subcategory, '') = ?")
+            params.append(expected_subcategory)
+        if expected_reviewed is not None:
+            where_parts.append("COALESCE(reviewed, 0) = ?")
+            params.append(expected_reviewed)
         cur.execute(
             f"""
             UPDATE classified_transactions
             SET {', '.join(assignments)}
-            WHERE id = ?
+            WHERE {' AND '.join(where_parts)}
             """,
             params,
         )
+        if (
+            expected_category is not None
+            or expected_subcategory is not None
+            or expected_reviewed is not None
+        ) and cur.rowcount == 0:
+            conn.rollback()
+            conn.close()
+            raise ConcurrentTransactionEditError(row_id)
         updated += cur.rowcount
         for column in effective_text_columns:
             if column in row_values and column in existing_row:

@@ -1,4 +1,5 @@
 import ast
+import copy
 import os
 import sys
 from pathlib import Path
@@ -36,7 +37,9 @@ def _load_report_group_namespace():
         "_refresh_category_pair_derived_columns",
         "_apply_data_editor_state",
         "_edited_data_editor_rows",
+        "_capture_data_editor_state",
         "_clear_data_editor_state",
+        "_request_executive_detail_save",
     }
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
@@ -44,6 +47,7 @@ def _load_report_group_namespace():
     )
     ast.fix_missing_locations(module)
     namespace = {
+        "copy": copy,
         "pd": pd,
         "_CATEGORY_PAIR_COLUMN": "category_subcategory",
         "_NO_SUBCATEGORY_LABEL": "No subcategory",
@@ -254,6 +258,109 @@ def test_category_save_shapes_persist():
     assert_true("database no-subcategory remains blank", second["subcategory"] == "", second)
 
 
+def test_concurrent_transaction_edits_are_detected_and_atomic():
+    qa_db = Path(os.environ["ARETI_DB_PATH"])
+    if qa_db.exists():
+        qa_db.unlink()
+    db.init_db()
+    db.add_category("Original", "", "1-family")
+    db.add_category("First edit", "", "1-family")
+    db.add_category("Second edit", "", "1-family")
+    for description in ["Concurrent edit one", "Concurrent edit two"]:
+        db.insert_manual_transaction(
+            "2026-06-01",
+            description,
+            10,
+            "Original",
+            "",
+            {
+                "account_name": "QA Account",
+                "bank": "QA Bank",
+                "account_number": "QA1",
+                "currency": "USD",
+                "rate_type": "USD/USD",
+            },
+        )
+    states = db.get_all_transactions().sort_values("id").reset_index(drop=True)
+    ids = states["id"].astype(int).tolist()
+
+    first_update = pd.DataFrame([{
+        "id": ids[0],
+        "category": "First edit",
+        "subcategory": "",
+        "reviewed": True,
+        "status": "reviewed",
+        "_expected_category": "Original",
+        "_expected_subcategory": "",
+        "_expected_reviewed": True,
+    }])
+    assert_true("compare-before-save accepts current row", db.update_database_rows(first_update) == 1)
+    persisted = db.get_transaction_edit_states([ids[0]]).iloc[0].to_dict()
+    assert_true("compare-before-save persists intended category", persisted["category"] == "First edit", persisted)
+
+    stale_batch = pd.DataFrame([
+        {
+            "id": ids[1],
+            "category": "First edit",
+            "subcategory": "",
+            "reviewed": True,
+            "status": "reviewed",
+            "_expected_category": "Original",
+            "_expected_subcategory": "",
+            "_expected_reviewed": True,
+        },
+        {
+            "id": ids[0],
+            "category": "Second edit",
+            "subcategory": "",
+            "reviewed": True,
+            "status": "reviewed",
+            "_expected_category": "Original",
+            "_expected_subcategory": "",
+            "_expected_reviewed": True,
+        },
+    ])
+    conflict_detected = False
+    try:
+        db.update_database_rows(stale_batch)
+    except db.ConcurrentTransactionEditError as exc:
+        conflict_detected = exc.transaction_id == ids[0]
+    assert_true("stale tab edit is rejected", conflict_detected)
+    after_conflict = db.get_transaction_edit_states(ids).set_index("id")
+    assert_true(
+        "conflicting multi-row save rolls back earlier rows",
+        after_conflict.loc[ids[1], "category"] == "Original",
+        after_conflict.reset_index().to_dict("records"),
+    )
+    assert_true(
+        "newer committed value is preserved",
+        after_conflict.loc[ids[0], "category"] == "First edit",
+        after_conflict.reset_index().to_dict("records"),
+    )
+
+    independent_update = pd.DataFrame([{
+        "id": ids[1],
+        "category": "Second edit",
+        "subcategory": "",
+        "reviewed": True,
+        "status": "reviewed",
+        "_expected_category": "Original",
+        "_expected_subcategory": "",
+        "_expected_reviewed": True,
+    }])
+    assert_true(
+        "different-record tab edit remains independent",
+        db.update_database_rows(independent_update) == 1,
+    )
+    after_independent = db.get_transaction_edit_states(ids).set_index("id")
+    assert_true(
+        "different-record edit preserves both committed values",
+        after_independent.loc[ids[0], "category"] == "First edit"
+        and after_independent.loc[ids[1], "category"] == "Second edit",
+        after_independent.reset_index().to_dict("records"),
+    )
+
+
 def test_report_group_uses_exact_category_subcategory_pair():
     add_report_group_column, report_group_consistency_audit = _load_report_group_helpers()
     categories_df = pd.DataFrame([
@@ -433,6 +540,31 @@ def test_only_changed_editor_rows_are_saved_and_state_is_cleared():
     )
 
 
+def test_duplicate_save_request_is_ignored():
+    namespace = _load_report_group_namespace()
+    request_save = namespace["_request_executive_detail_save"]
+    fake_st = namespace["st"]
+    fake_st.session_state.clear()
+    editor_key = "executive_detail_editor_double_click_uat"
+    fake_st.session_state[editor_key] = {
+        "edited_rows": {0: {"category_subcategory": "Lifestyle / No subcategory"}},
+        "added_rows": [],
+        "deleted_rows": [],
+    }
+    request_save(editor_key)
+    first_request = dict(fake_st.session_state["executive_detail_save_request"])
+    fake_st.session_state[editor_key]["edited_rows"][0]["category_subcategory"] = "Own funds / No subcategory"
+    request_save(editor_key)
+    assert_true(
+        "second save request is ignored while save is active",
+        fake_st.session_state["executive_detail_save_request"] == first_request
+        and fake_st.session_state[f"{editor_key}__captured_state"]["edited_rows"][0]["category_subcategory"]
+        == "Lifestyle / No subcategory"
+        and fake_st.session_state["executive_detail_save_in_progress"] is True,
+        fake_st.session_state,
+    )
+
+
 def test_sample_report_uses_category_subcategory_mapping():
     categories_df = pd.DataFrame([
         {"category": "Business exps General", "subcategory": "", "report_group": "2-business"},
@@ -513,11 +645,13 @@ def main():
     test_executive_trust_text()
     test_database_category_enforcement()
     test_category_save_shapes_persist()
+    test_concurrent_transaction_edits_are_detected_and_atomic()
     test_report_group_uses_exact_category_subcategory_pair()
     test_editor_refresh_updates_derived_report_group_before_save()
     test_captured_editor_state_is_used_before_save()
     test_raw_category_subcategory_edits_sync_pair_before_save()
     test_only_changed_editor_rows_are_saved_and_state_is_cleared()
+    test_duplicate_save_request_is_ignored()
     test_sample_report_uses_category_subcategory_mapping()
     test_report_group_audit_flags_missing_setup_pairs()
     test_csv_amounts()

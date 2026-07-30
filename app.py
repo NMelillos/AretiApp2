@@ -1663,7 +1663,18 @@ def _clear_transaction_read_caches():
 def _request_executive_detail_save(editor_key):
     if st.session_state.get("executive_detail_save_in_progress"):
         return
-    _capture_data_editor_state(editor_key)
+    editor_state = st.session_state.get(editor_key)
+    captured_state = st.session_state.get(f"{editor_key}__captured_state")
+    has_editor_changes = (
+        isinstance(editor_state, dict)
+        and bool(editor_state.get("edited_rows"))
+    )
+    has_captured_changes = (
+        isinstance(captured_state, dict)
+        and bool(captured_state.get("edited_rows"))
+    )
+    if has_editor_changes or not has_captured_changes:
+        _capture_data_editor_state(editor_key)
     st.session_state["executive_detail_save_request"] = {"editor_key": editor_key}
     st.session_state["executive_detail_save_in_progress"] = True
 

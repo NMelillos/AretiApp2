@@ -2,6 +2,7 @@ import ast
 import copy
 import os
 import sys
+import time
 from pathlib import Path
 
 os.environ.pop("DATABASE_URL", None)
@@ -565,6 +566,137 @@ def test_duplicate_save_request_is_ignored():
     )
 
 
+def test_apply_preserves_edit_after_editor_rerun():
+    namespace = _load_report_group_namespace()
+    request_save = namespace["_request_executive_detail_save"]
+    fake_st = namespace["st"]
+    for attempt in range(20):
+        fake_st.session_state.clear()
+        editor_key = f"executive_detail_editor_rerun_uat_{attempt}"
+        selected_pair = f"Lifestyle / Test subcategory {attempt}"
+        fake_st.session_state[f"{editor_key}__captured_state"] = {
+            "edited_rows": {0: {"category_subcategory": selected_pair}},
+            "added_rows": [],
+            "deleted_rows": [],
+        }
+        # Streamlit can rebuild the editor from the applied frame before the
+        # separate Apply button callback runs, leaving an empty raw delta.
+        fake_st.session_state[editor_key] = {
+            "edited_rows": {},
+            "added_rows": [],
+            "deleted_rows": [],
+        }
+        request_save(editor_key)
+        captured = fake_st.session_state[f"{editor_key}__captured_state"]
+        assert_true(
+            f"apply preserves captured editor change after rerun {attempt + 1}",
+            captured["edited_rows"][0]["category_subcategory"] == selected_pair,
+            captured,
+        )
+
+
+def test_no_subcategory_apply_pipeline_twenty_times():
+    qa_db = Path(os.environ["ARETI_DB_PATH"])
+    if qa_db.exists():
+        qa_db.unlink()
+    db.init_db()
+    db.add_category("Lifestyle", "", "1-family")
+    for attempt in range(20):
+        db.add_category("Lifestyle", f"UAT subcategory {attempt}", "1-family")
+        db.insert_manual_transaction(
+            "2026-06-01",
+            f"No subcategory production UAT {attempt}",
+            -10,
+            "Lifestyle",
+            "",
+            {
+                "account_name": "QA Account",
+                "bank": "QA Bank",
+                "account_number": "QA1",
+                "currency": "USD",
+                "rate_type": "USD/USD",
+            },
+        )
+
+    namespace = _load_report_group_namespace()
+    request_save = namespace["_request_executive_detail_save"]
+    apply_editor_state = namespace["_apply_data_editor_state"]
+    refresh = namespace["_refresh_category_pair_derived_columns"]
+    edited_rows = namespace["_edited_data_editor_rows"]
+    fake_st = namespace["st"]
+    categories_df = db.get_categories(include_subcategories=True)
+    rows = db.get_all_transactions().sort_values("id").reset_index(drop=True)
+
+    durations = []
+    for attempt, original in rows.iterrows():
+        fake_st.session_state.clear()
+        editor_key = f"executive_detail_editor_full_pipeline_{attempt}"
+        selected_pair = f"Lifestyle / UAT subcategory {attempt}"
+        context = pd.DataFrame([{
+            "id": int(original["id"]),
+            "category": "Lifestyle",
+            "subcategory": "",
+            "reviewed": True,
+            "report_group": "1-family",
+            "category_subcategory": "Lifestyle / No subcategory",
+        }])
+        fake_st.session_state[f"{editor_key}__captured_state"] = {
+            "edited_rows": {0: {"category_subcategory": selected_pair}},
+            "added_rows": [],
+            "deleted_rows": [],
+        }
+        fake_st.session_state[editor_key] = {
+            "edited_rows": {},
+            "added_rows": [],
+            "deleted_rows": [],
+        }
+        request_save(editor_key)
+        time.sleep(0.005)
+        started = time.perf_counter()
+        edited = refresh(apply_editor_state(context, editor_key), categories_df)
+        changed = edited_rows(edited, editor_key)
+        assert_true(f"full pipeline selects exactly one row {attempt + 1}", len(changed) == 1)
+        save_df = changed[["id", "category", "subcategory", "reviewed"]].copy()
+        save_df["status"] = "reviewed"
+        save_df["_expected_category"] = "Lifestyle"
+        save_df["_expected_subcategory"] = ""
+        save_df["_expected_reviewed"] = True
+        assert_true(
+            f"full pipeline updates exactly one database row {attempt + 1}",
+            db.update_database_rows(save_df) == 1,
+        )
+        persisted = db.get_transaction_edit_states([int(original["id"])]).iloc[0]
+        durations.append(time.perf_counter() - started)
+        assert_true(
+            f"full pipeline persists selected subcategory {attempt + 1}",
+            persisted["subcategory"] == f"UAT subcategory {attempt}",
+            persisted.to_dict(),
+        )
+        assert_true(
+            f"updated row leaves no-subcategory filter {attempt + 1}",
+            str(persisted["subcategory"] or "").strip() != "",
+            persisted.to_dict(),
+        )
+        mapped = refresh(
+            pd.DataFrame([{
+                "id": int(original["id"]),
+                "category": persisted["category"],
+                "subcategory": persisted["subcategory"],
+                "report_group": "",
+            }]),
+            categories_df,
+        ).iloc[0]
+        assert_true(
+            f"full pipeline reporting group is correct {attempt + 1}",
+            mapped["report_group"] == "1-family",
+            mapped.to_dict(),
+        )
+    print(
+        "PASS: 20-cycle full edit pipeline timing "
+        f"| max={max(durations):.6f}s average={sum(durations) / len(durations):.6f}s"
+    )
+
+
 def test_sample_report_uses_category_subcategory_mapping():
     categories_df = pd.DataFrame([
         {"category": "Business exps General", "subcategory": "", "report_group": "2-business"},
@@ -652,6 +784,8 @@ def main():
     test_raw_category_subcategory_edits_sync_pair_before_save()
     test_only_changed_editor_rows_are_saved_and_state_is_cleared()
     test_duplicate_save_request_is_ignored()
+    test_apply_preserves_edit_after_editor_rerun()
+    test_no_subcategory_apply_pipeline_twenty_times()
     test_sample_report_uses_category_subcategory_mapping()
     test_report_group_audit_flags_missing_setup_pairs()
     test_csv_amounts()

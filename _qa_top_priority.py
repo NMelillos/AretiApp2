@@ -40,7 +40,6 @@ def _load_report_group_namespace():
         "_edited_data_editor_rows",
         "_capture_data_editor_state",
         "_clear_data_editor_state",
-        "_request_executive_detail_save",
     }
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
@@ -541,67 +540,41 @@ def test_only_changed_editor_rows_are_saved_and_state_is_cleared():
     )
 
 
-def test_duplicate_save_request_is_ignored():
+def test_empty_rerun_callback_preserves_edit_fifty_times():
     namespace = _load_report_group_namespace()
-    request_save = namespace["_request_executive_detail_save"]
+    capture_state = namespace["_capture_data_editor_state"]
     fake_st = namespace["st"]
-    fake_st.session_state.clear()
-    editor_key = "executive_detail_editor_double_click_uat"
-    fake_st.session_state[editor_key] = {
-        "edited_rows": {0: {"category_subcategory": "Lifestyle / No subcategory"}},
-        "added_rows": [],
-        "deleted_rows": [],
-    }
-    request_save(editor_key)
-    first_request = dict(fake_st.session_state["executive_detail_save_request"])
-    fake_st.session_state[editor_key]["edited_rows"][0]["category_subcategory"] = "Own funds / No subcategory"
-    request_save(editor_key)
-    assert_true(
-        "second save request is ignored while save is active",
-        fake_st.session_state["executive_detail_save_request"] == first_request
-        and fake_st.session_state[f"{editor_key}__captured_state"]["edited_rows"][0]["category_subcategory"]
-        == "Lifestyle / No subcategory"
-        and fake_st.session_state["executive_detail_save_in_progress"] is True,
-        fake_st.session_state,
-    )
-
-
-def test_apply_preserves_edit_after_editor_rerun():
-    namespace = _load_report_group_namespace()
-    request_save = namespace["_request_executive_detail_save"]
-    fake_st = namespace["st"]
-    for attempt in range(20):
+    for attempt in range(50):
         fake_st.session_state.clear()
         editor_key = f"executive_detail_editor_rerun_uat_{attempt}"
         selected_pair = f"Lifestyle / Test subcategory {attempt}"
-        fake_st.session_state[f"{editor_key}__captured_state"] = {
+        fake_st.session_state[editor_key] = {
             "edited_rows": {0: {"category_subcategory": selected_pair}},
             "added_rows": [],
             "deleted_rows": [],
         }
-        # Streamlit can rebuild the editor from the applied frame before the
-        # separate Apply button callback runs, leaving an empty raw delta.
+        capture_state(editor_key)
         fake_st.session_state[editor_key] = {
             "edited_rows": {},
             "added_rows": [],
             "deleted_rows": [],
         }
-        request_save(editor_key)
+        capture_state(editor_key)
         captured = fake_st.session_state[f"{editor_key}__captured_state"]
         assert_true(
-            f"apply preserves captured editor change after rerun {attempt + 1}",
+            f"empty rerun callback preserves captured edit {attempt + 1}",
             captured["edited_rows"][0]["category_subcategory"] == selected_pair,
             captured,
         )
 
 
-def test_no_subcategory_apply_pipeline_twenty_times():
+def test_no_subcategory_apply_pipeline_fifty_times():
     qa_db = Path(os.environ["ARETI_DB_PATH"])
     if qa_db.exists():
         qa_db.unlink()
     db.init_db()
     db.add_category("Lifestyle", "", "1-family")
-    for attempt in range(20):
+    for attempt in range(50):
         db.add_category("Lifestyle", f"UAT subcategory {attempt}", "1-family")
         db.insert_manual_transaction(
             "2026-06-01",
@@ -619,10 +592,11 @@ def test_no_subcategory_apply_pipeline_twenty_times():
         )
 
     namespace = _load_report_group_namespace()
-    request_save = namespace["_request_executive_detail_save"]
+    capture_state = namespace["_capture_data_editor_state"]
     apply_editor_state = namespace["_apply_data_editor_state"]
     refresh = namespace["_refresh_category_pair_derived_columns"]
     edited_rows = namespace["_edited_data_editor_rows"]
+    clear_state = namespace["_clear_data_editor_state"]
     fake_st = namespace["st"]
     categories_df = db.get_categories(include_subcategories=True)
     rows = db.get_all_transactions().sort_values("id").reset_index(drop=True)
@@ -640,17 +614,18 @@ def test_no_subcategory_apply_pipeline_twenty_times():
             "report_group": "1-family",
             "category_subcategory": "Lifestyle / No subcategory",
         }])
-        fake_st.session_state[f"{editor_key}__captured_state"] = {
+        fake_st.session_state[editor_key] = {
             "edited_rows": {0: {"category_subcategory": selected_pair}},
             "added_rows": [],
             "deleted_rows": [],
         }
+        capture_state(editor_key)
         fake_st.session_state[editor_key] = {
             "edited_rows": {},
             "added_rows": [],
             "deleted_rows": [],
         }
-        request_save(editor_key)
+        capture_state(editor_key)
         time.sleep(0.005)
         started = time.perf_counter()
         edited = refresh(apply_editor_state(context, editor_key), categories_df)
@@ -691,8 +666,13 @@ def test_no_subcategory_apply_pipeline_twenty_times():
             mapped["report_group"] == "1-family",
             mapped.to_dict(),
         )
+        clear_state(editor_key)
+        assert_true(
+            f"repeated Apply has no duplicate update {attempt + 1}",
+            edited_rows(context, editor_key).empty,
+        )
     print(
-        "PASS: 20-cycle full edit pipeline timing "
+        "PASS: 50-cycle full edit pipeline timing "
         f"| max={max(durations):.6f}s average={sum(durations) / len(durations):.6f}s"
     )
 
@@ -783,9 +763,8 @@ def main():
     test_captured_editor_state_is_used_before_save()
     test_raw_category_subcategory_edits_sync_pair_before_save()
     test_only_changed_editor_rows_are_saved_and_state_is_cleared()
-    test_duplicate_save_request_is_ignored()
-    test_apply_preserves_edit_after_editor_rerun()
-    test_no_subcategory_apply_pipeline_twenty_times()
+    test_empty_rerun_callback_preserves_edit_fifty_times()
+    test_no_subcategory_apply_pipeline_fifty_times()
     test_sample_report_uses_category_subcategory_mapping()
     test_report_group_audit_flags_missing_setup_pairs()
     test_csv_amounts()

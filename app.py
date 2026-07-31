@@ -1580,11 +1580,20 @@ def _capture_data_editor_state(editor_key):
     state = st.session_state.get(editor_key)
     if not isinstance(state, dict):
         return
-    st.session_state[f"{editor_key}__captured_state"] = copy.deepcopy({
+    captured_key = f"{editor_key}__captured_state"
+    captured_state = st.session_state.get(captured_key)
+    next_state = copy.deepcopy({
         "edited_rows": state.get("edited_rows") or {},
         "added_rows": state.get("added_rows") or [],
         "deleted_rows": state.get("deleted_rows") or [],
     })
+    if (
+        not next_state["edited_rows"]
+        and isinstance(captured_state, dict)
+        and captured_state.get("edited_rows")
+    ):
+        return
+    st.session_state[captured_key] = next_state
 
 
 def _apply_data_editor_state(df, editor_key):
@@ -1645,7 +1654,6 @@ def _edited_data_editor_rows(df, editor_key):
 def _clear_data_editor_state(editor_key):
     st.session_state.pop(editor_key, None)
     st.session_state.pop(f"{editor_key}__captured_state", None)
-    st.session_state.pop(f"{editor_key}__save_context", None)
 
 
 def _clear_transaction_read_caches():
@@ -1658,25 +1666,6 @@ def _clear_transaction_read_caches():
         get_transaction_change_log,
     ]:
         cached_reader.clear()
-
-
-def _request_executive_detail_save(editor_key):
-    if st.session_state.get("executive_detail_save_in_progress"):
-        return
-    editor_state = st.session_state.get(editor_key)
-    captured_state = st.session_state.get(f"{editor_key}__captured_state")
-    has_editor_changes = (
-        isinstance(editor_state, dict)
-        and bool(editor_state.get("edited_rows"))
-    )
-    has_captured_changes = (
-        isinstance(captured_state, dict)
-        and bool(captured_state.get("edited_rows"))
-    )
-    if has_editor_changes or not has_captured_changes:
-        _capture_data_editor_state(editor_key)
-    st.session_state["executive_detail_save_request"] = {"editor_key": editor_key}
-    st.session_state["executive_detail_save_in_progress"] = True
 
 
 def _verify_transaction_edit_save(save_df):
@@ -1704,131 +1693,6 @@ def _verify_transaction_edit_save(save_df):
                 f"Transaction ID {row_id} could not be verified after saving. "
                 "The report was not marked as refreshed."
             )
-
-
-def _process_executive_detail_save_request():
-    total_started = time.perf_counter()
-    request = st.session_state.get("executive_detail_save_request")
-    if not isinstance(request, dict):
-        return
-    editor_key = request.get("editor_key")
-    context = st.session_state.get(f"{editor_key}__save_context")
-    if not editor_key or not isinstance(context, pd.DataFrame):
-        st.session_state.pop("executive_detail_save_request", None)
-        st.session_state["executive_detail_save_in_progress"] = False
-        st.error("The transaction edit could not be prepared. Please reopen the transaction detail and try again.")
-        return
-
-    with st.status("Saving transaction edits...", expanded=True) as save_status:
-        try:
-            prepare_started = time.perf_counter()
-            edited = _apply_data_editor_state(context.copy(), editor_key)
-            edited = _apply_category_pair_values(edited)
-            changed_rows = _edited_data_editor_rows(edited, editor_key)
-            if changed_rows.empty:
-                save_status.update(label="No transaction detail changes to apply.", state="complete")
-                _clear_data_editor_state(editor_key)
-                st.session_state.pop("executive_detail_save_request", None)
-                st.session_state["executive_detail_save_in_progress"] = False
-                return
-
-            save_cols = [
-                col
-                for col in ["id", "category", "subcategory", "reviewed"]
-                if col in changed_rows.columns
-            ]
-            save_df = changed_rows[save_cols].copy()
-            if "reviewed" not in save_df.columns:
-                save_df["reviewed"] = True
-            save_df["status"] = save_df["reviewed"].map(
-                lambda value: "reviewed" if bool(value) else "pending"
-            )
-
-            baseline = context[
-                [col for col in ["id", "category", "subcategory", "reviewed"] if col in context.columns]
-            ].copy()
-            baseline = baseline.rename(columns={
-                "category": "_expected_category",
-                "subcategory": "_expected_subcategory",
-                "reviewed": "_expected_reviewed",
-            })
-            save_df = save_df.merge(baseline, on="id", how="left", validate="one_to_one")
-            _perf_log("executive_edit_prepare", prepare_started)
-
-            before_pairs = {
-                int(row["id"]): (
-                    str(row.get("_expected_category", "") or "").strip(),
-                    str(row.get("_expected_subcategory", "") or "").strip(),
-                )
-                for _, row in save_df.iterrows()
-            }
-            database_started = time.perf_counter()
-            count = update_database_rows(save_df)
-            _perf_log("executive_edit_database_update_and_commit", database_started)
-            if count != len(save_df):
-                raise RuntimeError(
-                    f"Expected to save {len(save_df)} transaction(s), but the database confirmed {count}."
-                )
-            verification_started = time.perf_counter()
-            _verify_transaction_edit_save(save_df)
-            _perf_log("executive_edit_persistence_verification", verification_started)
-            moved_from_filter = any(
-                before_pairs[int(row["id"])]
-                != (
-                    str(row.get("category", "") or "").strip(),
-                    str(row.get("subcategory", "") or "").strip(),
-                )
-                for _, row in save_df.iterrows()
-            )
-            save_status.update(
-                label=f"Transaction edits saved successfully ({count}). Refreshing the selected view...",
-                state="complete",
-            )
-        except ConcurrentTransactionEditError as exc:
-            st.session_state.pop("executive_detail_save_request", None)
-            st.session_state["executive_detail_save_in_progress"] = False
-            save_status.update(label="Save stopped because the transaction changed elsewhere.", state="error")
-            st.error(str(exc))
-            return
-        except Exception as exc:
-            st.session_state.pop("executive_detail_save_request", None)
-            st.session_state["executive_detail_save_in_progress"] = False
-            save_status.update(label="Transaction edits were not saved.", state="error")
-            st.error(f"Could not save transaction edits: {exc}")
-            return
-
-    _clear_data_editor_state(editor_key)
-    st.session_state.pop("executive_detail_save_request", None)
-    st.session_state["executive_detail_save_in_progress"] = False
-    st.session_state["executive_detail_refresh_pending"] = {
-        "count": count,
-        "moved_from_filter": moved_from_filter,
-        "started_at": time.perf_counter(),
-    }
-    cache_started = time.perf_counter()
-    _clear_transaction_read_caches()
-    _perf_log("executive_edit_cache_invalidation", cache_started)
-    _perf_log("executive_edit_save_before_rerun", total_started)
-    st.rerun()
-
-
-def _finish_executive_detail_refresh(status_slot, refresh_state):
-    if not refresh_state:
-        return
-    count = int(refresh_state.get("count", 0))
-    if refresh_state.get("moved_from_filter"):
-        message = (
-            f"Transaction edits saved successfully ({count}). The refreshed report is complete. "
-            "The updated transaction was removed from this view because it no longer matches the selected filter."
-        )
-    else:
-        message = f"Transaction edits saved successfully ({count}). The refreshed report is complete."
-    status_slot.success(message)
-    started_at = refresh_state.get("started_at")
-    if isinstance(started_at, (int, float)):
-        _perf_log("executive_edit_report_refresh", started_at)
-    st.session_state.pop("executive_detail_refresh_pending", None)
-
 
 def _refresh_category_pair_derived_columns(df, categories_df):
     out = _apply_category_pair_values(df)
@@ -3260,7 +3124,7 @@ def _render_executive_transactions(
         editor_visible["report_group"] = selected_group
         executive_editor_key = _scoped_editor_key("executive_detail_editor", editor_visible)
         editor_visible = _refresh_category_pair_derived_columns(editor_visible, categories_df)
-        st.session_state[f"{executive_editor_key}__save_context"] = editor_visible.copy()
+        editor_baseline = editor_visible.copy()
         editor_visible = _apply_data_editor_state(editor_visible, executive_editor_key)
         editor_visible = _refresh_category_pair_derived_columns(editor_visible, categories_df)
         edited_detail = st.data_editor(
@@ -3300,14 +3164,104 @@ def _render_executive_transactions(
         )
         edited_detail = _apply_data_editor_state(edited_detail, executive_editor_key)
         edited_detail = _refresh_category_pair_derived_columns(edited_detail, categories_df)
-        st.button(
-            "Apply transaction detail edits",
-            type="primary",
-            key="executive_detail_apply",
-            disabled=bool(st.session_state.get("executive_detail_save_in_progress")),
-            on_click=_request_executive_detail_save,
-            args=(executive_editor_key,),
-        )
+        if st.button("Apply transaction detail edits", type="primary", key="executive_detail_apply"):
+            total_started = time.perf_counter()
+            edited_detail = _apply_data_editor_state(edited_detail, executive_editor_key)
+            edited_detail = _apply_category_pair_values(edited_detail)
+            changed_rows = _edited_data_editor_rows(edited_detail, executive_editor_key)
+            if changed_rows.empty:
+                st.info("No transaction detail changes to apply.")
+            else:
+                with st.status("Saving transaction edits...", expanded=True) as save_status:
+                    try:
+                        prepare_started = time.perf_counter()
+                        save_cols = [
+                            col
+                            for col in ["id", "category", "subcategory", "reviewed"]
+                            if col in changed_rows.columns
+                        ]
+                        save_df = changed_rows[save_cols].copy()
+                        if "reviewed" not in save_df.columns:
+                            save_df["reviewed"] = True
+                        save_df["status"] = save_df["reviewed"].map(
+                            lambda value: "reviewed" if bool(value) else "pending"
+                        )
+                        baseline = editor_baseline[
+                            [
+                                col
+                                for col in ["id", "category", "subcategory", "reviewed"]
+                                if col in editor_baseline.columns
+                            ]
+                        ].copy()
+                        baseline = baseline.rename(columns={
+                            "category": "_expected_category",
+                            "subcategory": "_expected_subcategory",
+                            "reviewed": "_expected_reviewed",
+                        })
+                        save_df = save_df.merge(baseline, on="id", how="left", validate="one_to_one")
+                        _perf_log("executive_edit_prepare", prepare_started)
+
+                        before_pairs = {
+                            int(row["id"]): (
+                                str(row.get("_expected_category", "") or "").strip(),
+                                str(row.get("_expected_subcategory", "") or "").strip(),
+                            )
+                            for _, row in save_df.iterrows()
+                        }
+                        database_started = time.perf_counter()
+                        count = update_database_rows(save_df)
+                        _perf_log("executive_edit_database_update_and_commit", database_started)
+                        if count != len(save_df):
+                            raise RuntimeError(
+                                f"Expected to save {len(save_df)} transaction(s), "
+                                f"but the database confirmed {count}."
+                            )
+                        verification_started = time.perf_counter()
+                        _verify_transaction_edit_save(save_df)
+                        _perf_log("executive_edit_persistence_verification", verification_started)
+                        moved_from_filter = any(
+                            before_pairs[int(row["id"])]
+                            != (
+                                str(row.get("category", "") or "").strip(),
+                                str(row.get("subcategory", "") or "").strip(),
+                            )
+                            for _, row in save_df.iterrows()
+                        )
+                        save_status.update(
+                            label=(
+                                f"Transaction edits saved successfully ({count}). "
+                                "Refreshing the selected view..."
+                            ),
+                            state="complete",
+                        )
+                    except ConcurrentTransactionEditError as exc:
+                        save_status.update(
+                            label="Save stopped because the transaction changed elsewhere.",
+                            state="error",
+                        )
+                        st.error(str(exc))
+                    except Exception as exc:
+                        save_status.update(label="Transaction edits were not saved.", state="error")
+                        st.error(f"Could not save transaction edits: {exc}")
+                    else:
+                        _clear_data_editor_state(executive_editor_key)
+                        if moved_from_filter:
+                            message = (
+                                f"Transaction edits saved successfully ({count}). The refreshed report is complete. "
+                                "The updated transaction was removed from this view because it no longer matches "
+                                "the selected filter."
+                            )
+                        else:
+                            message = (
+                                f"Transaction edits saved successfully ({count}). "
+                                "The refreshed report is complete."
+                            )
+                        st.session_state["executive_detail_save_message"] = message
+                        cache_started = time.perf_counter()
+                        _clear_transaction_read_caches()
+                        _perf_log("executive_edit_cache_invalidation", cache_started)
+                        _perf_log("executive_edit_save_before_rerun", total_started)
+                        st.rerun()
     export_sheets = _executive_selected_transactions_export_sheets(visible)
     st.download_button(
         "Download selected transactions Excel",
@@ -4103,22 +4057,15 @@ def render_executive_report():
     shared_report = _is_shared_executive_report_request()
     st.subheader("TB Family Office Executive Expenses Report" if shared_report else "Executive Summary")
     if not shared_report:
-        _process_executive_detail_save_request()
-    refresh_state = (
-        st.session_state.get("executive_detail_refresh_pending")
-        if not shared_report
-        else None
-    )
-    refresh_status = st.empty()
-    if refresh_state:
-        refresh_status.info("Transaction edits saved successfully. Refreshing the selected report view...")
+        saved_message = st.session_state.pop("executive_detail_save_message", "")
+        if saved_message:
+            st.success(saved_message)
 
     ensure_usd_backfilled()
     all_transactions = get_all_transactions()
     categories_df = get_categories(include_subcategories=True)
     if all_transactions.empty:
         st.info("No transactions are available for the executive report yet.")
-        _finish_executive_detail_refresh(refresh_status, refresh_state)
         return
 
     all_transactions = active_financial_transactions(all_transactions)
@@ -4126,7 +4073,6 @@ def render_executive_report():
     active_transactions = all_transactions[all_transactions["txn_date"].notna()].copy()
     if active_transactions.empty:
         st.info("No active transactions are available for the executive report yet.")
-        _finish_executive_detail_refresh(refresh_status, refresh_state)
         return
 
     date_values = pd.to_datetime(active_transactions.get("txn_date"), errors="coerce").dropna()
@@ -4138,7 +4084,6 @@ def render_executive_report():
     active_database_rows = filtered.copy()
     if filtered.empty:
         st.warning("No active transactions exist up to the selected date.")
-        _finish_executive_detail_refresh(refresh_status, refresh_state)
         return
 
     _, expenses, _, _ = _prepare_report_data(
@@ -4186,7 +4131,6 @@ def render_executive_report():
 
     if expenses.empty and not visible_report_groups:
         st.info("No active report rows match the selected period.")
-        _finish_executive_detail_refresh(refresh_status, refresh_state)
         return
 
     current_month = cutoff_ts.to_period("M")
@@ -4202,7 +4146,6 @@ def render_executive_report():
         categories_df=categories_df,
         show_all_months=show_all_months,
     )
-    _finish_executive_detail_refresh(refresh_status, refresh_state)
 
 
 def render_third_link_report():

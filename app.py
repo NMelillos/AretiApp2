@@ -1369,7 +1369,7 @@ def is_amex_cardholder_statement(file_bytes, file_name):
     return "CARD MEMBER" in sample and ("AMEX" in sample or "AMERICAN EXPRESS" in sample or file_name.lower().endswith(".csv"))
 
 
-def editable_pending_table(df, categories, subcategories, key):
+def editable_pending_table(df, categories, subcategories, key, defer_changes=False):
     table = df.copy()
     table["reviewed"] = False
     valid_categories = set(categories)
@@ -1408,17 +1408,25 @@ def editable_pending_table(df, categories, subcategories, key):
     table = table[[col for col in visible_cols if col in table.columns]]
     editor_key = _scoped_editor_key(key, table)
     st.session_state[f"{key}__active_editor_key"] = editor_key
-    table = _apply_data_editor_state(table, editor_key)
-    table = _refresh_category_pair_derived_columns(table, categories_df)
+    if not defer_changes:
+        table = _apply_data_editor_state(table, editor_key)
+        table = _refresh_category_pair_derived_columns(table, categories_df)
+
+    editor_kwargs = {
+        "key": editor_key,
+        "use_container_width": True,
+        "hide_index": True,
+        "height": min(680, 105 + max(len(table), 4) * 36),
+    }
+    if not defer_changes:
+        editor_kwargs.update({
+            "on_change": _capture_data_editor_state,
+            "args": (editor_key,),
+        })
 
     return st.data_editor(
         table,
-        key=editor_key,
-        on_change=_capture_data_editor_state,
-        args=(editor_key,),
-        use_container_width=True,
-        hide_index=True,
-        height=min(680, 105 + max(len(table), 4) * 36),
+        **editor_kwargs,
         column_config={
             "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
             "reviewed": st.column_config.CheckboxColumn("Reviewed", help="Tick only rows that are ready to save."),
@@ -1450,6 +1458,41 @@ def editable_pending_table(df, categories, subcategories, key):
             ),
         },
     )
+
+
+def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
+    if original_df.empty or edited_df.empty or "id" not in edited_df.columns:
+        return edited_df.iloc[0:0].copy()
+
+    edited = _refresh_category_pair_derived_columns(edited_df, categories_df)
+    original = original_df.copy()
+    original["id"] = pd.to_numeric(original["id"], errors="coerce")
+    edited["id"] = pd.to_numeric(edited["id"], errors="coerce")
+    original = original.dropna(subset=["id"]).copy()
+    edited = edited.dropna(subset=["id"]).copy()
+    original["id"] = original["id"].astype(int)
+    edited["id"] = edited["id"].astype(int)
+    original_by_id = original.drop_duplicates("id").set_index("id")
+
+    rows = []
+    for _, row in edited.iterrows():
+        row_id = int(row["id"])
+        if row_id not in original_by_id.index or not bool(row.get("reviewed", False)):
+            continue
+        before = original_by_id.loc[row_id]
+        rows.append({
+            "id": row_id,
+            "category": str(row.get("category", "") or "").strip(),
+            "subcategory": str(row.get("subcategory", "") or "").strip(),
+            "reviewed": True,
+            "status": "reviewed",
+            "report_group": str(row.get("report_group", "") or "").strip(),
+            "_expected_category": str(before.get("category", "") or "").strip(),
+            "_expected_subcategory": str(before.get("subcategory", "") or "").strip(),
+            "_expected_reviewed": bool(before.get("reviewed", False)),
+        })
+
+    return pd.DataFrame(rows)
 
 
 def _single_visible_category(df):
@@ -1946,6 +1989,9 @@ def render_transaction_exclusion_panel(df, key_prefix):
 def render_bulk_categorise_panel(df, categories, key_prefix, expanded=False, inline=False):
     if df.empty or "id" not in df.columns or not categories:
         return
+    saved_message = st.session_state.pop(f"{key_prefix}_bulk_save_message", "")
+    if saved_message:
+        st.success(saved_message)
     title = "Bulk categorise current filtered rows"
     if inline:
         st.markdown(f"#### {title}")
@@ -1983,13 +2029,33 @@ def render_bulk_categorise_panel(df, categories, key_prefix, expanded=False, inl
                 "reviewed": True,
                 "status": "reviewed",
             })
-            count = update_database_rows(update_df)
-            if count:
-                st.success(f"Updated {count} transactions.")
-                st.cache_data.clear()
+            original = df.dropna(subset=["id"]).copy()
+            original["id"] = original["id"].astype(int)
+            original_by_id = original.drop_duplicates("id").set_index("id")
+            update_df["_expected_category"] = update_df["id"].map(
+                lambda row_id: str(original_by_id.loc[row_id].get("category", "") or "").strip()
+            )
+            update_df["_expected_subcategory"] = update_df["id"].map(
+                lambda row_id: str(original_by_id.loc[row_id].get("subcategory", "") or "").strip()
+            )
+            update_df["_expected_reviewed"] = update_df["id"].map(
+                lambda row_id: bool(original_by_id.loc[row_id].get("reviewed", False))
+            )
+            try:
+                with st.status(f"Saving {len(update_df)} transaction edits...", expanded=True) as save_status:
+                    count = save_reviewed_rows(update_df)
+                    _verify_transaction_edit_save(update_df)
+                    save_status.update(
+                        label=f"{count} transactions updated successfully.",
+                        state="complete",
+                    )
+                _clear_transaction_read_caches()
+                st.session_state[f"{key_prefix}_bulk_save_message"] = (
+                    f"{count} transactions updated successfully."
+                )
                 st.rerun()
-            else:
-                st.warning("No transactions were updated.")
+            except Exception as exc:
+                st.error(f"No transactions were saved. {exc}")
 
 
 def _parse_split_amount_input(value):
@@ -4828,6 +4894,9 @@ elif page == "Import History":
 
 elif page == "Pending Review":
     st.subheader("Pending Review")
+    pending_save_message = st.session_state.pop("pending_review_save_message", "")
+    if pending_save_message:
+        st.success(pending_save_message)
     pending = get_pending_transactions()
     categories = get_categories()
     subcategories = get_subcategories()
@@ -4908,26 +4977,52 @@ elif page == "Pending Review":
             inline=True,
         )
         render_bulk_categorise_panel(pending_view, categories, "pending", expanded=True, inline=True)
-        top_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_top")
-        edited_pending = editable_pending_table(pending_view, categories, subcategories, "pending_editor")
-        bottom_save = st.button("Save reviewed rows", type="primary", key="save_reviewed_bottom")
+        st.caption(
+            "Make all Category / Subcategory changes and Reviewed selections below, then save them together. "
+            "The table will not refresh between individual edits."
+        )
+        with st.form("pending_review_batch_form", clear_on_submit=False):
+            edited_pending = editable_pending_table(
+                pending_view,
+                categories,
+                subcategories,
+                "pending_editor_batch",
+                defer_changes=True,
+            )
+            submit_pending = st.form_submit_button(
+                "Apply reviewed transaction edits",
+                type="primary",
+            )
 
-        if top_save or bottom_save:
-            pending_editor_key = st.session_state.get("pending_editor__active_editor_key")
-            if pending_editor_key:
-                edited_pending = _apply_data_editor_state(edited_pending, pending_editor_key)
-                edited_pending = _refresh_category_pair_derived_columns(
-                    edited_pending,
-                    get_categories(include_subcategories=True),
-                )
-            with st.spinner("Saving reviewed rows..."):
-                saved = save_reviewed_rows(_apply_category_pair_values(edited_pending))
-            if saved:
-                st.success(f"Saved {saved} reviewed transactions.")
-                st.cache_data.clear()
-                st.rerun()
+        if submit_pending:
+            categories_df = get_categories(include_subcategories=True)
+            save_df = _prepare_pending_review_save_rows(
+                pending_view,
+                edited_pending,
+                categories_df,
+            )
+            if save_df.empty:
+                st.warning("No rows were ticked as Reviewed. Nothing was saved.")
             else:
-                st.warning("No rows were ticked as reviewed.")
+                try:
+                    with st.status(
+                        f"Saving {len(save_df)} transaction edits...",
+                        expanded=True,
+                    ) as save_status:
+                        saved = save_reviewed_rows(save_df)
+                        _verify_transaction_edit_save(save_df)
+                        save_status.update(
+                            label=f"{saved} transactions updated successfully.",
+                            state="complete",
+                        )
+                    _clear_transaction_read_caches()
+                    st.session_state["pending_review_save_message"] = (
+                        f"{saved} transactions updated successfully. "
+                        "Reviewed transactions were removed from Pending Review after the saved values were verified."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"No transaction edits were saved. {exc}")
 
 
 elif page == "Database":

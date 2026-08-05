@@ -13,6 +13,7 @@ def main():
     classification.get_categories = lambda: [
         "Lifestyle",
         "Technology",
+        "Business",
         "Bank commissions and fees",
         "UNIDENTIFIED EXPENSES",
     ]
@@ -37,6 +38,24 @@ def main():
                 "times_seen": 1,
                 "last_seen": "2026-07-01",
             },
+            {
+                "normalized_description": "PAYCHEXEIBINVOICE260410X16176200003375 9488585605",
+                "original_description": "PaychexEibInvoice260410X16176200003375 9488585605",
+                "transaction_type": "bank_payment",
+                "category": "Business",
+                "subcategory": "Payroll fees",
+                "times_seen": 3,
+                "last_seen": "2026-04-10",
+            },
+            {
+                "normalized_description": "PAYCHEXEIBINVOICE260610X17053800005903 9488659631",
+                "original_description": "PaychexEibInvoice260610X17053800005903 9488659631",
+                "transaction_type": "bank_payment",
+                "category": "Business",
+                "subcategory": "Payroll fees",
+                "times_seen": 3,
+                "last_seen": "2026-06-10",
+            },
         ]
     )
     rows = pd.DataFrame(
@@ -53,12 +72,19 @@ def main():
                 "transaction_type": "bank_fee",
                 "Amount": -12.0,
             },
+            {
+                "normalized_description": "PAYCHEXEIBINVOICE260710X17445300041024 9488728894",
+                "beneficiary": "",
+                "transaction_type": "bank_payment",
+                "Amount": -65.0,
+            },
         ]
     )
 
     classified = classification.classify_transactions(rows, memory)
     replit = classified.iloc[0]
     commission = classified.iloc[1]
+    paychex = classified.iloc[2]
 
     assert_true(
         "known recurring merchant predicts subcategory",
@@ -74,6 +100,12 @@ def main():
         "commission is not lifestyle",
         commission["suggested_category"] != "Lifestyle",
         str(commission["suggested_category"]),
+    )
+    assert_true(
+        "Paychex invoice identifiers share recurring merchant history",
+        paychex["suggested_category"] == "Business"
+        and paychex["suggested_subcategory"] == "Payroll fees",
+        f"{paychex['suggested_category']} / {paychex['suggested_subcategory']}",
     )
     print("QA_COMPLETE")
 

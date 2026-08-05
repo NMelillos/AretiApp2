@@ -2732,59 +2732,100 @@ def save_reviewed_rows(df):
     saved = 0
     subcategory_parent_lookup = _subcategory_parent_lookup(cur)
 
-    for _, row in df.iterrows():
-        reviewed = bool(row.get("reviewed", False))
-        if not reviewed:
-            continue
-        tx_id = int(row["id"])
-        category = _clean(row.get("category"))
-        subcategory = _clean(row.get("subcategory"))
-        parent_category = subcategory_parent_lookup.get(subcategory.casefold()) if subcategory else None
-        if parent_category:
-            category = parent_category
-        cur.execute("""
-            SELECT category, subcategory, reviewed, status
-            FROM classified_transactions
-            WHERE id = ?
-        """, (tx_id,))
-        before = cur.fetchone()
-        before_category = before[0] if before else ""
-        before_subcategory = before[1] if before else ""
-        before_reviewed = int(before[2] or 0) if before else 0
-        before_status = before[3] if before else ""
-        cur.execute("""
-            UPDATE classified_transactions
-            SET category = ?, subcategory = ?, reviewed = 1, status = 'reviewed', reviewed_at = ?
-            WHERE id = ?
-        """, (category, subcategory, now, tx_id))
-        saved += 1
-        _audit_transaction_change(cur, tx_id, "category", before_category, category, "pending_review_save")
-        _audit_transaction_change(cur, tx_id, "subcategory", before_subcategory, subcategory, "pending_review_save")
-        _audit_transaction_change(cur, tx_id, "reviewed", before_reviewed, 1, "pending_review_save")
-        _audit_transaction_change(cur, tx_id, "status", before_status, "reviewed", "pending_review_save")
+    expected = {}
+    try:
+        for _, row in df.iterrows():
+            reviewed = bool(row.get("reviewed", False))
+            if not reviewed:
+                continue
+            tx_id = int(row["id"])
+            category = _clean(row.get("category"))
+            subcategory = _clean(row.get("subcategory"))
+            parent_category = subcategory_parent_lookup.get(subcategory.casefold()) if subcategory else None
+            if parent_category:
+                category = parent_category
+            if not category or not _category_pair_exists(cur, category, subcategory):
+                label = category if not subcategory else f"{category} / {subcategory}"
+                raise ValueError(f"Invalid Category / Subcategory for transaction {tx_id}: {label or 'blank'}.")
 
-        cur.execute("""
-            SELECT original_description, normalized_description, beneficiary, transaction_type
-            FROM classified_transactions
-            WHERE id = ?
-        """, (tx_id,))
-        stored = cur.fetchone()
-        if not stored:
-            continue
+            cur.execute("""
+                SELECT category, subcategory, reviewed, status,
+                       original_description, normalized_description, beneficiary, transaction_type
+                FROM classified_transactions
+                WHERE id = ?
+            """, (tx_id,))
+            before = cur.fetchone()
+            if not before:
+                raise ValueError(f"Transaction {tx_id} no longer exists.")
+            before_category = before[0] or ""
+            before_subcategory = before[1] or ""
+            before_reviewed = int(before[2] or 0)
+            before_status = before[3] or ""
 
-        _remember_transaction_with_cursor(
-            cur,
-            stored[0] or "",
-            stored[1] or "",
-            stored[2] or "",
-            stored[3] or "",
-            category,
-            subcategory,
-        )
+            expected_category = row.get("_expected_category")
+            expected_subcategory = row.get("_expected_subcategory")
+            expected_reviewed = row.get("_expected_reviewed")
+            stale = (
+                expected_category is not None
+                and _clean(expected_category) != _clean(before_category)
+            ) or (
+                expected_subcategory is not None
+                and _clean(expected_subcategory) != _clean(before_subcategory)
+            ) or (
+                expected_reviewed is not None
+                and int(_bool_from_value(expected_reviewed)) != before_reviewed
+            )
+            if stale:
+                raise ConcurrentTransactionEditError(tx_id)
 
-    conn.commit()
-    conn.close()
-    return saved
+            cur.execute("""
+                UPDATE classified_transactions
+                SET category = ?, subcategory = ?, reviewed = 1, status = 'reviewed', reviewed_at = ?
+                WHERE id = ?
+            """, (category, subcategory, now, tx_id))
+            if cur.rowcount != 1:
+                raise RuntimeError(f"Transaction {tx_id} was not updated.")
+            saved += 1
+            expected[tx_id] = (category, subcategory)
+            _audit_transaction_change(cur, tx_id, "category", before_category, category, "pending_review_save")
+            _audit_transaction_change(cur, tx_id, "subcategory", before_subcategory, subcategory, "pending_review_save")
+            _audit_transaction_change(cur, tx_id, "reviewed", before_reviewed, 1, "pending_review_save")
+            _audit_transaction_change(cur, tx_id, "status", before_status, "reviewed", "pending_review_save")
+            _remember_transaction_with_cursor(
+                cur,
+                before[4] or "",
+                before[5] or "",
+                before[6] or "",
+                before[7] or "",
+                category,
+                subcategory,
+            )
+
+        if expected:
+            placeholders = ",".join("?" for _ in expected)
+            cur.execute(f"""
+                SELECT id, category, subcategory, reviewed, status
+                FROM classified_transactions
+                WHERE id IN ({placeholders})
+            """, list(expected))
+            verified = {int(stored[0]): stored for stored in cur.fetchall()}
+            for tx_id, (category, subcategory) in expected.items():
+                actual = verified.get(tx_id)
+                if (
+                    actual is None
+                    or _clean(actual[1]) != category
+                    or _clean(actual[2]) != subcategory
+                    or int(actual[3] or 0) != 1
+                    or _clean(actual[4]).casefold() != "reviewed"
+                ):
+                    raise RuntimeError(f"Transaction {tx_id} could not be verified after saving.")
+        conn.commit()
+        return saved
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def update_database_rows(df):

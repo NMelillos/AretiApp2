@@ -72,6 +72,7 @@ MERCHANT_BRANDS = {
     "BOLT": "BOLT",
     "KREA AI": "KREA AI",
     "KREA": "KREA AI",
+    "PAYCHEX": "PAYCHEX",
     "REPLIT": "REPLIT",
     "WOLT": "WOLT",
 }

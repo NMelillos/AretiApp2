@@ -40,6 +40,7 @@ def _load_report_group_namespace():
         "_edited_data_editor_rows",
         "_capture_data_editor_state",
         "_clear_data_editor_state",
+        "_prepare_pending_review_save_rows",
     }
     module = ast.Module(
         body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names],
@@ -677,6 +678,156 @@ def test_no_subcategory_apply_pipeline_fifty_times():
     )
 
 
+def _seed_pending_rows(count):
+    db.init_db()
+    db.add_category("Original", "", "0-UNCATEGORISED")
+    db.add_category("Family", "General", "1-family")
+    db.add_category("Business", "Software", "2-business")
+    for index in range(count):
+        db.insert_manual_transaction(
+            "2026-08-01",
+            f"Pending batch UAT {index}",
+            -10 - index,
+            "Original",
+            "",
+            {
+                "account_name": "QA Account",
+                "bank": "QA Bank",
+                "account_number": "QA1",
+                "currency": "USD",
+                "rate_type": "USD/USD",
+            },
+        )
+    conn = db.get_connection()
+    try:
+        conn.cursor().execute(
+            "UPDATE classified_transactions SET reviewed = 0, status = 'pending', reviewed_at = NULL"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return db.get_pending_transactions().sort_values("id").reset_index(drop=True)
+
+
+def test_pending_review_exact_workflow_fifty_times():
+    qa_db = Path(os.environ["ARETI_DB_PATH"])
+    if qa_db.exists():
+        qa_db.unlink()
+    original = _seed_pending_rows(50)
+    prepare = _load_report_group_namespace()["_prepare_pending_review_save_rows"]
+    categories_df = db.get_categories(include_subcategories=True)
+    durations = []
+    for attempt, source in original.iterrows():
+        editor = pd.DataFrame([{
+            **source.to_dict(),
+            "category_subcategory": "Family / General",
+            "reviewed": True,
+        }])
+        started = time.perf_counter()
+        save_df = prepare(pd.DataFrame([source]), editor, categories_df)
+        assert_true(f"pending form selects one stable ID {attempt + 1}", save_df["id"].tolist() == [int(source["id"])])
+        assert_true(f"pending save updates one SQL row {attempt + 1}", db.save_reviewed_rows(save_df) == 1)
+        persisted = db.get_transaction_edit_states([int(source["id"])]).iloc[0]
+        durations.append(time.perf_counter() - started)
+        assert_true(
+            f"pending category, subcategory and Reviewed persist {attempt + 1}",
+            persisted["category"] == "Family"
+            and persisted["subcategory"] == "General"
+            and bool(persisted["reviewed"])
+            and persisted["status"] == "reviewed",
+            persisted.to_dict(),
+        )
+    assert_true("all 50 reviewed rows leave Pending Review", db.get_pending_transactions().empty)
+    print(
+        "PASS: 50-cycle Pending Review timing "
+        f"| max={max(durations):.6f}s average={sum(durations) / len(durations):.6f}s"
+    )
+
+
+def test_pending_review_thirty_row_batch_is_atomic():
+    qa_db = Path(os.environ["ARETI_DB_PATH"])
+    if qa_db.exists():
+        qa_db.unlink()
+    original = _seed_pending_rows(30)
+    prepare = _load_report_group_namespace()["_prepare_pending_review_save_rows"]
+    categories_df = db.get_categories(include_subcategories=True)
+    editor = original.copy()
+    editor["category_subcategory"] = [
+        "Family / General" if index % 2 == 0 else "Business / Software"
+        for index in range(len(editor))
+    ]
+    editor["reviewed"] = True
+
+    invalid = editor.copy()
+    invalid.at[10, "category_subcategory"] = "Not in Setup / Invalid"
+    invalid_save = prepare(original, invalid, categories_df)
+    failed_atomically = False
+    try:
+        db.save_reviewed_rows(invalid_save)
+    except ValueError:
+        failed_atomically = True
+    assert_true("invalid row rejects the entire 30-row batch", failed_atomically)
+    assert_true("failed batch leaves all 30 rows pending", len(db.get_pending_transactions()) == 30)
+
+    started = time.perf_counter()
+    save_df = prepare(original, editor, categories_df)
+    assert_true("30-row form collects exactly 30 stable IDs", len(save_df) == 30)
+    assert_true("30-row batch commits exactly once per intended row", db.save_reviewed_rows(save_df) == 30)
+    elapsed = time.perf_counter() - started
+    states = db.get_transaction_edit_states(save_df["id"].tolist()).sort_values("id").reset_index(drop=True)
+    assert_true("30-row batch leaves no row pending", db.get_pending_transactions().empty)
+    assert_true("30-row batch preserves every Reviewed tick", states["reviewed"].astype(bool).all())
+    assert_true(
+        "30-row batch persists every selected category/subcategory",
+        all(
+            (row["category"], row["subcategory"])
+            == (("Family", "General") if index % 2 == 0 else ("Business", "Software"))
+            for index, (_, row) in enumerate(states.iterrows())
+        ),
+        states.to_dict("records"),
+    )
+    assert_true("30-row batch completes in seconds", elapsed < 3.0, f"elapsed={elapsed:.6f}s")
+    print(f"PASS: 30-row Pending Review batch timing | elapsed={elapsed:.6f}s")
+
+
+def test_pending_review_stale_tab_cannot_partially_overwrite():
+    qa_db = Path(os.environ["ARETI_DB_PATH"])
+    if qa_db.exists():
+        qa_db.unlink()
+    original = _seed_pending_rows(2)
+    prepare = _load_report_group_namespace()["_prepare_pending_review_save_rows"]
+    categories_df = db.get_categories(include_subcategories=True)
+
+    tab_one = original.iloc[[0]].copy()
+    tab_one["category_subcategory"] = "Family / General"
+    tab_one["reviewed"] = True
+    tab_one_save = prepare(original.iloc[[0]], tab_one, categories_df)
+    assert_true("first tab saves its intended row", db.save_reviewed_rows(tab_one_save) == 1)
+
+    stale_tab = original.copy()
+    stale_tab["category_subcategory"] = "Business / Software"
+    stale_tab["reviewed"] = True
+    stale_save = prepare(original, stale_tab, categories_df)
+    rejected = False
+    try:
+        db.save_reviewed_rows(stale_save)
+    except db.ConcurrentTransactionEditError:
+        rejected = True
+    assert_true("stale tab is rejected", rejected)
+
+    states = db.get_transaction_edit_states(original["id"].astype(int).tolist()).sort_values("id").reset_index(drop=True)
+    assert_true(
+        "stale batch cannot overwrite the newer row or partially save another row",
+        states.loc[0, "category"] == "Family"
+        and states.loc[0, "subcategory"] == "General"
+        and bool(states.loc[0, "reviewed"])
+        and states.loc[1, "category"] == "Original"
+        and states.loc[1, "subcategory"] == ""
+        and not bool(states.loc[1, "reviewed"]),
+        states.to_dict("records"),
+    )
+
+
 def test_sample_report_uses_category_subcategory_mapping():
     categories_df = pd.DataFrame([
         {"category": "Business exps General", "subcategory": "", "report_group": "2-business"},
@@ -765,6 +916,9 @@ def main():
     test_only_changed_editor_rows_are_saved_and_state_is_cleared()
     test_empty_rerun_callback_preserves_edit_fifty_times()
     test_no_subcategory_apply_pipeline_fifty_times()
+    test_pending_review_exact_workflow_fifty_times()
+    test_pending_review_thirty_row_batch_is_atomic()
+    test_pending_review_stale_tab_cannot_partially_overwrite()
     test_sample_report_uses_category_subcategory_mapping()
     test_report_group_audit_flags_missing_setup_pairs()
     test_csv_amounts()

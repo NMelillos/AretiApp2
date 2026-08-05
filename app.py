@@ -2126,7 +2126,7 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
         allocation_count = int(st.number_input(
             "Number of split rows",
             min_value=2,
-            max_value=12,
+            max_value=20,
             value=2,
             step=1,
             key=f"{key_prefix}_split_count",

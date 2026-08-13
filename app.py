@@ -1495,6 +1495,45 @@ def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
     return pd.DataFrame(rows)
 
 
+def _changed_transaction_editor_rows(original_df, edited_df, categories_df, compare_columns):
+    """Return only rows whose editable values differ from their ID-matched baseline."""
+    if original_df.empty or edited_df.empty or "id" not in edited_df.columns:
+        return edited_df.iloc[0:0].copy()
+
+    original = _refresh_category_pair_derived_columns(original_df, categories_df)
+    edited = _refresh_category_pair_derived_columns(edited_df, categories_df)
+    original["id"] = pd.to_numeric(original["id"], errors="coerce")
+    edited["id"] = pd.to_numeric(edited["id"], errors="coerce")
+    original = original.dropna(subset=["id"]).copy()
+    edited = edited.dropna(subset=["id"]).copy()
+    original["id"] = original["id"].astype(int)
+    edited["id"] = edited["id"].astype(int)
+    original_by_id = original.drop_duplicates("id").set_index("id")
+
+    def comparable_value(value, column):
+        if column == "reviewed":
+            return bool(value) if not pd.isna(value) else False
+        text = "" if value is None or pd.isna(value) else str(value).strip()
+        return text.casefold() if column == "status" else text
+
+    changed_positions = []
+    for position, (_, row) in enumerate(edited.iterrows()):
+        row_id = int(row["id"])
+        if row_id not in original_by_id.index:
+            continue
+        before = original_by_id.loc[row_id]
+        if any(
+            comparable_value(row.get(column), column)
+            != comparable_value(before.get(column), column)
+            for column in compare_columns
+        ):
+            changed_positions.append(position)
+
+    if not changed_positions:
+        return edited.iloc[0:0].copy()
+    return edited.iloc[changed_positions].copy()
+
+
 def _single_visible_category(df):
     if df.empty or "category" not in df.columns:
         return ""
@@ -3212,56 +3251,62 @@ def _render_executive_transactions(
             inline=True,
         )
         render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=True, inline=True)
-        st.caption("Use Category / Subcategory to choose only valid combinations from Setup.")
+        st.caption(
+            "Make all Category / Subcategory changes below, then apply them together. "
+            "The report will not refresh between individual edits; Reporting Group is recalculated on save."
+        )
         editor_visible = visible.copy()
         editor_visible["report_group"] = selected_group
         executive_editor_key = _scoped_editor_key("executive_detail_editor", editor_visible)
         editor_visible = _refresh_category_pair_derived_columns(editor_visible, categories_df)
         editor_baseline = editor_visible.copy()
-        editor_visible = _apply_data_editor_state(editor_visible, executive_editor_key)
-        editor_visible = _refresh_category_pair_derived_columns(editor_visible, categories_df)
-        edited_detail = st.data_editor(
-            editor_visible,
-            use_container_width=True,
-            hide_index=True,
-            height=min(640, 130 + max(len(visible), 4) * 34),
-            column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "txn_date": st.column_config.TextColumn("Date", disabled=True),
-                "account_name": st.column_config.TextColumn("Account", disabled=True),
-                "bank": st.column_config.TextColumn("Bank", disabled=True),
-                "account_number": st.column_config.TextColumn("Account number", disabled=True),
-                "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
-                "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
-                "_display_amount_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
-                "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
-                _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
-                    "Category / Subcategory",
-                    options=pair_options,
-                    required=False,
-                    help="Choose a valid category/subcategory pair from Setup.",
-                ),
-                "reviewed": st.column_config.CheckboxColumn(
-                    "Reviewed",
-                    help="Untick to send the transaction back to Pending Review.",
-                ),
-                "original_description": st.column_config.TextColumn(
-                    "Full statement description",
-                    disabled=True,
-                    width="large",
-                ),
-            },
-            key=executive_editor_key,
-            on_change=_capture_data_editor_state,
-            args=(executive_editor_key,),
-        )
-        edited_detail = _apply_data_editor_state(edited_detail, executive_editor_key)
-        edited_detail = _refresh_category_pair_derived_columns(edited_detail, categories_df)
-        if st.button("Apply transaction detail edits", type="primary", key="executive_detail_apply"):
+        with st.form(f"{executive_editor_key}_batch_form", clear_on_submit=False):
+            edited_detail = st.data_editor(
+                editor_visible,
+                use_container_width=True,
+                hide_index=True,
+                height=min(640, 130 + max(len(visible), 4) * 34),
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                    "txn_date": st.column_config.TextColumn("Date", disabled=True),
+                    "account_name": st.column_config.TextColumn("Account", disabled=True),
+                    "bank": st.column_config.TextColumn("Bank", disabled=True),
+                    "account_number": st.column_config.TextColumn("Account number", disabled=True),
+                    "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
+                    "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
+                    "_display_amount_usd": st.column_config.NumberColumn("Report amount USD", format="%.2f", disabled=True),
+                    "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
+                    _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
+                        "Category / Subcategory",
+                        options=pair_options,
+                        required=False,
+                        help="Choose a valid category/subcategory pair from Setup.",
+                    ),
+                    "reviewed": st.column_config.CheckboxColumn(
+                        "Reviewed",
+                        help="Untick to send the transaction back to Pending Review.",
+                    ),
+                    "original_description": st.column_config.TextColumn(
+                        "Full statement description",
+                        disabled=True,
+                        width="large",
+                    ),
+                },
+                key=executive_editor_key,
+            )
+            submit_executive_edits = st.form_submit_button(
+                "Apply transaction detail edits",
+                type="primary",
+            )
+        if submit_executive_edits:
             total_started = time.perf_counter()
-            edited_detail = _apply_data_editor_state(edited_detail, executive_editor_key)
             edited_detail = _apply_category_pair_values(edited_detail)
-            changed_rows = _edited_data_editor_rows(edited_detail, executive_editor_key)
+            changed_rows = _changed_transaction_editor_rows(
+                editor_baseline,
+                edited_detail,
+                categories_df,
+                ["category", "subcategory", "reviewed"],
+            )
             if changed_rows.empty:
                 st.info("No transaction detail changes to apply.")
             else:
@@ -3337,7 +3382,6 @@ def _render_executive_transactions(
                         save_status.update(label="Transaction edits were not saved.", state="error")
                         st.error(f"Could not save transaction edits: {exc}")
                     else:
-                        _clear_data_editor_state(executive_editor_key)
                         if moved_from_filter:
                             message = (
                                 f"Transaction edits saved successfully ({count}). The refreshed report is complete. "
@@ -5165,109 +5209,106 @@ elif page == "Database":
             "report_group",
             "match_type",
         ]
-        st.caption("Use Category / Subcategory to choose only valid combinations from Setup.")
+        st.caption(
+            "Make all database edits below, then apply them together. The table will not refresh between "
+            "individual edits; Reporting Group is recalculated on save."
+        )
         db_editor_base = db_view[[col for col in editable_cols if col in db_view.columns]].copy()
         db_editor_key = _scoped_editor_key("database_editor", db_editor_base)
         db_editor_baseline = _refresh_category_pair_derived_columns(db_editor_base, categories_df)
-        db_editor_frame = _apply_data_editor_state(db_editor_base, db_editor_key)
-        db_editor_frame = _refresh_category_pair_derived_columns(db_editor_frame, categories_df)
-        db_edit = st.data_editor(
-            db_editor_frame,
-            use_container_width=True,
-            hide_index=True,
-            height=620,
-            column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True),
-                "status": st.column_config.SelectboxColumn("Status", options=["pending", "reviewed", "excluded"]),
-                "reviewed": st.column_config.CheckboxColumn("Reviewed"),
-                "original_description": st.column_config.TextColumn(
-                    "Full statement description",
-                    disabled=True,
-                    width="large",
-                ),
-                _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
-                    "Category / Subcategory",
-                    options=pair_options,
-                    required=False,
-                    help=(
-                        "Choose a valid category/subcategory pair from Setup. "
-                        "Use 'No subcategory' when the category intentionally has no subcategory."
-                    ),
-                ),
-                "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
-            },
-            key=db_editor_key,
-            on_change=_capture_data_editor_state,
-            args=(db_editor_key,),
-        )
-        db_edit = _apply_data_editor_state(db_edit, db_editor_key)
-        db_edit = _refresh_category_pair_derived_columns(db_edit, categories_df)
+        db_editor_frame = db_editor_baseline.copy()
         original_status = {}
         if "id" in db_view.columns and "status" in db_view.columns:
             original_status = {
                 int(row["id"]): str(row.get("status", "") or "").strip().casefold()
                 for _, row in db_view.dropna(subset=["id"]).iterrows()
             }
-        edited_excluded_ids = []
-        if "id" in db_edit.columns and "status" in db_edit.columns:
-            for _, row in db_edit.dropna(subset=["id"]).iterrows():
-                row_id = int(row["id"])
-                new_status = str(row.get("status", "") or "").strip().casefold()
-                if new_status == "excluded" and original_status.get(row_id) != "excluded":
-                    edited_excluded_ids.append(row_id)
-        confirm_editor_exclude = True
-        if edited_excluded_ids:
-            st.warning(
-                f"{len(edited_excluded_ids)} row(s) were changed to excluded in the editor. "
-                "Confirm before applying because these rows will be hidden from active reports and review."
+        with st.form(f"{db_editor_key}_batch_form", clear_on_submit=False):
+            db_edit = st.data_editor(
+                db_editor_frame,
+                use_container_width=True,
+                hide_index=True,
+                height=620,
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                    "status": st.column_config.SelectboxColumn("Status", options=["pending", "reviewed", "excluded"]),
+                    "reviewed": st.column_config.CheckboxColumn("Reviewed"),
+                    "original_description": st.column_config.TextColumn(
+                        "Full statement description",
+                        disabled=True,
+                        width="large",
+                    ),
+                    _CATEGORY_PAIR_COLUMN: st.column_config.SelectboxColumn(
+                        "Category / Subcategory",
+                        options=pair_options,
+                        required=False,
+                        help=(
+                            "Choose a valid category/subcategory pair from Setup. "
+                            "Use 'No subcategory' when the category intentionally has no subcategory."
+                        ),
+                    ),
+                    "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
+                },
+                key=db_editor_key,
             )
             confirm_editor_exclude = st.checkbox(
-                "Confirm editor status changes to excluded",
+                "Confirm any edited Status changes to excluded",
                 key="database_editor_exclude_confirm",
+                help="Required only when one or more edited rows are being changed to excluded.",
             )
-        if st.button("Apply database edits", type="primary"):
+            submit_database_edits = st.form_submit_button("Apply database edits", type="primary")
+        if submit_database_edits:
+            db_save = _refresh_category_pair_derived_columns(db_edit, categories_df)
+            changed_rows = _changed_transaction_editor_rows(
+                db_editor_baseline,
+                db_save,
+                categories_df,
+                ["category", "subcategory", "reviewed", "status"],
+            )
+            edited_excluded_ids = []
+            if "id" in changed_rows.columns and "status" in changed_rows.columns:
+                for _, row in changed_rows.dropna(subset=["id"]).iterrows():
+                    row_id = int(row["id"])
+                    new_status = str(row.get("status", "") or "").strip().casefold()
+                    if new_status == "excluded" and original_status.get(row_id) != "excluded":
+                        edited_excluded_ids.append(row_id)
             if edited_excluded_ids and not confirm_editor_exclude:
                 st.error("No changes applied. Please confirm excluded status changes first.")
+            elif changed_rows.empty:
+                st.info("No database changes to apply.")
             else:
-                db_save = _apply_data_editor_state(db_edit, db_editor_key)
-                db_save = _refresh_category_pair_derived_columns(db_save, categories_df)
-                changed_rows = _edited_data_editor_rows(db_save, db_editor_key)
-                if changed_rows.empty:
-                    st.info("No database changes to apply.")
-                else:
-                    with st.status("Saving database changes...", expanded=True) as save_status:
-                        save_df = _add_transaction_edit_expectations(
-                            _apply_category_pair_values(changed_rows),
-                            db_editor_baseline,
+                with st.status("Saving database changes...", expanded=True) as save_status:
+                    save_df = _add_transaction_edit_expectations(
+                        _apply_category_pair_values(changed_rows),
+                        db_editor_baseline,
+                    )
+                    try:
+                        count = update_database_rows(save_df)
+                        if count != len(save_df):
+                            raise RuntimeError(
+                                f"Expected to save {len(save_df)} transaction(s), "
+                                f"but the database confirmed {count}."
+                            )
+                        _verify_transaction_edit_save(save_df)
+                    except ConcurrentTransactionEditError as exc:
+                        save_status.update(
+                            label="Save stopped because a transaction changed elsewhere.",
+                            state="error",
                         )
-                        try:
-                            count = update_database_rows(save_df)
-                            if count != len(save_df):
-                                raise RuntimeError(
-                                    f"Expected to save {len(save_df)} transaction(s), "
-                                    f"but the database confirmed {count}."
-                                )
-                            _verify_transaction_edit_save(save_df)
-                        except ConcurrentTransactionEditError as exc:
-                            save_status.update(
-                                label="Save stopped because a transaction changed elsewhere.",
-                                state="error",
-                            )
-                            st.error(str(exc))
-                        except Exception as exc:
-                            save_status.update(label="Database changes were not saved.", state="error")
-                            st.error(f"Could not save database changes: {exc}")
-                        else:
-                            save_status.update(
-                                label=f"Saved {count} database change(s). Refreshing the table...",
-                                state="complete",
-                            )
-                            _clear_data_editor_state(db_editor_key)
-                            st.session_state["database_edit_save_message"] = (
-                                f"Saved {count} database change(s). The refreshed database view is now complete."
-                            )
-                            _clear_transaction_read_caches()
-                            st.rerun()
+                        st.error(str(exc))
+                    except Exception as exc:
+                        save_status.update(label="Database changes were not saved.", state="error")
+                        st.error(f"Could not save database changes: {exc}")
+                    else:
+                        save_status.update(
+                            label=f"Saved {count} database change(s). Refreshing the table...",
+                            state="complete",
+                        )
+                        st.session_state["database_edit_save_message"] = (
+                            f"Saved {count} database change(s). The refreshed database view is now complete."
+                        )
+                        _clear_transaction_read_caches()
+                        st.rerun()
 
         if st.button("Fill missing USD equivalents"):
             missing_before, inferred_missing_rates = visible_missing_usd_details(db_view)

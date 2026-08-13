@@ -1737,6 +1737,23 @@ def _verify_transaction_edit_save(save_df):
                 "The report was not marked as refreshed."
             )
 
+
+def _add_transaction_edit_expectations(save_df, baseline_df):
+    if save_df.empty or baseline_df.empty or "id" not in baseline_df.columns:
+        return save_df.copy()
+    baseline_columns = [
+        column
+        for column in ["id", "category", "subcategory", "reviewed"]
+        if column in baseline_df.columns
+    ]
+    baseline = baseline_df[baseline_columns].copy().rename(columns={
+        "category": "_expected_category",
+        "subcategory": "_expected_subcategory",
+        "reviewed": "_expected_reviewed",
+    })
+    return save_df.merge(baseline, on="id", how="left", validate="one_to_one")
+
+
 def _refresh_category_pair_derived_columns(df, categories_df):
     out = _apply_category_pair_values(df)
     if {"category", "subcategory"}.issubset(out.columns):
@@ -1875,13 +1892,23 @@ def render_category_correction_panel(
                 "reviewed": True,
                 "status": "reviewed",
             }])
-            count = update_database_rows(update_df)
-            if count:
-                st.success("Transaction updated and marked as reviewed.")
-                st.cache_data.clear()
-                st.rerun()
+            update_df = _add_transaction_edit_expectations(
+                update_df,
+                pd.DataFrame([selected_row.to_dict()]),
+            )
+            try:
+                count = update_database_rows(update_df)
+                if count != 1:
+                    raise RuntimeError("The database did not confirm the selected transaction update.")
+                _verify_transaction_edit_save(update_df)
+            except ConcurrentTransactionEditError as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Could not update the selected transaction: {exc}")
             else:
-                st.warning("No transaction was updated.")
+                st.success("Transaction updated and marked as reviewed.")
+                _clear_transaction_read_caches()
+                st.rerun()
 
 
 def render_transaction_exclusion_panel(df, key_prefix):
@@ -5141,6 +5168,7 @@ elif page == "Database":
         st.caption("Use Category / Subcategory to choose only valid combinations from Setup.")
         db_editor_base = db_view[[col for col in editable_cols if col in db_view.columns]].copy()
         db_editor_key = _scoped_editor_key("database_editor", db_editor_base)
+        db_editor_baseline = _refresh_category_pair_derived_columns(db_editor_base, categories_df)
         db_editor_frame = _apply_data_editor_state(db_editor_base, db_editor_key)
         db_editor_frame = _refresh_category_pair_derived_columns(db_editor_frame, categories_df)
         db_edit = st.data_editor(
@@ -5208,17 +5236,38 @@ elif page == "Database":
                     st.info("No database changes to apply.")
                 else:
                     with st.status("Saving database changes...", expanded=True) as save_status:
-                        count = update_database_rows(_apply_category_pair_values(changed_rows))
-                        save_status.update(
-                            label=f"Saved {count} database change(s). Refreshing the table...",
-                            state="complete",
+                        save_df = _add_transaction_edit_expectations(
+                            _apply_category_pair_values(changed_rows),
+                            db_editor_baseline,
                         )
-                    _clear_data_editor_state(db_editor_key)
-                    st.session_state["database_edit_save_message"] = (
-                        f"Saved {count} database change(s). The refreshed database view is now complete."
-                    )
-                    _clear_transaction_read_caches()
-                    st.rerun()
+                        try:
+                            count = update_database_rows(save_df)
+                            if count != len(save_df):
+                                raise RuntimeError(
+                                    f"Expected to save {len(save_df)} transaction(s), "
+                                    f"but the database confirmed {count}."
+                                )
+                            _verify_transaction_edit_save(save_df)
+                        except ConcurrentTransactionEditError as exc:
+                            save_status.update(
+                                label="Save stopped because a transaction changed elsewhere.",
+                                state="error",
+                            )
+                            st.error(str(exc))
+                        except Exception as exc:
+                            save_status.update(label="Database changes were not saved.", state="error")
+                            st.error(f"Could not save database changes: {exc}")
+                        else:
+                            save_status.update(
+                                label=f"Saved {count} database change(s). Refreshing the table...",
+                                state="complete",
+                            )
+                            _clear_data_editor_state(db_editor_key)
+                            st.session_state["database_edit_save_message"] = (
+                                f"Saved {count} database change(s). The refreshed database view is now complete."
+                            )
+                            _clear_transaction_read_caches()
+                            st.rerun()
 
         if st.button("Fill missing USD equivalents"):
             missing_before, inferred_missing_rates = visible_missing_usd_details(db_view)

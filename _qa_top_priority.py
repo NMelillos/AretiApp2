@@ -40,6 +40,7 @@ def _load_report_group_namespace():
         "_edited_data_editor_rows",
         "_capture_data_editor_state",
         "_clear_data_editor_state",
+        "_add_transaction_edit_expectations",
         "_prepare_pending_review_save_rows",
     }
     module = ast.Module(
@@ -362,6 +363,108 @@ def test_concurrent_transaction_edits_are_detected_and_atomic():
     )
 
 
+def test_legacy_whitespace_does_not_create_false_conflict():
+    qa_db = Path(os.environ["ARETI_DB_PATH"])
+    if qa_db.exists():
+        qa_db.unlink()
+    db.init_db()
+    db.add_category("Original", "", "1-family")
+    db.add_category("Corrected", "", "1-family")
+    db.insert_manual_transaction(
+        "2026-08-12",
+        "Legacy whitespace conflict",
+        -10,
+        "Original",
+        "",
+        {
+            "account_name": "QA Account",
+            "bank": "QA Bank",
+            "account_number": "QA1",
+            "currency": "USD",
+            "rate_type": "USD/USD",
+        },
+    )
+    row_id = int(db.get_all_transactions().iloc[0]["id"])
+    conn = db.get_connection()
+    try:
+        conn.cursor().execute(
+            "UPDATE classified_transactions SET category = ?, subcategory = ? WHERE id = ?",
+            ("Original \t", None, row_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    update = pd.DataFrame([{
+        "id": row_id,
+        "category": "Corrected",
+        "subcategory": "",
+        "reviewed": True,
+        "status": "reviewed",
+        "_expected_category": "Original",
+        "_expected_subcategory": "",
+        "_expected_reviewed": True,
+    }])
+    assert_true("legacy whitespace does not trigger false conflict", db.update_database_rows(update) == 1)
+    persisted = db.get_transaction_edit_states([row_id]).iloc[0]
+    assert_true("whitespace-normalized edit persists", persisted["category"] == "Corrected", persisted.to_dict())
+
+
+def test_database_editor_stale_tab_is_blocked_one_hundred_times():
+    qa_db = Path(os.environ["ARETI_DB_PATH"])
+    if qa_db.exists():
+        qa_db.unlink()
+    db.init_db()
+    for category in ["Original", "Current", "Stale"]:
+        db.add_category(category, "", "1-family")
+    add_expectations = _load_report_group_namespace()["_add_transaction_edit_expectations"]
+    for attempt in range(100):
+        db.insert_manual_transaction(
+            "2026-08-12",
+            f"Database stale tab UAT {attempt}",
+            -10 - attempt,
+            "Original",
+            "",
+            {
+                "account_name": "QA Account",
+                "bank": "QA Bank",
+                "account_number": "QA1",
+                "currency": "USD",
+                "rate_type": "USD/USD",
+            },
+        )
+    rows = db.get_all_transactions().sort_values("id").reset_index(drop=True)
+    for attempt, original in rows.iterrows():
+        row_id = int(original["id"])
+        baseline = pd.DataFrame([original.to_dict()])
+        current = add_expectations(pd.DataFrame([{
+            "id": row_id,
+            "category": "Current",
+            "subcategory": "",
+            "reviewed": True,
+            "status": "reviewed",
+        }]), baseline)
+        assert_true(f"current tab edit saves {attempt + 1}", db.update_database_rows(current) == 1)
+        stale = add_expectations(pd.DataFrame([{
+            "id": row_id,
+            "category": "Stale",
+            "subcategory": "",
+            "reviewed": True,
+            "status": "reviewed",
+        }]), baseline)
+        blocked = False
+        try:
+            db.update_database_rows(stale)
+        except db.ConcurrentTransactionEditError:
+            blocked = True
+        assert_true(f"database stale tab is blocked {attempt + 1}", blocked)
+        persisted = db.get_transaction_edit_states([row_id]).iloc[0]
+        assert_true(
+            f"newer manual correction remains authoritative {attempt + 1}",
+            persisted["category"] == "Current",
+            persisted.to_dict(),
+        )
+
+
 def test_report_group_uses_exact_category_subcategory_pair():
     add_report_group_column, report_group_consistency_audit = _load_report_group_helpers()
     categories_df = pd.DataFrame([
@@ -569,13 +672,13 @@ def test_empty_rerun_callback_preserves_edit_fifty_times():
         )
 
 
-def test_no_subcategory_apply_pipeline_fifty_times():
+def test_no_subcategory_apply_pipeline_one_hundred_times():
     qa_db = Path(os.environ["ARETI_DB_PATH"])
     if qa_db.exists():
         qa_db.unlink()
     db.init_db()
     db.add_category("Lifestyle", "", "1-family")
-    for attempt in range(50):
+    for attempt in range(100):
         db.add_category("Lifestyle", f"UAT subcategory {attempt}", "1-family")
         db.insert_manual_transaction(
             "2026-06-01",
@@ -673,8 +776,110 @@ def test_no_subcategory_apply_pipeline_fifty_times():
             edited_rows(context, editor_key).empty,
         )
     print(
-        "PASS: 50-cycle full edit pipeline timing "
+        "PASS: 100-cycle full edit pipeline timing "
         f"| max={max(durations):.6f}s average={sum(durations) / len(durations):.6f}s"
+    )
+
+
+def test_recategorisation_metadata_only_and_pair_variants():
+    qa_db = Path(os.environ["ARETI_DB_PATH"])
+    if qa_db.exists():
+        qa_db.unlink()
+    db.init_db()
+    for category, subcategory, group in [
+        ("Original", "", "0-UNCATEGORISED"),
+        ("Family", "", "1-family"),
+        ("Family", "General", "1-family"),
+        ("Business", "", "2-business"),
+        ("Business", "Software", "2-business"),
+    ]:
+        db.add_category(category, subcategory, group)
+    seed_pairs = [("Original", ""), ("Family", ""), ("Original", ""), ("Original", "")]
+    for index, (seed_category, seed_subcategory) in enumerate(seed_pairs):
+        db.insert_manual_transaction(
+            "2026-08-12",
+            f"Recategorisation metadata variant {index}",
+            -100.25 - index,
+            seed_category,
+            seed_subcategory,
+            {
+                "account_name": "QA Account",
+                "bank": "QA Bank",
+                "account_number": "QA1",
+                "currency": "EUR",
+                "rate_type": "EUR/USD",
+            },
+        )
+    before = db.get_all_transactions().sort_values("id").reset_index(drop=True)
+    financial_columns = [
+        "id", "txn_date", "amount", "currency", "rate_type", "fx_rate", "amount_usd",
+        "account_name", "bank", "account_number", "statement_hash", "row_hash",
+    ]
+    financial_before = before[financial_columns].copy()
+    variants = [
+        ("Family", "", "category-only"),
+        ("Family", "General", "subcategory-only"),
+        ("Business", "Software", "category-and-subcategory"),
+        ("Family", "General", "revert-setup"),
+    ]
+    for index, (category, subcategory, label) in enumerate(variants):
+        original = before.iloc[index]
+        payload = pd.DataFrame([{
+            "id": int(original["id"]),
+            "category": category,
+            "subcategory": subcategory,
+            "reviewed": True,
+            "status": "reviewed",
+            "_expected_category": str(original["category"] or "").strip(),
+            "_expected_subcategory": str(original["subcategory"] or "").strip(),
+            "_expected_reviewed": bool(original["reviewed"]),
+        }])
+        assert_true(f"{label} updates exactly one row", db.update_database_rows(payload) == 1)
+    revert_source = db.get_transaction_edit_states([int(before.iloc[3]["id"])]).iloc[0]
+    revert = pd.DataFrame([{
+        "id": int(revert_source["id"]),
+        "category": "Original",
+        "subcategory": "",
+        "reviewed": True,
+        "status": "reviewed",
+        "_expected_category": str(revert_source["category"] or "").strip(),
+        "_expected_subcategory": str(revert_source["subcategory"] or "").strip(),
+        "_expected_reviewed": bool(revert_source["reviewed"]),
+    }])
+    assert_true("intentional revert updates exactly one row", db.update_database_rows(revert) == 1)
+    after = db.get_all_transactions().sort_values("id").reset_index(drop=True)
+    assert_true("recategorisation creates no transactions", len(after) == len(before), (len(before), len(after)))
+    assert_true("recategorisation deletes no transactions", set(after["id"]) == set(before["id"]))
+    pd.testing.assert_frame_equal(
+        financial_before.reset_index(drop=True),
+        after[financial_columns].reset_index(drop=True),
+        check_dtype=False,
+    )
+    assert_true("recategorisation changes classification metadata only", True)
+    add_report_group_column, _ = _load_report_group_helpers()
+    mapped = add_report_group_column(after, db.get_categories(include_subcategories=True)).set_index("id")
+    expected_groups = ["1-family", "1-family", "2-business", "0-UNCATEGORISED"]
+    assert_true(
+        "reporting groups recalculate for every edit variant",
+        [mapped.loc[int(before.iloc[index]["id"]), "report_group"] for index in range(4)] == expected_groups,
+        mapped[["category", "subcategory", "report_group"]].reset_index().to_dict("records"),
+    )
+    prepared, _, _, _ = reporting._prepare_report_data(
+        after,
+        db.get_categories(include_subcategories=True),
+        include_all_valid=True,
+    )
+    report_pairs = prepared.set_index("id")[["category", "subcategory", "report_group"]]
+    assert_true(
+        "Database and Executive report use the same committed classifications",
+        all(
+            str(report_pairs.loc[int(row["id"]), "category"] or "").strip()
+            == str(row["category"] or "").strip()
+            and str(report_pairs.loc[int(row["id"]), "subcategory"] or "").strip()
+            == str(row["subcategory"] or "").strip()
+            for _, row in after.iterrows()
+        ),
+        report_pairs.reset_index().to_dict("records"),
     )
 
 
@@ -909,13 +1114,16 @@ def main():
     test_database_category_enforcement()
     test_category_save_shapes_persist()
     test_concurrent_transaction_edits_are_detected_and_atomic()
+    test_legacy_whitespace_does_not_create_false_conflict()
+    test_database_editor_stale_tab_is_blocked_one_hundred_times()
     test_report_group_uses_exact_category_subcategory_pair()
     test_editor_refresh_updates_derived_report_group_before_save()
     test_captured_editor_state_is_used_before_save()
     test_raw_category_subcategory_edits_sync_pair_before_save()
     test_only_changed_editor_rows_are_saved_and_state_is_cleared()
     test_empty_rerun_callback_preserves_edit_fifty_times()
-    test_no_subcategory_apply_pipeline_fifty_times()
+    test_no_subcategory_apply_pipeline_one_hundred_times()
+    test_recategorisation_metadata_only_and_pair_variants()
     test_pending_review_exact_workflow_fifty_times()
     test_pending_review_thirty_row_batch_is_atomic()
     test_pending_review_stale_tab_cannot_partially_overwrite()

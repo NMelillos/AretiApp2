@@ -2996,10 +2996,20 @@ def update_database_rows(df):
         where_parts = ["id = ?"]
         if expected_category is not None:
             where_parts.append("COALESCE(category, '') = ?")
-            params.append(expected_category)
+            stored_category = existing_row.get("category") or ""
+            params.append(
+                stored_category
+                if _clean(stored_category) == expected_category
+                else expected_category
+            )
         if expected_subcategory is not None:
             where_parts.append("COALESCE(subcategory, '') = ?")
-            params.append(expected_subcategory)
+            stored_subcategory = existing_row.get("subcategory") or ""
+            params.append(
+                stored_subcategory
+                if _clean(stored_subcategory) == expected_subcategory
+                else expected_subcategory
+            )
         if expected_reviewed is not None:
             where_parts.append("COALESCE(reviewed, 0) = ?")
             params.append(expected_reviewed)

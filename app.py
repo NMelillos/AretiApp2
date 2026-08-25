@@ -3238,7 +3238,7 @@ def _render_executive_transactions(
             ("Category", selected_category),
             ("Subcategory", selected_subcategory or "No subcategory"),
         ])
-        render_wrapped_descriptions(detail_view, expanded=True)
+        render_wrapped_descriptions(detail_view, expanded=False)
     if read_only:
         st.dataframe(visible, use_container_width=True, hide_index=True, height=min(520, 130 + max(len(visible), 4) * 34))
     else:
@@ -3247,10 +3247,10 @@ def _render_executive_transactions(
             categories,
             "executive_detail_single",
             "Categorise one transaction with filtered subcategories",
-            expanded=True,
-            inline=True,
+            expanded=False,
+            inline=False,
         )
-        render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=True, inline=True)
+        render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=False, inline=False)
         st.caption(
             "Make all Category / Subcategory changes below, then apply them together. "
             "The report will not refresh between individual edits; Reporting Group is recalculated on save."
@@ -5044,10 +5044,10 @@ elif page == "Pending Review":
             categories,
             "pending_single",
             "Categorise one pending transaction with filtered subcategories",
-            expanded=True,
-            inline=True,
+            expanded=False,
+            inline=False,
         )
-        render_bulk_categorise_panel(pending_view, categories, "pending", expanded=True, inline=True)
+        render_bulk_categorise_panel(pending_view, categories, "pending", expanded=False, inline=False)
         st.caption(
             "Make all Category / Subcategory changes and Reviewed selections below, then save them together. "
             "The table will not refresh between individual edits."
@@ -5185,10 +5185,10 @@ elif page == "Database":
             categories,
             "database_single",
             "Categorise one database transaction with filtered subcategories",
-            expanded=True,
-            inline=True,
+            expanded=False,
+            inline=False,
         )
-        render_bulk_categorise_panel(db_view, categories, "database", expanded=True, inline=True)
+        render_bulk_categorise_panel(db_view, categories, "database", expanded=False, inline=False)
         render_transaction_split_panel(db_view, categories_df, categories, "database")
         render_transaction_exclusion_panel(db_view, "database")
         db_view = _with_category_pair_column(db_view)

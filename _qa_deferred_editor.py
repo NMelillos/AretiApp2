@@ -1,4 +1,5 @@
 import ast
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -99,6 +100,25 @@ check(
 check(
     "key=db_editor_key, on_change=_capture_data_editor_state" not in app_compact,
     "Database editor has no per-dropdown callback",
+)
+check(
+    'render_wrapped_descriptions(detail_view, expanded=False)' in APP_SOURCE,
+    "Executive descriptions stay collapsed before batch editing",
+)
+check(
+    len(re.findall(r"render_category_correction_panel\([\s\S]*?expanded=False,\s*inline=False,\s*\)", APP_SOURCE)) >= 3,
+    "Single-row correction tools stay optional on all three editing surfaces",
+)
+check(
+    all(
+        call in APP_SOURCE
+        for call in [
+            'render_bulk_categorise_panel(detail_view, categories, "executive_detail", expanded=False, inline=False)',
+            'render_bulk_categorise_panel(pending_view, categories, "pending", expanded=False, inline=False)',
+            'render_bulk_categorise_panel(db_view, categories, "database", expanded=False, inline=False)',
+        ]
+    ),
+    "Bulk tools stay optional so the deferred batch grid is the primary workflow",
 )
 
 print("Deferred editor QA passed.")

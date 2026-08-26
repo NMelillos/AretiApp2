@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 import pandas as pd
@@ -114,6 +115,43 @@ def main():
     assert_close("split children counted once", sum(split_monthly["Income"].values()), 1000)
 
     source = Path("app.py").read_text(encoding="utf-8")
+    source_tree = ast.parse(source)
+    target_message_node = next(
+        node
+        for node in source_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_income_charity_target_message"
+    )
+    target_namespace = {}
+    exec(compile(ast.Module(body=[target_message_node], type_ignores=[]), "app.py", "exec"), target_namespace)
+    target_message = target_namespace["_income_charity_target_message"]
+    assert_equal(
+        "9.99 percent is below target",
+        target_message(9.99),
+        "Charity falls below the Family’s target of 10%.",
+    )
+    assert_equal(
+        "10 percent is exactly on target",
+        target_message(10.00),
+        "Charity is meeting the Family’s target of 10%.",
+    )
+    assert_equal(
+        "10.01 percent is above target",
+        target_message(10.01),
+        "Charity is exceeding the Family’s target of 10%.",
+    )
+    assert_equal(
+        "zero percent is below target",
+        target_message(0),
+        "Charity falls below the Family’s target of 10%.",
+    )
+    assert_equal("undefined percentage has no target message", target_message(None), None)
+    production_percentage = income_charity_percentage(187548.01, -38513.07)
+    assert_close("production-derived percentage", production_percentage, 20.535, tolerance=0.001)
+    assert_equal(
+        "production-derived percentage exceeds target",
+        target_message(production_percentage),
+        "Charity is exceeding the Family’s target of 10%.",
+    )
     item19_start = source.index("def _render_income_charity_section")
     third_start = source.index("def render_third_link_report")
     item19_source = source[item19_start:third_start]
@@ -131,6 +169,11 @@ def main():
     assert_equal(
         "Item 19 has explicit close control",
         'f"Close {selected_type} analysis"' in item19_source,
+        True,
+    )
+    assert_equal(
+        "Item 19 target uses the existing verified percentage",
+        "_income_charity_target_message(charity_income_pct)" in item19_source,
         True,
     )
     assert_equal(

@@ -4188,6 +4188,17 @@ def _render_executive_completeness_check(
             st.dataframe(setup_issue_frame, use_container_width=True, hide_index=True)
 
 
+def _income_charity_target_message(percentage):
+    if percentage is None:
+        return None
+    percentage = float(percentage)
+    if abs(percentage - 10.0) <= 1e-9:
+        return "Charity is meeting the Family’s target of 10%."
+    if percentage > 10.0:
+        return "Charity is exceeding the Family’s target of 10%."
+    return "Charity falls below the Family’s target of 10%."
+
+
 def _render_income_charity_section(report_rows, months, month_labels, show_all_months=False):
     from reporting import income_charity_month_values, income_charity_percentage
 
@@ -4242,6 +4253,9 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
         ("Charity / Income", _percent(charity_income_pct)),
         (f"{selected_type} transactions", len(type_rows)),
     ])
+    target_message = _income_charity_target_message(charity_income_pct)
+    if target_message:
+        st.caption(target_message)
     st.caption(
         "This analysis is separate from the existing Reporting Group totals. "
         "Charity / Income compares the absolute Charity amount with the absolute Income amount."

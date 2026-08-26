@@ -12,6 +12,11 @@ from db import filter_financially_active_transactions
 REPORT_GROUP_COLUMN = "report_group"
 UNASSIGNED_GROUP = "Unassigned reporting group"
 
+INCOME_CHARITY_SPECIAL_INCOME = {
+    ("walt disney house tour income", "income"): "Woking Way LLC",
+    ("cypress apartments-tb tribute", "income"): "TB Tribute Ltd",
+}
+
 
 def _clean_text(value):
     if pd.isna(value):
@@ -108,6 +113,73 @@ def _assign_report_groups(tx, categories):
         groups.append(exact_group_map.get(pair_key) or category_group_map.get(category_key, ""))
     tx["report_group"] = pd.Series(groups, index=tx.index).replace("", UNASSIGNED_GROUP)
     return tx
+
+
+def income_charity_scope(report_rows):
+    """Return Item 19 rows without changing the normal report dataset."""
+    scoped = report_rows.copy()
+    if scoped.empty:
+        scoped["income_charity_type"] = pd.Series(dtype=str)
+        return scoped
+
+    category = scoped.get("category", pd.Series("", index=scoped.index)).fillna("").astype(str).str.strip()
+    subcategory = scoped.get("subcategory", pd.Series("", index=scoped.index)).fillna("").astype(str).str.strip()
+    report_group = scoped.get("report_group", pd.Series("", index=scoped.index)).fillna("").astype(str).str.strip()
+    category_key = category.str.casefold()
+    subcategory_key = subcategory.str.casefold()
+
+    row_type = pd.Series("", index=scoped.index, dtype=str)
+    row_type.loc[category_key.eq("charity")] = "Charity"
+    row_type.loc[category_key.eq("income")] = "Income"
+    for (special_category, special_subcategory), expected_group in INCOME_CHARITY_SPECIAL_INCOME.items():
+        special_mask = (
+            category_key.eq(special_category)
+            & subcategory_key.eq(special_subcategory)
+            & report_group.str.casefold().eq(expected_group.casefold())
+        )
+        row_type.loc[special_mask] = "Income"
+
+    scoped["income_charity_type"] = row_type
+    return scoped[scoped["income_charity_type"].ne("")].copy()
+
+
+def income_charity_month_values(report_rows, months):
+    """Build signed monthly and cumulative Item 19 values for Income and Charity."""
+    scoped = income_charity_scope(report_rows)
+    if "month" not in scoped.columns and "txn_date" in scoped.columns:
+        scoped["month"] = pd.to_datetime(scoped["txn_date"], errors="coerce").dt.to_period("M")
+    amount_column = next(
+        (column for column in ["report_amount", "amount_usd", "amount", "expense_usd"] if column in scoped.columns),
+        None,
+    )
+    amounts = pd.to_numeric(
+        scoped.get(amount_column, pd.Series(dtype=float)),
+        errors="coerce",
+    ).fillna(0)
+    month_series = scoped.get("month", pd.Series(index=scoped.index, dtype=object))
+
+    monthly = {}
+    cumulative = {}
+    for row_type in ["Income", "Charity"]:
+        type_mask = scoped.get("income_charity_type", pd.Series("", index=scoped.index)).eq(row_type)
+        values = {
+            month: float(amounts.loc[type_mask & month_series.eq(month)].sum())
+            for month in months
+        }
+        monthly[row_type] = values
+        running_total = 0.0
+        cumulative[row_type] = {}
+        for month in months:
+            running_total += values[month]
+            cumulative[row_type][month] = running_total
+    return scoped, monthly, cumulative
+
+
+def income_charity_percentage(income_total, charity_total):
+    income_total = float(income_total or 0)
+    if abs(income_total) <= 0.005:
+        return None
+    return abs(float(charity_total or 0)) / abs(income_total) * 100
 
 
 def _month_context(expenses):

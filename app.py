@@ -4188,6 +4188,139 @@ def _render_executive_completeness_check(
             st.dataframe(setup_issue_frame, use_container_width=True, hide_index=True)
 
 
+def _render_income_charity_section(report_rows, months, month_labels):
+    from reporting import income_charity_month_values, income_charity_percentage
+
+    scoped, monthly, cumulative = income_charity_month_values(report_rows, months)
+    income_total = float(sum(monthly["Income"].values()))
+    charity_total = float(sum(monthly["Charity"].values()))
+    charity_income_pct = income_charity_percentage(income_total, charity_total)
+
+    st.markdown("### Income and Charity")
+    render_summary_strip([
+        ("Income total", _money(income_total)),
+        ("Charity total", _money(charity_total)),
+        ("Charity / Income", _percent(charity_income_pct)),
+        ("Transactions", len(scoped[scoped.get("month", pd.Series(index=scoped.index, dtype=object)).isin(months)])),
+    ])
+    st.caption(
+        "Income and Charity are shown separately for analysis and do not change the existing Reporting Group totals. "
+        "The percentage compares the absolute Charity amount with the absolute Income amount."
+    )
+
+    monthly_frame = pd.DataFrame([
+        {"Type": row_type, **{month_labels[month]: values[month] for month in months}}
+        for row_type, values in monthly.items()
+    ])
+    cumulative_frame = pd.DataFrame([
+        {"Type": row_type, **{month_labels[month]: values[month] for month in months}}
+        for row_type, values in cumulative.items()
+    ])
+    st.markdown("#### Monthly values")
+    st.dataframe(monthly_frame, use_container_width=True, hide_index=True)
+    st.markdown("#### Cumulative from January")
+    st.dataframe(cumulative_frame, use_container_width=True, hide_index=True)
+
+    period_rows = scoped[
+        scoped.get("month", pd.Series(index=scoped.index, dtype=object)).isin(months)
+    ].copy()
+    if period_rows.empty:
+        st.info("No Income or Charity transactions exist in the current report period.")
+        return
+
+    available_types = [
+        row_type
+        for row_type in ["Income", "Charity"]
+        if period_rows["income_charity_type"].eq(row_type).any()
+    ]
+    selected_type = st.selectbox(
+        "Income or Charity",
+        available_types,
+        key="income_charity_type",
+    )
+    type_rows = period_rows[period_rows["income_charity_type"].eq(selected_type)].copy()
+    type_rows["Amount USD"] = _executive_signed_amount_series(type_rows).values
+    category_summary = (
+        type_rows.groupby(["category", "report_group"], dropna=False)
+        .agg(Transactions=("id", "count"), **{"Total USD": ("Amount USD", "sum")})
+        .reset_index()
+        .rename(columns={"category": "Category", "report_group": "Reporting group"})
+    )
+    st.markdown("#### Categories")
+    st.dataframe(category_summary, use_container_width=True, hide_index=True)
+    categories = _ordered_text_values(type_rows.get("category", pd.Series(dtype=str)).tolist())
+    if not categories:
+        st.info(f"No {selected_type} transactions exist in the current report period.")
+        return
+    selected_category = st.selectbox(
+        "Category",
+        categories,
+        key=f"income_charity_category_{selected_type.casefold()}",
+    )
+    category_rows = type_rows[
+        type_rows["category"].fillna("").astype(str).str.strip().eq(selected_category)
+    ].copy()
+    subcategory_summary = (
+        category_rows.assign(
+            _subcategory_label=category_rows["subcategory"].fillna("").astype(str).str.strip().replace("", "No subcategory")
+        )
+        .groupby("_subcategory_label", dropna=False)
+        .agg(Transactions=("id", "count"), **{"Total USD": ("Amount USD", "sum")})
+        .reset_index()
+        .rename(columns={"_subcategory_label": "Subcategory"})
+    )
+    st.markdown("#### Subcategories")
+    st.dataframe(subcategory_summary, use_container_width=True, hide_index=True)
+    subcategories = sorted(
+        category_rows.get("subcategory", pd.Series(dtype=str)).fillna("").astype(str).str.strip().unique().tolist(),
+        key=lambda value: (value == "", value.casefold()),
+    )
+    subcategory_options = [value or "No subcategory" for value in subcategories]
+    selected_subcategory_label = st.selectbox(
+        "Subcategory",
+        subcategory_options,
+        key=(
+            "income_charity_subcategory_"
+            f"{selected_type.casefold()}_{hashlib.sha256(selected_category.encode('utf-8')).hexdigest()[:12]}"
+        ),
+    )
+    selected_subcategory = "" if selected_subcategory_label == "No subcategory" else selected_subcategory_label
+    transaction_rows = category_rows[
+        category_rows["subcategory"].fillna("").astype(str).str.strip().eq(selected_subcategory)
+    ].copy()
+    transaction_rows["txn_date"] = pd.to_datetime(transaction_rows["txn_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    transaction_rows["Amount USD"] = _executive_signed_amount_series(transaction_rows).values
+    transaction_rows = transaction_rows.rename(columns={
+        "txn_date": "Date",
+        "amount": "Statement amount",
+        "currency": "Currency",
+        "original_description": "Full statement description",
+        "category": "Category",
+        "subcategory": "Subcategory",
+        "report_group": "Reporting group",
+        "account_name": "Account",
+        "id": "ID",
+    })
+    detail_columns = [
+        "Date",
+        "Amount USD",
+        "Statement amount",
+        "Currency",
+        "Category",
+        "Subcategory",
+        "Reporting group",
+        "Full statement description",
+        "Account",
+        "ID",
+    ]
+    st.markdown("#### Transactions")
+    st.dataframe(
+        transaction_rows[[column for column in detail_columns if column in transaction_rows.columns]],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def render_executive_report():
     from reporting import _prepare_report_data
 
@@ -4230,6 +4363,7 @@ def render_executive_report():
         include_all_valid=True,
     )
     all_report_groups = _executive_report_group_options(categories_df, expenses)
+    show_income_charity = False
     if shared_report:
         visible_report_groups = _executive_default_visible_groups(all_report_groups)
         if not visible_report_groups:
@@ -4250,6 +4384,7 @@ def render_executive_report():
         )
         if report_mode.startswith("Areti"):
             visible_report_groups = all_report_groups
+            show_income_charity = True
         else:
             visible_report_groups = _render_executive_group_visibility_control(all_report_groups)
 
@@ -4283,6 +4418,8 @@ def render_executive_report():
         categories_df=categories_df,
         show_all_months=show_all_months,
     )
+    if show_income_charity:
+        _render_income_charity_section(expenses, month_window, month_labels)
 
 
 def render_third_link_report():

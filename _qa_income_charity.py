@@ -114,7 +114,25 @@ def main():
     assert_close("split children counted once", sum(split_monthly["Income"].values()), 1000)
 
     source = Path("app.py").read_text(encoding="utf-8")
+    item19_start = source.index("def _render_income_charity_section")
     third_start = source.index("def render_third_link_report")
+    item19_source = source[item19_start:third_start]
+    assert_equal(
+        "Item 19 uses native report rows",
+        '_render_executive_click_rows(\n        "4. Income and Charity"' in item19_source,
+        True,
+    )
+    assert_equal(
+        "Item 19 detail is hidden until a row is selected",
+        'if selected_type not in {"Income", "Charity"}:' in item19_source
+        and "return" in item19_source,
+        True,
+    )
+    assert_equal(
+        "Item 19 has explicit close control",
+        'f"Close {selected_type} analysis"' in item19_source,
+        True,
+    )
     assert_equal(
         "Item 19 is absent from third report",
         "_render_income_charity_section(" in source[third_start:],

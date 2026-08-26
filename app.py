@@ -4188,57 +4188,82 @@ def _render_executive_completeness_check(
             st.dataframe(setup_issue_frame, use_container_width=True, hide_index=True)
 
 
-def _render_income_charity_section(report_rows, months, month_labels):
+def _render_income_charity_section(report_rows, months, month_labels, show_all_months=False):
     from reporting import income_charity_month_values, income_charity_percentage
 
     scoped, monthly, cumulative = income_charity_month_values(report_rows, months)
     income_total = float(sum(monthly["Income"].values()))
     charity_total = float(sum(monthly["Charity"].values()))
     charity_income_pct = income_charity_percentage(income_total, charity_total)
+    period_rows = scoped[
+        scoped.get("month", pd.Series(index=scoped.index, dtype=object)).isin(months)
+    ].copy()
+    denominator = abs(income_total) + abs(charity_total)
+    summary_rows = []
+    for row_type in ["Income", "Charity"]:
+        metrics = _executive_metric_values_from_month_values(
+            monthly[row_type],
+            months,
+            denominator,
+        )
+        metrics["label"] = row_type
+        metrics["value"] = row_type
+        summary_rows.append(metrics)
 
-    st.markdown("### Income and Charity")
+    _render_executive_click_rows(
+        "4. Income and Charity",
+        summary_rows,
+        "income_charity",
+        months,
+        month_labels,
+        show_all_months=show_all_months,
+        show_zero_explanations=False,
+    )
+
+    selected_type = st.session_state.get("executive_income_charity")
+    if selected_type not in {"Income", "Charity"}:
+        st.session_state.pop("executive_income_charity", None)
+        return
+
+    close_col, _ = st.columns([1, 5])
+    with close_col:
+        if st.button(
+            f"Close {selected_type} analysis",
+            key="close_income_charity_analysis",
+            use_container_width=True,
+        ):
+            st.session_state.pop("executive_income_charity", None)
+            st.rerun()
+
+    type_rows = period_rows[period_rows["income_charity_type"].eq(selected_type)].copy()
     render_summary_strip([
         ("Income total", _money(income_total)),
         ("Charity total", _money(charity_total)),
         ("Charity / Income", _percent(charity_income_pct)),
-        ("Transactions", len(scoped[scoped.get("month", pd.Series(index=scoped.index, dtype=object)).isin(months)])),
+        (f"{selected_type} transactions", len(type_rows)),
     ])
     st.caption(
-        "Income and Charity are shown separately for analysis and do not change the existing Reporting Group totals. "
-        "The percentage compares the absolute Charity amount with the absolute Income amount."
+        "This analysis is separate from the existing Reporting Group totals. "
+        "Charity / Income compares the absolute Charity amount with the absolute Income amount."
     )
 
-    monthly_frame = pd.DataFrame([
-        {"Type": row_type, **{month_labels[month]: values[month] for month in months}}
-        for row_type, values in monthly.items()
-    ])
-    cumulative_frame = pd.DataFrame([
-        {"Type": row_type, **{month_labels[month]: values[month] for month in months}}
-        for row_type, values in cumulative.items()
-    ])
+    monthly_frame = pd.DataFrame([{
+        "Type": selected_type,
+        **{month_labels[month]: monthly[selected_type][month] for month in months},
+    }])
+    cumulative_frame = pd.DataFrame([{
+        "Type": selected_type,
+        **{month_labels[month]: cumulative[selected_type][month] for month in months},
+    }])
     st.markdown("#### Monthly values")
     st.dataframe(monthly_frame, use_container_width=True, hide_index=True)
     st.markdown("#### Cumulative from January")
     st.dataframe(cumulative_frame, use_container_width=True, hide_index=True)
 
-    period_rows = scoped[
-        scoped.get("month", pd.Series(index=scoped.index, dtype=object)).isin(months)
-    ].copy()
-    if period_rows.empty:
-        st.info("No Income or Charity transactions exist in the current report period.")
+    if type_rows.empty:
+        st.info(f"No {selected_type} transactions exist in the current report period.")
         return
 
-    available_types = [
-        row_type
-        for row_type in ["Income", "Charity"]
-        if period_rows["income_charity_type"].eq(row_type).any()
-    ]
-    selected_type = st.selectbox(
-        "Income or Charity",
-        available_types,
-        key="income_charity_type",
-    )
-    type_rows = period_rows[period_rows["income_charity_type"].eq(selected_type)].copy()
     type_rows["Amount USD"] = _executive_signed_amount_series(type_rows).values
     category_summary = (
         type_rows.groupby(["category", "report_group"], dropna=False)
@@ -4419,7 +4444,12 @@ def render_executive_report():
         show_all_months=show_all_months,
     )
     if show_income_charity:
-        _render_income_charity_section(expenses, month_window, month_labels)
+        _render_income_charity_section(
+            expenses,
+            month_window,
+            month_labels,
+            show_all_months=show_all_months,
+        )
 
 
 def render_third_link_report():

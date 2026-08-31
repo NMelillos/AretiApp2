@@ -2748,17 +2748,12 @@ def save_reviewed_rows(df):
     try:
         for _, row in df.iterrows():
             reviewed = bool(row.get("reviewed", False))
-            if not reviewed:
-                continue
             tx_id = int(row["id"])
             category = _clean(row.get("category"))
             subcategory = _clean(row.get("subcategory"))
             parent_category = subcategory_parent_lookup.get(subcategory.casefold()) if subcategory else None
             if parent_category:
                 category = parent_category
-            if not category or not _category_pair_exists(cur, category, subcategory):
-                label = category if not subcategory else f"{category} / {subcategory}"
-                raise ValueError(f"Invalid Category / Subcategory for transaction {tx_id}: {label or 'blank'}.")
 
             cur.execute("""
                 SELECT category, subcategory, reviewed, status,
@@ -2779,6 +2774,15 @@ def save_reviewed_rows(df):
             before_amount_usd = _float_or_none(before[9])
             currency = _clean(before[10]).upper()
             before_fx_rate = _float_or_none(before[11])
+            classification_changed = (
+                _clean(category) != _clean(before_category)
+                or _clean(subcategory) != _clean(before_subcategory)
+            )
+            if (
+                reviewed or classification_changed
+            ) and (not category or not _category_pair_exists(cur, category, subcategory)):
+                label = category if not subcategory else f"{category} / {subcategory}"
+                raise ValueError(f"Invalid Category / Subcategory for transaction {tx_id}: {label or 'blank'}.")
 
             expected_category = row.get("_expected_category")
             expected_subcategory = row.get("_expected_subcategory")
@@ -2806,6 +2810,7 @@ def save_reviewed_rows(df):
             amount_supplied = "amount" in row.index
             amount = before_amount
             amount_usd = before_amount_usd
+            amount_changed = False
             if amount_supplied:
                 amount = _float_or_none(row.get("amount"))
                 if (
@@ -2859,33 +2864,61 @@ def save_reviewed_rows(df):
                             "Its Amount was not changed."
                         )
 
+            if not reviewed and not amount_changed and not classification_changed:
+                continue
+            next_status = "reviewed" if reviewed else before_status or "pending"
+            reviewed_value = int(reviewed)
+
             cur.execute("""
                 UPDATE classified_transactions
-                SET category = ?, subcategory = ?, reviewed = 1, status = 'reviewed', reviewed_at = ?,
+                SET category = ?, subcategory = ?, reviewed = ?, status = ?,
+                    reviewed_at = CASE WHEN ? = 1 THEN ? ELSE reviewed_at END,
                     amount = ?, amount_usd = ?
                 WHERE id = ?
-            """, (category, subcategory, now, amount, amount_usd, tx_id))
+            """, (
+                category,
+                subcategory,
+                reviewed_value,
+                next_status,
+                reviewed_value,
+                now,
+                amount,
+                amount_usd,
+                tx_id,
+            ))
             if cur.rowcount != 1:
                 raise RuntimeError(f"Transaction {tx_id} was not updated.")
             saved += 1
-            expected[tx_id] = (category, subcategory, amount, amount_usd)
+            expected[tx_id] = (
+                category,
+                subcategory,
+                reviewed_value,
+                next_status,
+                amount,
+                amount_usd,
+            )
             _audit_transaction_change(cur, tx_id, "category", before_category, category, "pending_review_save")
             _audit_transaction_change(cur, tx_id, "subcategory", before_subcategory, subcategory, "pending_review_save")
-            _audit_transaction_change(cur, tx_id, "reviewed", before_reviewed, 1, "pending_review_save")
-            _audit_transaction_change(cur, tx_id, "status", before_status, "reviewed", "pending_review_save")
+            _audit_transaction_change(
+                cur, tx_id, "reviewed", before_reviewed, reviewed_value, "pending_review_save"
+            )
+            _audit_transaction_change(
+                cur, tx_id, "status", before_status, next_status, "pending_review_save"
+            )
             _audit_transaction_change(cur, tx_id, "amount", before_amount, amount, "pending_review_save")
             _audit_transaction_change(cur, tx_id, "amount_usd", before_amount_usd, amount_usd, "pending_review_save")
             if amount_supplied:
                 df.loc[df["id"].astype(int) == tx_id, "_saved_amount_usd"] = amount_usd
-            _remember_transaction_with_cursor(
-                cur,
-                before[4] or "",
-                before[5] or "",
-                before[6] or "",
-                before[7] or "",
-                category,
-                subcategory,
-            )
+            if reviewed:
+                _remember_transaction_with_cursor(
+                    cur,
+                    before[4] or "",
+                    before[5] or "",
+                    before[6] or "",
+                    before[7] or "",
+                    category,
+                    subcategory,
+                )
 
         if expected:
             placeholders = ",".join("?" for _ in expected)
@@ -2895,14 +2928,21 @@ def save_reviewed_rows(df):
                 WHERE id IN ({placeholders})
             """, list(expected))
             verified = {int(stored[0]): stored for stored in cur.fetchall()}
-            for tx_id, (category, subcategory, amount, amount_usd) in expected.items():
+            for tx_id, (
+                category,
+                subcategory,
+                reviewed_value,
+                status,
+                amount,
+                amount_usd,
+            ) in expected.items():
                 actual = verified.get(tx_id)
                 if (
                     actual is None
                     or _clean(actual[1]) != category
                     or _clean(actual[2]) != subcategory
-                    or int(actual[3] or 0) != 1
-                    or _clean(actual[4]).casefold() != "reviewed"
+                    or int(actual[3] or 0) != reviewed_value
+                    or _clean(actual[4]).casefold() != _clean(status).casefold()
                     or not _optional_float_equal(actual[5], amount)
                     or not _optional_float_equal(actual[6], amount_usd)
                 ):

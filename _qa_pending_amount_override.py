@@ -61,10 +61,19 @@ def reset_db():
         path.unlink()
     db.init_db()
     db.add_category("Income", "Refund", "1-income")
+    db.add_category("Income", "Amazon", "1-income")
     db.add_category("Business", "Software", "2-business")
+    db.add_category("Business", "Services", "2-business")
 
 
-def insert_pending(amount, currency="USD", fx_rate=1.0, description="AMAZON incoming payment"):
+def insert_pending(
+    amount,
+    currency="USD",
+    fx_rate=1.0,
+    description="AMAZON incoming payment",
+    category="Income",
+    subcategory="Refund",
+):
     conn = db.get_connection()
     try:
         cur = conn.cursor()
@@ -88,7 +97,8 @@ def insert_pending(amount, currency="USD", fx_rate=1.0, description="AMAZON inco
                 f"statement-{description}", f"{description}.csv", f"row-{description}",
                 "2026-08-20", description, description.lower(), amount, currency,
                 "USD/USD" if currency == "USD" else f"{currency}/USD", fx_rate,
-                round(amount * fx_rate, 2), "QA", "QA Bank", "QA-1", "Income", "Refund",
+                round(amount * fx_rate, 2) if fx_rate is not None else None,
+                "QA", "QA Bank", "QA-1", category, subcategory,
                 "2026-08-31T10:00:00",
             ),
         )
@@ -109,14 +119,112 @@ def row(row_id):
         conn.close()
 
 
-def prepared_save(row_id, new_amount):
+def prepared_save(row_id, new_amount, reviewed=True, category_pair="Income / Refund"):
     prepare = load_prepare_function()
     original = pd.DataFrame([row(row_id)])
     edited = original.copy()
     edited["amount"] = new_amount
-    edited["reviewed"] = True
-    edited["category_subcategory"] = "Income / Refund"
+    edited["reviewed"] = reviewed
+    edited["category_subcategory"] = category_pair
     return prepare(original, edited, db.get_categories(include_subcategories=True))
+
+
+def test_exact_production_bug_one_hundred_cycles():
+    reset_db()
+    durations = []
+    first_stale_payload = None
+    first_id = None
+    for attempt in range(100):
+        row_id = insert_pending(
+            -2.37,
+            description=f"INWARD QA {attempt:03d} by AMAZON ASIA 2.37",
+            category="Income",
+            subcategory="Amazon",
+        )
+        if attempt == 0:
+            conn = db.get_connection()
+            try:
+                conn.execute("UPDATE classified_transactions SET id = 5010 WHERE id = ?", (row_id,))
+                conn.commit()
+                row_id = 5010
+            finally:
+                conn.close()
+            first_id = row_id
+        started = __import__("time").perf_counter()
+        save_df = prepared_save(
+            row_id,
+            2.37,
+            reviewed=False,
+            category_pair="Income / Amazon",
+        )
+        check(f"amount-only pending row selected {attempt + 1}", len(save_df) == 1)
+        check(f"amount present in payload {attempt + 1}", float(save_df.iloc[0]["amount"]) == 2.37)
+        check(f"Reviewed remains false in payload {attempt + 1}", not bool(save_df.iloc[0]["reviewed"]))
+        if attempt == 0:
+            first_stale_payload = save_df.copy()
+        check(f"exactly one SQL row updated {attempt + 1}", db.save_reviewed_rows(save_df) == 1)
+        persisted = row(row_id)
+        durations.append(__import__("time").perf_counter() - started)
+        check(f"fresh DB amount is positive {attempt + 1}", float(persisted["amount"]) == 2.37)
+        check(f"fresh DB USD amount is positive {attempt + 1}", float(persisted["amount_usd"]) == 2.37)
+        check(f"fresh DB Reviewed remains false {attempt + 1}", not bool(persisted["reviewed"]))
+        check(f"fresh DB status remains pending {attempt + 1}", persisted["status"] == "pending")
+        check(f"category remains Income {attempt + 1}", persisted["category"] == "Income")
+        check(f"subcategory remains Amazon {attempt + 1}", persisted["subcategory"] == "Amazon")
+        pending_reload = db.get_pending_transactions()
+        reloaded = pending_reload[pending_reload["id"].astype(int) == row_id].iloc[0]
+        check(f"fresh Pending Review reload shows positive amount {attempt + 1}", float(reloaded["amount"]) == 2.37)
+
+    stale_rejected = False
+    try:
+        db.save_reviewed_rows(first_stale_payload)
+    except db.ConcurrentTransactionEditError:
+        stale_rejected = True
+    check("repeated stale Apply is rejected", stale_rejected)
+    check("repeated Apply preserves committed amount", float(row(first_id)["amount"]) == 2.37)
+    conn = db.get_connection()
+    try:
+        amount_audits = int(conn.execute(
+            "SELECT COUNT(*) FROM transaction_change_log WHERE field_name = 'amount'"
+        ).fetchone()[0])
+        total_rows = int(conn.execute("SELECT COUNT(*) FROM classified_transactions").fetchone()[0])
+    finally:
+        conn.close()
+    check("one committed amount audit per corrected row", amount_audits == 100)
+    check("no transaction created or deleted", total_rows == 100)
+    print(
+        "PASS: 100-cycle exact production regression timing "
+        f"| max={max(durations):.6f}s average={sum(durations) / len(durations):.6f}s"
+    )
+
+
+def test_atomic_pending_multifield_combinations():
+    cases = [
+        ("amount only negative", 2.37, -2.37, False, "Income / Amazon", "Income", "Amazon", False),
+        ("amount plus category", -2.37, 2.37, False, "Business / Software", "Business", "Software", False),
+        ("amount plus subcategory", -2.37, 2.37, False, "Income / Refund", "Income", "Refund", False),
+        ("amount plus Reviewed", -2.37, 2.37, True, "Income / Amazon", "Income", "Amazon", True),
+        ("all fields", -2.37, 2.37, True, "Business / Services", "Business", "Services", True),
+    ]
+    for index, (name, old_amount, new_amount, reviewed, pair, category, subcategory, expected_reviewed) in enumerate(cases):
+        reset_db()
+        row_id = insert_pending(
+            old_amount,
+            description=f"atomic case {index}",
+            category="Income",
+            subcategory="Amazon",
+        )
+        before = row(row_id)
+        save_df = prepared_save(row_id, new_amount, reviewed=reviewed, category_pair=pair)
+        check(f"{name} selects one row", len(save_df) == 1)
+        check(f"{name} saves atomically", db.save_reviewed_rows(save_df) == 1)
+        after = row(row_id)
+        check(f"{name} amount persists", float(after["amount"]) == new_amount)
+        check(f"{name} USD persists", float(after["amount_usd"]) == new_amount)
+        check(f"{name} category persists", after["category"] == category)
+        check(f"{name} subcategory persists", after["subcategory"] == subcategory)
+        check(f"{name} Reviewed state persists", bool(after["reviewed"]) == expected_reviewed)
+        check(f"{name} row hash unchanged", after["row_hash"] == before["row_hash"])
 
 
 def test_usd_sign_correction_and_provenance():
@@ -192,11 +300,12 @@ def test_usd_sign_correction_and_provenance():
 def test_non_usd_fx_and_stale_protection():
     reset_db()
     row_id = insert_pending(-200.0, currency="EUR", fx_rate=1.085, description="EUR incoming")
-    save_df = prepared_save(row_id, 200.0)
+    save_df = prepared_save(row_id, 200.0, reviewed=False)
     check("EUR correction saves one row", db.save_reviewed_rows(save_df) == 1)
     after = row(row_id)
     check("EUR amount corrected", after["amount"] == 200.0)
     check("stored FX rate recomputes USD", after["amount_usd"] == 217.0)
+    check("EUR correction remains pending", not bool(after["reviewed"]) and after["status"] == "pending")
 
     stale_id = insert_pending(-10.0, description="stale amount")
     stale_save = prepared_save(stale_id, 10.0)
@@ -215,6 +324,57 @@ def test_non_usd_fx_and_stale_protection():
     stale_after = row(stale_id)
     check("newer database amount preserved", stale_after["amount"] == -11.0)
     check("stale rejection is atomic", not bool(stale_after["reviewed"]))
+
+
+def test_unclassified_and_atomic_rollback():
+    reset_db()
+    unclassified_id = insert_pending(
+        -2.37,
+        description="unclassified amount correction",
+        category="",
+        subcategory="",
+    )
+    unclassified_save = prepared_save(
+        unclassified_id,
+        2.37,
+        reviewed=False,
+        category_pair="",
+    )
+    check("unclassified amount-only row selected", len(unclassified_save) == 1)
+    check("unclassified amount-only row saves", db.save_reviewed_rows(unclassified_save) == 1)
+    unclassified_after = row(unclassified_id)
+    check("unclassified amount persists", float(unclassified_after["amount"]) == 2.37)
+    check("unclassified USD amount persists", float(unclassified_after["amount_usd"]) == 2.37)
+    check("unclassified category remains blank", not str(unclassified_after["category"] or ""))
+    check("unclassified subcategory remains blank", not str(unclassified_after["subcategory"] or ""))
+
+    first_id = insert_pending(-10.0, description="atomic valid row")
+    second_id = insert_pending(
+        -20.0,
+        currency="EUR",
+        fx_rate=None,
+        description="atomic invalid fx row",
+    )
+    first_save = prepared_save(first_id, 10.0, reviewed=False)
+    second_save = prepared_save(second_id, 20.0, reviewed=False)
+    batch = pd.concat([first_save, second_save], ignore_index=True)
+    failed = False
+    try:
+        db.save_reviewed_rows(batch)
+    except ValueError as exc:
+        failed = "no valid stored FX rate" in str(exc)
+    check("invalid second row fails the atomic batch", failed)
+    check("first row rolls back with failed batch", float(row(first_id)["amount"]) == -10.0)
+    check("second row remains unchanged after rollback", float(row(second_id)["amount"]) == -20.0)
+    conn = db.get_connection()
+    try:
+        audits = int(conn.execute(
+            "SELECT COUNT(*) FROM transaction_change_log WHERE transaction_id IN (?, ?)",
+            (first_id, second_id),
+        ).fetchone()[0])
+    finally:
+        conn.close()
+    check("failed atomic batch writes no audit entries", audits == 0)
 
 
 def test_invalid_split_balance_and_untouched_rows():
@@ -284,8 +444,11 @@ def test_invalid_split_balance_and_untouched_rows():
 
 if __name__ == "__main__":
     try:
+        test_exact_production_bug_one_hundred_cycles()
+        test_atomic_pending_multifield_combinations()
         test_usd_sign_correction_and_provenance()
         test_non_usd_fx_and_stale_protection()
+        test_unclassified_and_atomic_rollback()
         test_invalid_split_balance_and_untouched_rows()
         print(f"PASS: pending amount override QA | assertions={ASSERTIONS}")
     finally:

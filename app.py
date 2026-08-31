@@ -1499,11 +1499,14 @@ def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
     original["id"] = original["id"].astype(int)
     edited["id"] = edited["id"].astype(int)
     original_by_id = original.drop_duplicates("id").set_index("id")
+    valid_categories = set(
+        categories_df.get("category", pd.Series(dtype=str)).dropna().astype(str).str.strip()
+    )
 
     rows = []
     for _, row in edited.iterrows():
         row_id = int(row["id"])
-        if row_id not in original_by_id.index or not bool(row.get("reviewed", False)):
+        if row_id not in original_by_id.index:
             continue
         before = original_by_id.loc[row_id]
         raw_amount = row.get("amount")
@@ -1514,12 +1517,42 @@ def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
         if not math.isfinite(amount) or abs(amount) > MAX_SAFE_FINANCIAL_AMOUNT:
             raise ValueError(f"Transaction {row_id} has an invalid Amount.")
         amount = round(amount, 2)
+        before_amount = float(before.get("amount"))
+        amount_changed = not math.isclose(
+            amount,
+            before_amount,
+            rel_tol=0.0,
+            abs_tol=0.000001,
+        )
+        reviewed = bool(row.get("reviewed", False))
+        if not reviewed and not amount_changed:
+            continue
+
+        before_category = str(before.get("category", "") or "").strip()
+        before_subcategory = str(before.get("subcategory", "") or "").strip()
+        editor_default_category = before_category
+        if editor_default_category not in valid_categories:
+            suggested_category = str(before.get("suggested_category", "") or "").strip()
+            editor_default_category = suggested_category if suggested_category in valid_categories else ""
+        editor_default_subcategory = before_subcategory or str(
+            before.get("suggested_subcategory", "") or ""
+        ).strip()
+        category = str(row.get("category", "") or "").strip()
+        subcategory = str(row.get("subcategory", "") or "").strip()
+        if (
+            not reviewed
+            and category == editor_default_category
+            and subcategory == editor_default_subcategory
+        ):
+            category = before_category
+            subcategory = before_subcategory
+        status = "reviewed" if reviewed else str(before.get("status", "pending") or "pending").strip()
         rows.append({
             "id": row_id,
-            "category": str(row.get("category", "") or "").strip(),
-            "subcategory": str(row.get("subcategory", "") or "").strip(),
-            "reviewed": True,
-            "status": "reviewed",
+            "category": category,
+            "subcategory": subcategory,
+            "reviewed": reviewed,
+            "status": status,
             "report_group": str(row.get("report_group", "") or "").strip(),
             "amount": amount,
             "_expected_category": str(before.get("category", "") or "").strip(),
@@ -5513,7 +5546,10 @@ elif page == "Pending Review":
                     categories_df,
                 )
                 if save_df.empty:
-                    st.warning("No rows were ticked as Reviewed. Nothing was saved.")
+                    st.warning(
+                        "No rows were ticked as Reviewed and no Amount corrections were detected. "
+                        "Nothing was saved."
+                    )
                 else:
                     with st.status(
                         f"Saving {len(save_df)} transaction edits...",
@@ -5522,14 +5558,26 @@ elif page == "Pending Review":
                         saved = save_reviewed_rows(save_df)
                         _verify_transaction_edit_save(save_df)
                         save_status.update(
-                            label=f"{saved} transactions updated successfully.",
+                            label=f"{saved} transaction edits saved successfully.",
                             state="complete",
                         )
-                    _clear_transaction_read_caches()
-                    st.session_state["pending_review_save_message"] = (
-                        f"{saved} transactions updated successfully. "
-                        "Reviewed transactions were removed from Pending Review after the saved values were verified."
+                    active_editor_key = st.session_state.get(
+                        "pending_editor_batch__active_editor_key"
                     )
+                    if active_editor_key:
+                        _clear_data_editor_state(active_editor_key)
+                    _clear_transaction_read_caches()
+                    if save_df["reviewed"].astype(bool).all():
+                        message = (
+                            f"{saved} transactions updated successfully. "
+                            "Reviewed transactions were removed from Pending Review after the saved values were verified."
+                        )
+                    else:
+                        message = (
+                            f"{saved} transaction edits saved successfully. "
+                            "Amount corrections on rows not marked Reviewed remain in Pending Review."
+                        )
+                    st.session_state["pending_review_save_message"] = message
                     st.rerun()
             except Exception as exc:
                 st.error(f"No transaction edits were saved. {exc}")

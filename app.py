@@ -2655,6 +2655,16 @@ def _executive_trend(change):
     return "trend-down", "Decreasing"
 
 
+def _executive_semantic_trend_class(css_class, label="", income_context=False):
+    is_income = bool(income_context) or bool(re.search(r"\bincome\b", str(label or ""), re.IGNORECASE))
+    if not is_income:
+        return css_class
+    return {
+        "trend-up": "trend-down",
+        "trend-down": "trend-up",
+    }.get(css_class, css_class)
+
+
 def _executive_change_pct(change, previous_amount):
     if abs(previous_amount) <= 0.005:
         return None
@@ -3099,6 +3109,7 @@ def _render_executive_click_rows(
     clear_selection_keys=None,
     render_child=None,
     inline_selection=False,
+    income_context=False,
 ):
     st.markdown(f"#### {title}")
     if not rows:
@@ -3238,7 +3249,11 @@ def _render_executive_click_rows(
             )
         for _, _, _, formatter, class_key in tail_defs:
             col_idx += 1
-            css_class = row.get(class_key, "trend-flat")
+            css_class = _executive_semantic_trend_class(
+                row.get(class_key, "trend-flat"),
+                row.get("label", ""),
+                income_context=income_context and not is_total,
+            )
             total_class = " drill-total-cell" if is_total else ""
             cols[col_idx].markdown(
                 f"<div class=\"drill-cell {css_class}{total_class}\">{formatter(row)}</div>",
@@ -4565,6 +4580,7 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
                 row_type, category, category_rows, subcategory
             ),
             inline_selection=True,
+            income_context=row_type == "Income",
         )
 
     def render_selected_type(row_type):
@@ -4606,6 +4622,7 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
                 clear_selection_keys=["executive_income_charity_subcategory"],
                 render_child=lambda category: render_selected_category(row_type, type_rows, category),
                 inline_selection=True,
+                income_context=row_type == "Income",
             )
 
         render_summary_strip([

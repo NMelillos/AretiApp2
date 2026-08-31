@@ -4,6 +4,7 @@ import hashlib
 from html import escape
 from io import BytesIO
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -45,6 +46,7 @@ import pandas as pd
 from db import (
     ConcurrentTransactionEditError,
     DB_PATH,
+    MAX_SAFE_FINANCIAL_AMOUNT,
     USING_POSTGRES,
     add_category,
     apply_account_and_rates,
@@ -1451,7 +1453,16 @@ def editable_pending_table(df, categories, subcategories, key, defer_changes=Fal
             "account_number": st.column_config.TextColumn("Account number", disabled=True),
             "statement_name": st.column_config.TextColumn("Statement", disabled=True, width="large"),
             "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
-            "amount": st.column_config.NumberColumn("Statement amount", format="%.2f", disabled=True),
+            "amount": st.column_config.NumberColumn(
+                "Amount",
+                format="%.2f",
+                step=0.01,
+                help=(
+                    "Correct the operational statement-currency amount or sign before review. "
+                    "The USD amount is recalculated when the reviewed row is saved. "
+                    "Amounts on split-linked rows cannot be changed here."
+                ),
+            ),
             "amount_usd": st.column_config.NumberColumn("USD amount", format="%.2f", disabled=True),
             "original_description": st.column_config.TextColumn("Full statement description", disabled=True, width="large"),
             "report_group": st.column_config.TextColumn("Reporting group", disabled=True),
@@ -1495,6 +1506,14 @@ def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
         if row_id not in original_by_id.index or not bool(row.get("reviewed", False)):
             continue
         before = original_by_id.loc[row_id]
+        raw_amount = row.get("amount")
+        try:
+            amount = float(raw_amount)
+        except (TypeError, ValueError):
+            raise ValueError(f"Transaction {row_id} has an invalid Amount.") from None
+        if not math.isfinite(amount) or abs(amount) > MAX_SAFE_FINANCIAL_AMOUNT:
+            raise ValueError(f"Transaction {row_id} has an invalid Amount.")
+        amount = round(amount, 2)
         rows.append({
             "id": row_id,
             "category": str(row.get("category", "") or "").strip(),
@@ -1502,9 +1521,13 @@ def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
             "reviewed": True,
             "status": "reviewed",
             "report_group": str(row.get("report_group", "") or "").strip(),
+            "amount": amount,
             "_expected_category": str(before.get("category", "") or "").strip(),
             "_expected_subcategory": str(before.get("subcategory", "") or "").strip(),
             "_expected_reviewed": bool(before.get("reviewed", False)),
+            "_expected_amount": before.get("amount"),
+            "_expected_amount_usd": before.get("amount_usd"),
+            "_expected_fx_rate": before.get("fx_rate"),
         })
 
     return pd.DataFrame(rows)
@@ -1766,6 +1789,18 @@ def _clear_transaction_read_caches():
 
 
 def _verify_transaction_edit_save(save_df):
+    def numeric_values_match(actual_value, expected_value):
+        if actual_value is None or pd.isna(actual_value):
+            return expected_value is None or pd.isna(expected_value)
+        if expected_value is None or pd.isna(expected_value):
+            return False
+        return math.isclose(
+            float(actual_value),
+            float(expected_value),
+            rel_tol=0.0,
+            abs_tol=0.000001,
+        )
+
     persisted = get_transaction_edit_states(save_df["id"].tolist())
     persisted_by_id = {
         int(row["id"]): row
@@ -1780,11 +1815,22 @@ def _verify_transaction_edit_save(save_df):
         expected_subcategory = str(expected.get("subcategory", "") or "").strip()
         expected_reviewed = bool(expected.get("reviewed", False))
         expected_status = str(expected.get("status", "") or "").strip().casefold()
+        amount_matches = True
+        amount_usd_matches = True
+        if "amount" in save_df.columns:
+            amount_matches = numeric_values_match(actual.get("amount"), expected.get("amount"))
+            expected_amount_usd = expected.get("_saved_amount_usd")
+            if expected_amount_usd is not None and not pd.isna(expected_amount_usd):
+                amount_usd_matches = numeric_values_match(
+                    actual.get("amount_usd"), expected_amount_usd
+                )
         if (
             str(actual.get("category", "") or "").strip() != expected_category
             or str(actual.get("subcategory", "") or "").strip() != expected_subcategory
             or bool(actual.get("reviewed", False)) != expected_reviewed
             or str(actual.get("status", "") or "").strip().casefold() != expected_status
+            or not amount_matches
+            or not amount_usd_matches
         ):
             raise RuntimeError(
                 f"Transaction ID {row_id} could not be verified after saving. "
@@ -5459,16 +5505,16 @@ elif page == "Pending Review":
             )
 
         if submit_pending:
-            categories_df = get_categories(include_subcategories=True)
-            save_df = _prepare_pending_review_save_rows(
-                pending_view,
-                edited_pending,
-                categories_df,
-            )
-            if save_df.empty:
-                st.warning("No rows were ticked as Reviewed. Nothing was saved.")
-            else:
-                try:
+            try:
+                categories_df = get_categories(include_subcategories=True)
+                save_df = _prepare_pending_review_save_rows(
+                    pending_view,
+                    edited_pending,
+                    categories_df,
+                )
+                if save_df.empty:
+                    st.warning("No rows were ticked as Reviewed. Nothing was saved.")
+                else:
                     with st.status(
                         f"Saving {len(save_df)} transaction edits...",
                         expanded=True,
@@ -5485,8 +5531,8 @@ elif page == "Pending Review":
                         "Reviewed transactions were removed from Pending Review after the saved values were verified."
                     )
                     st.rerun()
-                except Exception as exc:
-                    st.error(f"No transaction edits were saved. {exc}")
+            except Exception as exc:
+                st.error(f"No transaction edits were saved. {exc}")
 
 
 elif page == "Database":

@@ -1,4 +1,5 @@
 import hashlib
+import math
 import os
 import re
 import sqlite3
@@ -25,6 +26,7 @@ DEFAULT_DB_PATH = (
 DB_PATH = "PostgreSQL database" if USING_POSTGRES else os.getenv("ARETI_DB_PATH") or str(DEFAULT_DB_PATH)
 _POSTGRES_POOL = None
 DEFAULT_HIDDEN_TRANSACTION_IDS = "3421,3422,3423"
+MAX_SAFE_FINANCIAL_AMOUNT = ((2 ** 53) - 1) / 100
 
 
 class ConcurrentTransactionEditError(RuntimeError):
@@ -559,6 +561,14 @@ def _float_or_none(value):
     if pd.isna(number):
         return None
     return float(number)
+
+
+def _optional_float_equal(left, right, tolerance=0.000001):
+    left_value = _float_or_none(left)
+    right_value = _float_or_none(right)
+    if left_value is None or right_value is None:
+        return left_value is None and right_value is None
+    return math.isclose(left_value, right_value, rel_tol=0.0, abs_tol=tolerance)
 
 
 def _split_amount_or_none(value):
@@ -2369,13 +2379,15 @@ def get_all_transactions():
 def get_transaction_edit_states(transaction_ids):
     ids = sorted({int(value) for value in transaction_ids if pd.notna(value)})
     if not ids:
-        return pd.DataFrame(columns=["id", "category", "subcategory", "reviewed", "status"])
+        return pd.DataFrame(columns=[
+            "id", "category", "subcategory", "reviewed", "status", "amount", "amount_usd",
+        ])
     placeholders = ", ".join(["?"] * len(ids))
     conn = get_connection()
     try:
         return pd.read_sql_query(
             f"""
-            SELECT id, category, subcategory, reviewed, status
+            SELECT id, category, subcategory, reviewed, status, amount, amount_usd
             FROM classified_transactions
             WHERE id IN ({placeholders})
             ORDER BY id
@@ -2750,7 +2762,9 @@ def save_reviewed_rows(df):
 
             cur.execute("""
                 SELECT category, subcategory, reviewed, status,
-                       original_description, normalized_description, beneficiary, transaction_type
+                       original_description, normalized_description, beneficiary, transaction_type,
+                       amount, amount_usd, currency, fx_rate,
+                       split_parent_id, split_group_id, split_allocation_index
                 FROM classified_transactions
                 WHERE id = ?
             """, (tx_id,))
@@ -2761,10 +2775,15 @@ def save_reviewed_rows(df):
             before_subcategory = before[1] or ""
             before_reviewed = int(before[2] or 0)
             before_status = before[3] or ""
+            before_amount = _float_or_none(before[8])
+            before_amount_usd = _float_or_none(before[9])
+            currency = _clean(before[10]).upper()
+            before_fx_rate = _float_or_none(before[11])
 
             expected_category = row.get("_expected_category")
             expected_subcategory = row.get("_expected_subcategory")
             expected_reviewed = row.get("_expected_reviewed")
+            expected_amount = _float_or_none(row.get("_expected_amount"))
             stale = (
                 expected_category is not None
                 and _clean(expected_category) != _clean(before_category)
@@ -2774,23 +2793,90 @@ def save_reviewed_rows(df):
             ) or (
                 expected_reviewed is not None
                 and int(_bool_from_value(expected_reviewed)) != before_reviewed
+            ) or (
+                expected_amount is not None
+                and (
+                    before_amount is None
+                    or not math.isclose(expected_amount, before_amount, rel_tol=0.0, abs_tol=0.000001)
+                )
             )
             if stale:
                 raise ConcurrentTransactionEditError(tx_id)
 
+            amount_supplied = "amount" in row.index
+            amount = before_amount
+            amount_usd = before_amount_usd
+            if amount_supplied:
+                amount = _float_or_none(row.get("amount"))
+                if (
+                    amount is None
+                    or not math.isfinite(amount)
+                    or abs(amount) > MAX_SAFE_FINANCIAL_AMOUNT
+                ):
+                    raise ValueError(f"Transaction {tx_id} has an invalid Amount.")
+                amount = round(amount, 2)
+                amount_changed = (
+                    before_amount is None
+                    or not math.isclose(amount, before_amount, rel_tol=0.0, abs_tol=0.000001)
+                )
+                if amount_changed:
+                    if before[12] is not None or _clean(before[13]) or before[14] is not None:
+                        raise ValueError(
+                            f"Transaction {tx_id} is linked to a split. "
+                            "Its amount cannot be changed in Pending Review."
+                        )
+                    expected_amount_usd = _float_or_none(row.get("_expected_amount_usd"))
+                    expected_fx_rate = _float_or_none(row.get("_expected_fx_rate"))
+                    if (
+                        expected_amount_usd is not None
+                        and (
+                            before_amount_usd is None
+                            or not math.isclose(
+                                expected_amount_usd,
+                                before_amount_usd,
+                                rel_tol=0.0,
+                                abs_tol=0.000001,
+                            )
+                        )
+                    ) or (
+                        expected_fx_rate is not None
+                        and (
+                            before_fx_rate is None
+                            or not math.isclose(
+                                expected_fx_rate,
+                                before_fx_rate,
+                                rel_tol=0.0,
+                                abs_tol=0.000001,
+                            )
+                        )
+                    ):
+                        raise ConcurrentTransactionEditError(tx_id)
+                    effective_rate = 1.0 if currency == "USD" else before_fx_rate
+                    amount_usd = _usd_from_amount(amount, effective_rate)
+                    if amount_usd is None or not math.isfinite(amount_usd):
+                        raise ValueError(
+                            f"Transaction {tx_id} has no valid stored FX rate. "
+                            "Its Amount was not changed."
+                        )
+
             cur.execute("""
                 UPDATE classified_transactions
-                SET category = ?, subcategory = ?, reviewed = 1, status = 'reviewed', reviewed_at = ?
+                SET category = ?, subcategory = ?, reviewed = 1, status = 'reviewed', reviewed_at = ?,
+                    amount = ?, amount_usd = ?
                 WHERE id = ?
-            """, (category, subcategory, now, tx_id))
+            """, (category, subcategory, now, amount, amount_usd, tx_id))
             if cur.rowcount != 1:
                 raise RuntimeError(f"Transaction {tx_id} was not updated.")
             saved += 1
-            expected[tx_id] = (category, subcategory)
+            expected[tx_id] = (category, subcategory, amount, amount_usd)
             _audit_transaction_change(cur, tx_id, "category", before_category, category, "pending_review_save")
             _audit_transaction_change(cur, tx_id, "subcategory", before_subcategory, subcategory, "pending_review_save")
             _audit_transaction_change(cur, tx_id, "reviewed", before_reviewed, 1, "pending_review_save")
             _audit_transaction_change(cur, tx_id, "status", before_status, "reviewed", "pending_review_save")
+            _audit_transaction_change(cur, tx_id, "amount", before_amount, amount, "pending_review_save")
+            _audit_transaction_change(cur, tx_id, "amount_usd", before_amount_usd, amount_usd, "pending_review_save")
+            if amount_supplied:
+                df.loc[df["id"].astype(int) == tx_id, "_saved_amount_usd"] = amount_usd
             _remember_transaction_with_cursor(
                 cur,
                 before[4] or "",
@@ -2804,12 +2890,12 @@ def save_reviewed_rows(df):
         if expected:
             placeholders = ",".join("?" for _ in expected)
             cur.execute(f"""
-                SELECT id, category, subcategory, reviewed, status
+                SELECT id, category, subcategory, reviewed, status, amount, amount_usd
                 FROM classified_transactions
                 WHERE id IN ({placeholders})
             """, list(expected))
             verified = {int(stored[0]): stored for stored in cur.fetchall()}
-            for tx_id, (category, subcategory) in expected.items():
+            for tx_id, (category, subcategory, amount, amount_usd) in expected.items():
                 actual = verified.get(tx_id)
                 if (
                     actual is None
@@ -2817,6 +2903,8 @@ def save_reviewed_rows(df):
                     or _clean(actual[2]) != subcategory
                     or int(actual[3] or 0) != 1
                     or _clean(actual[4]).casefold() != "reviewed"
+                    or not _optional_float_equal(actual[5], amount)
+                    or not _optional_float_equal(actual[6], amount_usd)
                 ):
                     raise RuntimeError(f"Transaction {tx_id} could not be verified after saving.")
         conn.commit()

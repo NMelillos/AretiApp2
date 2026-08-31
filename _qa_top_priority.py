@@ -1,5 +1,6 @@
 import ast
 import copy
+import math
 import os
 import sys
 import time
@@ -50,6 +51,8 @@ def _load_report_group_namespace():
     ast.fix_missing_locations(module)
     namespace = {
         "copy": copy,
+        "math": math,
+        "MAX_SAFE_FINANCIAL_AMOUNT": db.MAX_SAFE_FINANCIAL_AMOUNT,
         "pd": pd,
         "_CATEGORY_PAIR_COLUMN": "category_subcategory",
         "_NO_SUBCATEGORY_LABEL": "No subcategory",

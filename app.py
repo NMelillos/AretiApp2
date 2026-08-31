@@ -2909,6 +2909,17 @@ def _executive_report_group_options(categories_df, expenses):
     return _ordered_text_values(setup_groups + sorted(data_groups))
 
 
+def _third_report_group_scope(report_rows, categories_df):
+    """Keep Item 19 rows separate from THIRD reporting-group calculations."""
+    from reporting import income_charity_scope
+
+    item19_rows = income_charity_scope(report_rows)
+    group_rows = report_rows.drop(index=item19_rows.index).copy()
+    item19_categories = income_charity_scope(categories_df)
+    group_categories = categories_df.drop(index=item19_categories.index).copy()
+    return group_rows, group_categories
+
+
 def _executive_category_options(categories_df, report_group):
     if categories_df.empty or "category" not in categories_df.columns:
         return []
@@ -2962,8 +2973,7 @@ def _third_link_default_visible_groups(all_report_groups):
             .tolist()
         )
         visible_groups = [group for group in visible_groups if group in all_report_groups]
-        if visible_groups:
-            return _ordered_text_values(visible_groups)
+        return _ordered_text_values(visible_groups)
 
     woking_groups = [
         group for group in all_report_groups
@@ -4490,6 +4500,21 @@ def _income_charity_target_message(percentage):
     return "Charity falls below the Family’s target of 10%."
 
 
+def _income_charity_target_variance(income_total, charity_total):
+    income_total = float(income_total or 0)
+    if abs(income_total) <= 0.005:
+        return None
+    return abs(float(charity_total or 0)) - (abs(income_total) * 0.10)
+
+
+def _income_charity_target_variance_message(income_total, charity_total):
+    variance = _income_charity_target_variance(income_total, charity_total)
+    if variance is None or abs(variance) <= 0.005:
+        return None
+    direction = "above" if variance > 0 else "below"
+    return f"Amount {direction} the 10% target: {_money(abs(variance))}."
+
+
 def _render_income_charity_transactions(transaction_rows):
     transaction_rows = transaction_rows.copy()
     transaction_rows["txn_date"] = pd.to_datetime(
@@ -4530,7 +4555,7 @@ def _render_income_charity_transactions(transaction_rows):
 def _render_income_charity_section(report_rows, months, month_labels, show_all_months=False):
     from reporting import income_charity_month_values, income_charity_percentage
 
-    scoped, monthly, cumulative = income_charity_month_values(report_rows, months)
+    scoped, monthly, _cumulative = income_charity_month_values(report_rows, months)
     income_total = float(sum(monthly["Income"].values()))
     charity_total = float(sum(monthly["Charity"].values()))
     charity_income_pct = income_charity_percentage(income_total, charity_total)
@@ -4555,6 +4580,13 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
             "executive_income_charity_category",
             "executive_income_charity_subcategory",
         )
+
+    target_message = _income_charity_target_message(charity_income_pct)
+    if target_message:
+        st.caption(target_message)
+        target_variance_message = _income_charity_target_variance_message(income_total, charity_total)
+        if target_variance_message:
+            st.caption(target_variance_message)
 
     def render_selected_subcategory(row_type, category, category_rows, subcategory):
         trail = (
@@ -4613,9 +4645,6 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
             )
 
         type_rows = period_rows[period_rows["income_charity_type"].eq(row_type)].copy()
-        target_message = _income_charity_target_message(charity_income_pct)
-        if target_message:
-            st.caption(target_message)
         if type_rows.empty:
             st.info(f"No {row_type} transactions exist in the current report period.")
         else:
@@ -4634,30 +4663,6 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
                 inline_selection=True,
                 income_context=row_type == "Income",
             )
-
-        render_summary_strip([
-            ("Income total", _money(income_total)),
-            ("Charity total", _money(charity_total)),
-            ("Charity / Income", _percent(charity_income_pct)),
-            (f"{row_type} transactions", len(type_rows)),
-        ])
-        st.caption(
-            "This analysis is separate from the existing Reporting Group totals. "
-            "Charity / Income compares the absolute Charity amount with the absolute Income amount."
-        )
-
-        monthly_frame = pd.DataFrame([{
-            "Type": row_type,
-            **{month_labels[month]: monthly[row_type][month] for month in months},
-        }])
-        cumulative_frame = pd.DataFrame([{
-            "Type": row_type,
-            **{month_labels[month]: cumulative[row_type][month] for month in months},
-        }])
-        st.markdown("#### Monthly values")
-        st.dataframe(monthly_frame, use_container_width=True, hide_index=True)
-        st.markdown("#### Cumulative from January")
-        st.dataframe(cumulative_frame, use_container_width=True, hide_index=True)
 
     _render_executive_click_rows(
         "4. Income and Charity",
@@ -4844,7 +4849,7 @@ def render_third_link_report():
 
     status_slot.info("Preparing report calculations...")
     step_started = time.perf_counter()
-    _, expenses, _, _ = _prepare_report_data(
+    _, report_expenses, _, _ = _prepare_report_data(
         filtered,
         categories_df,
         include_own_funds=True,
@@ -4852,26 +4857,10 @@ def render_third_link_report():
     )
     _perf_log("third_link.prepare_report_data", step_started)
     step_started = time.perf_counter()
-    all_report_groups = _executive_report_group_options(categories_df, expenses)
+    group_expenses, group_categories_df = _third_report_group_scope(report_expenses, categories_df)
+    all_report_groups = _executive_report_group_options(group_categories_df, group_expenses)
     visible_report_groups = _third_link_default_visible_groups(all_report_groups)
     _perf_log("third_link.resolve_visible_groups", step_started)
-    if not visible_report_groups:
-        status_slot.empty()
-        st.warning("No reporting groups are selected for the third link yet. Tick at least one group in Setup.")
-        _perf_log("third_link.total_no_visible_groups", total_started)
-        return
-
-    status_slot.info("Filtering visible reporting groups...")
-    step_started = time.perf_counter()
-    expenses = expenses[
-        expenses["report_group"].fillna("").astype(str).str.strip().isin(visible_report_groups)
-    ].copy()
-    _perf_log("third_link.filter_visible_groups", step_started)
-    if expenses.empty:
-        status_slot.empty()
-        st.info("No active report rows match the third-link reporting groups.")
-        _perf_log("third_link.total_no_expenses", total_started)
-        return
 
     show_all_months = st.toggle("Analytical", value=False, key="third_report_analytical")
     st.markdown(f'<div class="third-report-note">Report until {cutoff.strftime("%d/%m/%Y")}</div>', unsafe_allow_html=True)
@@ -4880,14 +4869,19 @@ def render_third_link_report():
     month_window = _executive_month_window(current_month)
     month_labels = _executive_month_labels(month_window)
     ai_prompts = _report_group_prompt_lookup()
+    step_started = time.perf_counter()
+    selected_expenses = group_expenses[
+        group_expenses["report_group"].fillna("").astype(str).str.strip().isin(visible_report_groups)
+    ].copy()
+    _perf_log("third_link.filter_visible_groups", step_started)
     selected_ai_group = st.session_state.get("third_report_ai_group")
     ai_requested = bool(st.session_state.pop("third_report_ai_requested", False))
-    if selected_ai_group in visible_report_groups and expenses["report_group"].fillna("").astype(str).str.strip().eq(str(selected_ai_group).strip()).any():
+    if selected_ai_group in visible_report_groups and selected_expenses["report_group"].fillna("").astype(str).str.strip().eq(str(selected_ai_group).strip()).any():
         status_slot.empty()
         with st.expander(f"AI report: {selected_ai_group}", expanded=True):
             selected_prompt = ai_prompts.get(selected_ai_group, "")
             ai_cache_key = _reporting_group_analysis_cache_key(
-                expenses,
+                selected_expenses,
                 month_window,
                 selected_ai_group,
                 selected_prompt,
@@ -4900,7 +4894,7 @@ def render_third_link_report():
                 ai_status.info("Preparing AI report...")
                 with st.spinner("Generating AI report..."):
                     analysis, _from_cache = _get_reporting_group_analysis(
-                        expenses,
+                        selected_expenses,
                         month_window,
                         month_labels,
                         selected_ai_group,
@@ -4931,21 +4925,33 @@ def render_third_link_report():
                         "column for each reporting group. The default prompt uses signed total, current "
                         "month, previous month, main drivers, what to notice, and follow-up points."
                     )
-    status_slot.info("Rendering reporting groups...")
-    step_started = time.perf_counter()
-    _render_executive_drilldown(
-        expenses,
+    if visible_report_groups:
+        status_slot.info("Rendering reporting groups...")
+        step_started = time.perf_counter()
+        _render_executive_drilldown(
+            selected_expenses,
+            month_window,
+            month_labels,
+            visible_report_groups,
+            categories_df=group_categories_df,
+            show_all_months=show_all_months,
+            read_only=True,
+            ai_prompts=ai_prompts,
+            show_zero_explanations=True,
+            show_group_total=True,
+        )
+        _perf_log("third_link.render_drilldown", step_started)
+    else:
+        status_slot.empty()
+        st.warning("No reporting groups are selected for the third link yet. Tick at least one group in Setup.")
+
+    _render_income_charity_section(
+        report_expenses,
         month_window,
         month_labels,
-        visible_report_groups,
-        categories_df=categories_df,
         show_all_months=show_all_months,
-        read_only=True,
-        ai_prompts=ai_prompts,
-        show_zero_explanations=False,
     )
     status_slot.empty()
-    _perf_log("third_link.render_drilldown", step_started)
     _perf_log("third_link.total", total_started)
 
 
@@ -6218,11 +6224,21 @@ elif page == "Setup":
     group_settings = get_report_group_settings()
     setup_report_groups = _ordered_text_values(setup_report_groups)
     if setup_report_groups:
+        _, third_setup_categories = _third_report_group_scope(pd.DataFrame(), setup_categories)
+        third_link_allowed_groups = set(_executive_report_group_options(third_setup_categories, pd.DataFrame()))
+        item19_only_groups = [
+            group for group in setup_report_groups if group not in third_link_allowed_groups
+        ]
         st.markdown("### Report Group Controls")
         st.caption(
             "Use this private Setup table to choose selected-report visibility, third-link visibility, "
             "and the AI prompt for each reporting group."
         )
+        if item19_only_groups:
+            st.caption(
+                "Income and Charity is shown automatically as a separate THIRD Report section. "
+                "Its dedicated setup groups are excluded from THIRD Reporting Group totals."
+            )
         with st.expander("Default AI prompt used when the group prompt is empty", expanded=False):
             st.text_area(
                 "Default prompt",
@@ -6244,9 +6260,14 @@ elif page == "Setup":
         for group in setup_report_groups:
             existing = settings_lookup.get(group)
             default_third = (not has_existing_settings) and ("woking way llc" in group.casefold())
+            third_link_allowed = group in third_link_allowed_groups
             settings_rows.append({
                 "visible": True if existing is None else bool(int(existing.get("visible", 1) or 0)),
-                "third_link_visible": default_third if existing is None else bool(int(existing.get("third_link_visible", 0) or 0)),
+                "third_link_visible": (
+                    (default_third if existing is None else bool(int(existing.get("third_link_visible", 0) or 0)))
+                    if third_link_allowed
+                    else False
+                ),
                 "report_group": group,
                 "ai_prompt": "" if existing is None else str(existing.get("ai_prompt", "") or ""),
             })
@@ -6264,6 +6285,10 @@ elif page == "Setup":
             disabled=["report_group"],
             key="setup_report_group_settings_editor",
         )
+        settings_edit.loc[
+            settings_edit["report_group"].isin(item19_only_groups),
+            "third_link_visible",
+        ] = False
         c_show, c_save = st.columns([1, 1])
         with c_show:
             if st.button("Show all selected-report groups", key="setup_show_all_executive_groups"):
@@ -6274,9 +6299,6 @@ elif page == "Setup":
                 st.rerun()
         with c_save:
             if st.button("Save report group controls"):
-                if not settings_edit["third_link_visible"].fillna(False).astype(bool).any():
-                    st.warning("The third link must show at least one reporting group.")
-                    st.stop()
                 count = replace_report_group_settings(settings_edit)
                 st.success(f"Saved controls for {count} reporting groups.")
                 st.cache_data.clear()

@@ -189,9 +189,9 @@ def main():
         True,
     )
     assert_equal(
-        "Item 19 is absent from third report",
+        "Item 19 is a separate third report section",
         "_render_income_charity_section(" in source[third_start:],
-        False,
+        True,
     )
     print("QA_COMPLETE")
 

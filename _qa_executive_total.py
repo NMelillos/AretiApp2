@@ -92,7 +92,7 @@ def main():
     assert_equal("TOTAL row is static", "if is_total:" in render_source, True)
     assert_equal("TOTAL cannot render a child drill-down", "if not is_total and render_child" in render_source, True)
     assert_equal("Executive Summary opts into TOTAL", "show_group_total=not shared_report" in source[executive_start:third_start], True)
-    assert_equal("THIRD does not opt into TOTAL", "show_group_total=" in source[third_start:], False)
+    assert_equal("THIRD opts into selected-group TOTAL", "show_group_total=True" in source[third_start:], True)
     print("EXECUTIVE_TOTAL_QA_COMPLETE")
 
 

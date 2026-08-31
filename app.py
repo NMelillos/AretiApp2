@@ -583,6 +583,13 @@ st.markdown(
         margin: 2px 0 4px 10px;
         padding: 3px 8px;
     }
+    .drill-total-cell {
+        border-top: 2px solid var(--accent);
+        font-weight: 800;
+    }
+    .drill-total-label {
+        color: var(--navy);
+    }
     .third-report-header {
         margin: 6px 0 18px;
     }
@@ -2756,6 +2763,21 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
     return rows
 
 
+def _executive_total_row(rows, months):
+    source_rows = [row for row in rows if not row.get("is_total")]
+    if not source_rows:
+        return None
+    month_values = {
+        month: float(sum(float(row.get("months", {}).get(month, 0.0) or 0.0) for row in source_rows))
+        for month in months
+    }
+    denominator = float(sum(abs(float(row.get("total") or 0.0)) for row in source_rows))
+    total_row = _executive_metric_values_from_month_values(month_values, months, denominator)
+    total_row["share_pct"] = 100.0 if denominator > 0.005 else None
+    total_row.update({"label": "TOTAL", "value": "TOTAL", "is_total": True})
+    return total_row
+
+
 def _ordered_text_values(values):
     seen = set()
     out = []
@@ -3068,11 +3090,17 @@ def _render_executive_click_rows(
 
     selection_key = selection_key or f"executive_{level}"
     for idx, row in enumerate(rows):
+        is_total = bool(row.get("is_total"))
         is_selected = st.session_state.get(selection_key) == row["value"]
         cols = st.columns(widths)
         col_idx = 0
         with cols[col_idx]:
-            if level == "group" and ai_prompts is not None:
+            if is_total:
+                st.markdown(
+                    f"<div class=\"drill-cell drill-total-cell drill-total-label\">{escape(row['label'])}</div>",
+                    unsafe_allow_html=True,
+                )
+            elif level == "group" and ai_prompts is not None:
                 label_col, ai_col = st.columns([5, 1.25])
                 with label_col:
                     if inline_selection:
@@ -3117,24 +3145,32 @@ def _render_executive_click_rows(
                     st.rerun()
         for _, _, _, formatter in base_defs:
             col_idx += 1
-            cols[col_idx].markdown(f"<div class=\"drill-cell\">{formatter(row)}</div>", unsafe_allow_html=True)
+            total_class = " drill-total-cell" if is_total else ""
+            cols[col_idx].markdown(
+                f"<div class=\"drill-cell{total_class}\">{formatter(row)}</div>",
+                unsafe_allow_html=True,
+            )
         for month in display_months:
             col_idx += 1
+            total_class = " drill-total-cell" if is_total else ""
             cols[col_idx].markdown(
-                f"<div class=\"drill-cell\">{_money(row['months'].get(month, 0.0))}</div>",
+                f"<div class=\"drill-cell{total_class}\">{_money(row['months'].get(month, 0.0))}</div>",
                 unsafe_allow_html=True,
             )
         for _, _, _, formatter, class_key in tail_defs:
             col_idx += 1
             css_class = row.get(class_key, "trend-flat")
+            total_class = " drill-total-cell" if is_total else ""
             cols[col_idx].markdown(
-                f"<div class=\"drill-cell {css_class}\">{formatter(row)}</div>",
+                f"<div class=\"drill-cell {css_class}{total_class}\">{formatter(row)}</div>",
                 unsafe_allow_html=True,
             )
-        if render_child is not None and st.session_state.get(selection_key) == row["value"]:
+        if not is_total and render_child is not None and st.session_state.get(selection_key) == row["value"]:
             render_child(row["value"])
     zero_rows = []
     for row in rows:
+        if row.get("is_total"):
+            continue
         total = float(row.get("total") or 0.0)
         month_total = sum(float(value or 0.0) for value in row.get("months", {}).values())
         if abs(total) <= 0.005 and abs(month_total) <= 0.005:
@@ -4039,6 +4075,7 @@ def _render_executive_drilldown(
     ai_prompts=None,
     show_zero_explanations=True,
     inline_hierarchy=False,
+    show_group_total=False,
 ):
     visible_report_groups = visible_report_groups or []
     selected_group = _valid_executive_selection(
@@ -4079,6 +4116,10 @@ def _render_executive_drilldown(
         months,
         extra_labels=visible_report_groups,
     )
+    if show_group_total:
+        total_row = _executive_total_row(group_rows, months)
+        if total_row is not None:
+            group_rows = [*group_rows, total_row]
 
     if not inline_hierarchy:
         if selected_group:
@@ -4626,6 +4667,7 @@ def render_executive_report():
         categories_df=categories_df,
         show_all_months=show_all_months,
         inline_hierarchy=True,
+        show_group_total=not shared_report,
     )
     if show_income_charity:
         _render_income_charity_section(

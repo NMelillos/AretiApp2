@@ -114,6 +114,11 @@ def main():
         True,
     )
     assert_equal(
+        "selected hierarchy buttons use the existing green primary state",
+        'type="primary" if is_selected else "secondary"' in renderer_source,
+        True,
+    )
+    assert_equal(
         "protected detached renderer keeps its previous explicit lifecycle",
         "toggle=False" in renderer_source and "st.rerun()" in renderer_source,
         True,

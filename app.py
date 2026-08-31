@@ -3127,11 +3127,14 @@ def _render_executive_click_rows(
     render_child=None,
     inline_selection=False,
     income_context=False,
+    intro_captions=None,
 ):
     st.markdown(
         f"<div class=\"executive-section-title\">{escape(title)}</div>",
         unsafe_allow_html=True,
     )
+    for caption in intro_captions or []:
+        st.caption(caption)
     if not rows:
         st.info("No rows available for this level.")
         return
@@ -4581,12 +4584,13 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
             "executive_income_charity_subcategory",
         )
 
+    target_captions = []
     target_message = _income_charity_target_message(charity_income_pct)
     if target_message:
-        st.caption(target_message)
+        target_captions.append(target_message)
         target_variance_message = _income_charity_target_variance_message(income_total, charity_total)
         if target_variance_message:
-            st.caption(target_variance_message)
+            target_captions.append(target_variance_message)
 
     def render_selected_subcategory(row_type, category, category_rows, subcategory):
         trail = (
@@ -4630,20 +4634,6 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
             f"<div class=\"drill-inline-context\">{escape(row_type)}</div>",
             unsafe_allow_html=True,
         )
-        close_col, _ = st.columns([1, 5])
-        with close_col:
-            st.button(
-                f"Close {row_type} analysis",
-                key="close_income_charity_analysis",
-                on_click=_clear_executive_selections,
-                args=(
-                    "executive_income_charity",
-                    "executive_income_charity_category",
-                    "executive_income_charity_subcategory",
-                ),
-                use_container_width=True,
-            )
-
         type_rows = period_rows[period_rows["income_charity_type"].eq(row_type)].copy()
         if type_rows.empty:
             st.info(f"No {row_type} transactions exist in the current report period.")
@@ -4663,6 +4653,19 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
                 inline_selection=True,
                 income_context=row_type == "Income",
             )
+        close_col, _ = st.columns([1, 5])
+        with close_col:
+            st.button(
+                f"Close {row_type} analysis",
+                key="close_income_charity_analysis",
+                on_click=_clear_executive_selections,
+                args=(
+                    "executive_income_charity",
+                    "executive_income_charity_category",
+                    "executive_income_charity_subcategory",
+                ),
+                use_container_width=True,
+            )
 
     _render_executive_click_rows(
         "4. Income and Charity",
@@ -4678,6 +4681,7 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
         ],
         render_child=render_selected_type,
         inline_selection=True,
+        intro_captions=target_captions,
     )
 
 

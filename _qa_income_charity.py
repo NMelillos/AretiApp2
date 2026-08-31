@@ -189,6 +189,25 @@ def main():
         True,
     )
     assert_equal(
+        "Item 19 target messages render immediately below the section heading",
+        "target_captions.append(target_message)" in item19_source
+        and "target_captions.append(target_variance_message)" in item19_source
+        and "intro_captions=target_captions" in item19_source
+        and "st.caption(target_message)" not in item19_source,
+        True,
+    )
+    selected_type_source = item19_source[
+        item19_source.index("def render_selected_type"):item19_source.index(
+            '_render_executive_click_rows(\n        "4. Income and Charity"'
+        )
+    ]
+    assert_equal(
+        "Item 19 close control follows the expanded branch content",
+        selected_type_source.index('"Categories"')
+        < selected_type_source.index('f"Close {row_type} analysis"'),
+        True,
+    )
+    assert_equal(
         "Item 19 is a separate third report section",
         "_render_income_charity_section(" in source[third_start:],
         True,

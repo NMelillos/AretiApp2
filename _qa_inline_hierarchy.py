@@ -99,6 +99,15 @@ def main():
         True,
     )
     assert_equal(
+        "report hierarchy titles use compact bold report typography",
+        '.executive-section-title {' in source
+        and 'font-size: 12px;' in source[source.index('.executive-section-title {'):source.index('.executive-section-title {') + 220]
+        and 'font-weight: 800;' in source[source.index('.executive-section-title {'):source.index('.executive-section-title {') + 220]
+        and 'class=\\\"executive-section-title\\\"' in renderer_source
+        and 'st.markdown(f"#### {title}")' not in renderer_source,
+        True,
+    )
+    assert_equal(
         "ordinary hierarchy buttons use pre-rerun callbacks",
         "if inline_selection:" in renderer_source
         and "on_click=_set_executive_selection" in renderer_source,

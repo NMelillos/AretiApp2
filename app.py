@@ -532,6 +532,13 @@ st.markdown(
         font-weight: 800;
         text-transform: uppercase;
     }
+    .executive-section-title {
+        color: var(--text-main);
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1.6;
+        margin: 12px 0 6px;
+    }
     .drill-row {
         display: grid;
         grid-template-columns: minmax(220px, 2.4fr) repeat(5, minmax(92px, 1fr));
@@ -3111,7 +3118,10 @@ def _render_executive_click_rows(
     inline_selection=False,
     income_context=False,
 ):
-    st.markdown(f"#### {title}")
+    st.markdown(
+        f"<div class=\"executive-section-title\">{escape(title)}</div>",
+        unsafe_allow_html=True,
+    )
     if not rows:
         st.info("No rows available for this level.")
         return

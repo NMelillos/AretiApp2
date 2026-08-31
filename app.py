@@ -575,6 +575,14 @@ st.markdown(
         font-size: 13px;
         margin: 8px 0 4px;
     }
+    .drill-inline-context {
+        border-left: 3px solid var(--accent);
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 650;
+        margin: 2px 0 4px 10px;
+        padding: 3px 8px;
+    }
     .third-report-header {
         margin: 6px 0 18px;
     }
@@ -2938,13 +2946,31 @@ def _render_executive_group_visibility_control(all_report_groups):
     return default_visible_groups
 
 
-def _set_executive_selection(level, value):
-    st.session_state[f"executive_{level}"] = value
-    if level == "group":
-        st.session_state.pop("executive_category", None)
-        st.session_state.pop("executive_subcategory", None)
-    elif level == "category":
-        st.session_state.pop("executive_subcategory", None)
+def _set_executive_selection(
+    level,
+    value,
+    selection_key=None,
+    clear_selection_keys=None,
+    toggle=True,
+):
+    selection_key = selection_key or f"executive_{level}"
+    if toggle and st.session_state.get(selection_key) == value:
+        st.session_state.pop(selection_key, None)
+    else:
+        st.session_state[selection_key] = value
+
+    if clear_selection_keys is None:
+        clear_selection_keys = {
+            "group": ["executive_category", "executive_subcategory"],
+            "category": ["executive_subcategory"],
+        }.get(level, [])
+    for key in clear_selection_keys:
+        st.session_state.pop(key, None)
+
+
+def _clear_executive_selections(*keys):
+    for key in keys:
+        st.session_state.pop(key, None)
 
 
 def _valid_executive_selection(expenses, column, value, extra_values=None):
@@ -2968,6 +2994,10 @@ def _render_executive_click_rows(
     show_all_months=False,
     ai_prompts=None,
     show_zero_explanations=True,
+    selection_key=None,
+    clear_selection_keys=None,
+    render_child=None,
+    inline_selection=False,
 ):
     st.markdown(f"#### {title}")
     if not rows:
@@ -3036,15 +3066,31 @@ def _render_executive_click_rows(
         col_idx += 1
         header_cols[col_idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
 
+    selection_key = selection_key or f"executive_{level}"
     for idx, row in enumerate(rows):
+        is_selected = st.session_state.get(selection_key) == row["value"]
         cols = st.columns(widths)
         col_idx = 0
         with cols[col_idx]:
             if level == "group" and ai_prompts is not None:
                 label_col, ai_col = st.columns([5, 1.25])
                 with label_col:
-                    if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
-                        _set_executive_selection(level, row["value"])
+                    if inline_selection:
+                        st.button(
+                            row["label"],
+                            key=f"executive_{level}_{idx}",
+                            type="primary" if is_selected else "secondary",
+                            help="Collapse" if is_selected else "Open",
+                            on_click=_set_executive_selection,
+                            args=(level, row["value"]),
+                            kwargs={
+                                "selection_key": selection_key,
+                                "clear_selection_keys": clear_selection_keys,
+                            },
+                            use_container_width=True,
+                        )
+                    elif st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
+                        _set_executive_selection(level, row["value"], toggle=False)
                         st.rerun()
                 with ai_col:
                     if st.button("AI", key=f"executive_ai_{idx}", help=f"Open AI report for {row['label']}", use_container_width=True):
@@ -3052,8 +3098,22 @@ def _render_executive_click_rows(
                         st.session_state["third_report_ai_requested"] = True
                         st.rerun()
             else:
-                if st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
-                    _set_executive_selection(level, row["value"])
+                if inline_selection:
+                    st.button(
+                        row["label"],
+                        key=f"executive_{level}_{idx}",
+                        type="primary" if is_selected else "secondary",
+                        help="Collapse" if is_selected else "Open",
+                        on_click=_set_executive_selection,
+                        args=(level, row["value"]),
+                        kwargs={
+                            "selection_key": selection_key,
+                            "clear_selection_keys": clear_selection_keys,
+                        },
+                        use_container_width=True,
+                    )
+                elif st.button(row["label"], key=f"executive_{level}_{idx}", use_container_width=True):
+                    _set_executive_selection(level, row["value"], toggle=False)
                     st.rerun()
         for _, _, _, formatter in base_defs:
             col_idx += 1
@@ -3071,6 +3131,8 @@ def _render_executive_click_rows(
                 f"<div class=\"drill-cell {css_class}\">{formatter(row)}</div>",
                 unsafe_allow_html=True,
             )
+        if render_child is not None and st.session_state.get(selection_key) == row["value"]:
+            render_child(row["value"])
     zero_rows = []
     for row in rows:
         total = float(row.get("total") or 0.0)
@@ -3976,6 +4038,7 @@ def _render_executive_drilldown(
     read_only=False,
     ai_prompts=None,
     show_zero_explanations=True,
+    inline_hierarchy=False,
 ):
     visible_report_groups = visible_report_groups or []
     selected_group = _valid_executive_selection(
@@ -4010,20 +4073,153 @@ def _render_executive_drilldown(
     if selected_subcategory != st.session_state.get("executive_subcategory"):
         st.session_state.pop("executive_subcategory", None)
 
-    if selected_group:
-        trail = f"Reporting group: {selected_group}"
-        if selected_category:
-            trail += f" / Category: {selected_category}"
-        if selected_subcategory is not None:
-            trail += f" / Subcategory: {selected_subcategory or 'No subcategory'}"
-        st.markdown(f"<div class=\"drill-breadcrumb\">{escape(trail)}</div>", unsafe_allow_html=True)
-
     group_rows = _executive_level_rows(
         expenses,
         "report_group",
         months,
         extra_labels=visible_report_groups,
     )
+
+    if not inline_hierarchy:
+        if selected_group:
+            trail = f"Reporting group: {selected_group}"
+            if selected_category:
+                trail += f" / Category: {selected_category}"
+            if selected_subcategory is not None:
+                trail += f" / Subcategory: {selected_subcategory or 'No subcategory'}"
+            st.markdown(f"<div class=\"drill-breadcrumb\">{escape(trail)}</div>", unsafe_allow_html=True)
+
+        _render_executive_click_rows(
+            "1. Reporting Groups",
+            group_rows,
+            "group",
+            months,
+            month_labels,
+            show_all_months=show_all_months,
+            ai_prompts=ai_prompts,
+            show_zero_explanations=show_zero_explanations,
+        )
+        if not selected_group:
+            return
+        group_expenses = expenses[
+            expenses["report_group"].fillna("").astype(str).str.strip() == selected_group
+        ].copy()
+        category_rows = _executive_level_rows(
+            group_expenses,
+            "category",
+            months,
+            extra_labels=group_category_options,
+        )
+        _render_executive_click_rows(
+            "2. Categories",
+            category_rows,
+            "category",
+            months,
+            month_labels,
+            show_all_months=show_all_months,
+            show_zero_explanations=show_zero_explanations,
+        )
+        if not selected_category:
+            return
+        category_expenses = group_expenses[
+            group_expenses["category"].fillna("").astype(str).str.strip() == selected_category
+        ].copy()
+        subcategory_rows = _executive_level_rows(
+            category_expenses,
+            "subcategory",
+            months,
+            extra_labels=category_subcategory_options,
+        )
+        _render_executive_click_rows(
+            "3. Subcategories",
+            subcategory_rows,
+            "subcategory",
+            months,
+            month_labels,
+            show_all_months=show_all_months,
+            show_zero_explanations=show_zero_explanations,
+        )
+        if selected_subcategory is None:
+            return
+        _render_executive_transactions(
+            expenses,
+            selected_group,
+            selected_category,
+            selected_subcategory,
+            months=months,
+            read_only=read_only,
+            categories_df=categories_df,
+        )
+        return
+
+    def render_selected_subcategory(group, category, subcategory):
+        trail = (
+            f"Reporting group: {group} / Category: {category} / "
+            f"Subcategory: {subcategory or 'No subcategory'}"
+        )
+        st.markdown(f"<div class=\"drill-inline-context\">{escape(trail)}</div>", unsafe_allow_html=True)
+        _render_executive_transactions(
+            expenses,
+            group,
+            category,
+            subcategory,
+            months=months,
+            read_only=read_only,
+            categories_df=categories_df,
+        )
+
+    def render_selected_category(group, group_expenses, category):
+        trail = f"Reporting group: {group} / Category: {category}"
+        st.markdown(f"<div class=\"drill-inline-context\">{escape(trail)}</div>", unsafe_allow_html=True)
+        category_expenses = group_expenses[
+            group_expenses["category"].fillna("").astype(str).str.strip() == category
+        ].copy()
+        subcategory_options = _executive_subcategory_options(categories_df, category)
+        subcategory_rows = _executive_level_rows(
+            category_expenses,
+            "subcategory",
+            months,
+            extra_labels=subcategory_options,
+        )
+        _render_executive_click_rows(
+            "3. Subcategories",
+            subcategory_rows,
+            "subcategory",
+            months,
+            month_labels,
+            show_all_months=show_all_months,
+            show_zero_explanations=show_zero_explanations,
+            render_child=lambda subcategory: render_selected_subcategory(group, category, subcategory),
+            inline_selection=True,
+        )
+
+    def render_selected_group(group):
+        st.markdown(
+            f"<div class=\"drill-inline-context\">Reporting group: {escape(group)}</div>",
+            unsafe_allow_html=True,
+        )
+        group_expenses = expenses[
+            expenses["report_group"].fillna("").astype(str).str.strip() == group
+        ].copy()
+        category_options = _executive_category_options(categories_df, group)
+        category_rows = _executive_level_rows(
+            group_expenses,
+            "category",
+            months,
+            extra_labels=category_options,
+        )
+        _render_executive_click_rows(
+            "2. Categories",
+            category_rows,
+            "category",
+            months,
+            month_labels,
+            show_all_months=show_all_months,
+            show_zero_explanations=show_zero_explanations,
+            render_child=lambda category: render_selected_category(group, group_expenses, category),
+            inline_selection=True,
+        )
+
     _render_executive_click_rows(
         "1. Reporting Groups",
         group_rows,
@@ -4033,58 +4229,8 @@ def _render_executive_drilldown(
         show_all_months=show_all_months,
         ai_prompts=ai_prompts,
         show_zero_explanations=show_zero_explanations,
-    )
-
-    if not selected_group:
-        return
-    group_expenses = expenses[expenses["report_group"].fillna("").astype(str).str.strip() == selected_group].copy()
-    category_rows = _executive_level_rows(
-        group_expenses,
-        "category",
-        months,
-        extra_labels=group_category_options,
-    )
-    _render_executive_click_rows(
-        "2. Categories",
-        category_rows,
-        "category",
-        months,
-        month_labels,
-        show_all_months=show_all_months,
-        show_zero_explanations=show_zero_explanations,
-    )
-
-    if not selected_category:
-        return
-    category_expenses = group_expenses[
-        group_expenses["category"].fillna("").astype(str).str.strip() == selected_category
-    ].copy()
-    subcategory_rows = _executive_level_rows(
-        category_expenses,
-        "subcategory",
-        months,
-        extra_labels=category_subcategory_options,
-    )
-    _render_executive_click_rows(
-        "3. Subcategories",
-        subcategory_rows,
-        "subcategory",
-        months,
-        month_labels,
-        show_all_months=show_all_months,
-        show_zero_explanations=show_zero_explanations,
-    )
-
-    if selected_subcategory is None:
-        return
-    _render_executive_transactions(
-        expenses,
-        selected_group,
-        selected_category,
-        selected_subcategory,
-        months=months,
-        read_only=read_only,
-        categories_df=categories_df,
+        render_child=render_selected_group,
+        inline_selection=True,
     )
 
 
@@ -4199,135 +4345,11 @@ def _income_charity_target_message(percentage):
     return "Charity falls below the Family’s target of 10%."
 
 
-def _render_income_charity_section(report_rows, months, month_labels, show_all_months=False):
-    from reporting import income_charity_month_values, income_charity_percentage
-
-    scoped, monthly, cumulative = income_charity_month_values(report_rows, months)
-    income_total = float(sum(monthly["Income"].values()))
-    charity_total = float(sum(monthly["Charity"].values()))
-    charity_income_pct = income_charity_percentage(income_total, charity_total)
-    period_rows = scoped[
-        scoped.get("month", pd.Series(index=scoped.index, dtype=object)).isin(months)
-    ].copy()
-    denominator = abs(income_total) + abs(charity_total)
-    summary_rows = []
-    for row_type in ["Income", "Charity"]:
-        metrics = _executive_metric_values_from_month_values(
-            monthly[row_type],
-            months,
-            denominator,
-        )
-        metrics["label"] = row_type
-        metrics["value"] = row_type
-        summary_rows.append(metrics)
-
-    _render_executive_click_rows(
-        "4. Income and Charity",
-        summary_rows,
-        "income_charity",
-        months,
-        month_labels,
-        show_all_months=show_all_months,
-        show_zero_explanations=False,
-    )
-
-    selected_type = st.session_state.get("executive_income_charity")
-    if selected_type not in {"Income", "Charity"}:
-        st.session_state.pop("executive_income_charity", None)
-        return
-
-    close_col, _ = st.columns([1, 5])
-    with close_col:
-        if st.button(
-            f"Close {selected_type} analysis",
-            key="close_income_charity_analysis",
-            use_container_width=True,
-        ):
-            st.session_state.pop("executive_income_charity", None)
-            st.rerun()
-
-    type_rows = period_rows[period_rows["income_charity_type"].eq(selected_type)].copy()
-    render_summary_strip([
-        ("Income total", _money(income_total)),
-        ("Charity total", _money(charity_total)),
-        ("Charity / Income", _percent(charity_income_pct)),
-        (f"{selected_type} transactions", len(type_rows)),
-    ])
-    target_message = _income_charity_target_message(charity_income_pct)
-    if target_message:
-        st.caption(target_message)
-    st.caption(
-        "This analysis is separate from the existing Reporting Group totals. "
-        "Charity / Income compares the absolute Charity amount with the absolute Income amount."
-    )
-
-    monthly_frame = pd.DataFrame([{
-        "Type": selected_type,
-        **{month_labels[month]: monthly[selected_type][month] for month in months},
-    }])
-    cumulative_frame = pd.DataFrame([{
-        "Type": selected_type,
-        **{month_labels[month]: cumulative[selected_type][month] for month in months},
-    }])
-    st.markdown("#### Monthly values")
-    st.dataframe(monthly_frame, use_container_width=True, hide_index=True)
-    st.markdown("#### Cumulative from January")
-    st.dataframe(cumulative_frame, use_container_width=True, hide_index=True)
-
-    if type_rows.empty:
-        st.info(f"No {selected_type} transactions exist in the current report period.")
-        return
-
-    type_rows["Amount USD"] = _executive_signed_amount_series(type_rows).values
-    category_summary = (
-        type_rows.groupby(["category", "report_group"], dropna=False)
-        .agg(Transactions=("id", "count"), **{"Total USD": ("Amount USD", "sum")})
-        .reset_index()
-        .rename(columns={"category": "Category", "report_group": "Reporting group"})
-    )
-    st.markdown("#### Categories")
-    st.dataframe(category_summary, use_container_width=True, hide_index=True)
-    categories = _ordered_text_values(type_rows.get("category", pd.Series(dtype=str)).tolist())
-    if not categories:
-        st.info(f"No {selected_type} transactions exist in the current report period.")
-        return
-    selected_category = st.selectbox(
-        "Category",
-        categories,
-        key=f"income_charity_category_{selected_type.casefold()}",
-    )
-    category_rows = type_rows[
-        type_rows["category"].fillna("").astype(str).str.strip().eq(selected_category)
-    ].copy()
-    subcategory_summary = (
-        category_rows.assign(
-            _subcategory_label=category_rows["subcategory"].fillna("").astype(str).str.strip().replace("", "No subcategory")
-        )
-        .groupby("_subcategory_label", dropna=False)
-        .agg(Transactions=("id", "count"), **{"Total USD": ("Amount USD", "sum")})
-        .reset_index()
-        .rename(columns={"_subcategory_label": "Subcategory"})
-    )
-    st.markdown("#### Subcategories")
-    st.dataframe(subcategory_summary, use_container_width=True, hide_index=True)
-    subcategories = sorted(
-        category_rows.get("subcategory", pd.Series(dtype=str)).fillna("").astype(str).str.strip().unique().tolist(),
-        key=lambda value: (value == "", value.casefold()),
-    )
-    subcategory_options = [value or "No subcategory" for value in subcategories]
-    selected_subcategory_label = st.selectbox(
-        "Subcategory",
-        subcategory_options,
-        key=(
-            "income_charity_subcategory_"
-            f"{selected_type.casefold()}_{hashlib.sha256(selected_category.encode('utf-8')).hexdigest()[:12]}"
-        ),
-    )
-    selected_subcategory = "" if selected_subcategory_label == "No subcategory" else selected_subcategory_label
-    transaction_rows = category_rows[
-        category_rows["subcategory"].fillna("").astype(str).str.strip().eq(selected_subcategory)
-    ].copy()
-    transaction_rows["txn_date"] = pd.to_datetime(transaction_rows["txn_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+def _render_income_charity_transactions(transaction_rows):
+    transaction_rows = transaction_rows.copy()
+    transaction_rows["txn_date"] = pd.to_datetime(
+        transaction_rows["txn_date"], errors="coerce"
+    ).dt.strftime("%Y-%m-%d")
     transaction_rows["Amount USD"] = _executive_signed_amount_series(transaction_rows).values
     transaction_rows = transaction_rows.rename(columns={
         "txn_date": "Date",
@@ -4357,6 +4379,153 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
         transaction_rows[[column for column in detail_columns if column in transaction_rows.columns]],
         use_container_width=True,
         hide_index=True,
+    )
+
+
+def _render_income_charity_section(report_rows, months, month_labels, show_all_months=False):
+    from reporting import income_charity_month_values, income_charity_percentage
+
+    scoped, monthly, cumulative = income_charity_month_values(report_rows, months)
+    income_total = float(sum(monthly["Income"].values()))
+    charity_total = float(sum(monthly["Charity"].values()))
+    charity_income_pct = income_charity_percentage(income_total, charity_total)
+    period_rows = scoped[
+        scoped.get("month", pd.Series(index=scoped.index, dtype=object)).isin(months)
+    ].copy()
+    denominator = abs(income_total) + abs(charity_total)
+    summary_rows = []
+    for row_type in ["Income", "Charity"]:
+        metrics = _executive_metric_values_from_month_values(
+            monthly[row_type],
+            months,
+            denominator,
+        )
+        metrics["label"] = row_type
+        metrics["value"] = row_type
+        summary_rows.append(metrics)
+
+    if st.session_state.get("executive_income_charity") not in {None, "Income", "Charity"}:
+        _clear_executive_selections(
+            "executive_income_charity",
+            "executive_income_charity_category",
+            "executive_income_charity_subcategory",
+        )
+
+    def render_selected_subcategory(row_type, category, category_rows, subcategory):
+        trail = (
+            f"{row_type} / Category: {category} / "
+            f"Subcategory: {subcategory or 'No subcategory'}"
+        )
+        st.markdown(f"<div class=\"drill-inline-context\">{escape(trail)}</div>", unsafe_allow_html=True)
+        transaction_rows = category_rows[
+            category_rows["subcategory"].fillna("").astype(str).str.strip().eq(subcategory)
+        ].copy()
+        _render_income_charity_transactions(transaction_rows)
+
+    def render_selected_category(row_type, type_rows, category):
+        st.markdown(
+            f"<div class=\"drill-inline-context\">{escape(row_type)} / Category: {escape(category)}</div>",
+            unsafe_allow_html=True,
+        )
+        category_rows = type_rows[
+            type_rows["category"].fillna("").astype(str).str.strip().eq(category)
+        ].copy()
+        subcategory_rows = _executive_level_rows(category_rows, "subcategory", months)
+        _render_executive_click_rows(
+            "Subcategories",
+            subcategory_rows,
+            "income_charity_subcategory",
+            months,
+            month_labels,
+            show_all_months=show_all_months,
+            show_zero_explanations=False,
+            selection_key="executive_income_charity_subcategory",
+            clear_selection_keys=[],
+            render_child=lambda subcategory: render_selected_subcategory(
+                row_type, category, category_rows, subcategory
+            ),
+            inline_selection=True,
+        )
+
+    def render_selected_type(row_type):
+        st.markdown(
+            f"<div class=\"drill-inline-context\">{escape(row_type)}</div>",
+            unsafe_allow_html=True,
+        )
+        close_col, _ = st.columns([1, 5])
+        with close_col:
+            st.button(
+                f"Close {row_type} analysis",
+                key="close_income_charity_analysis",
+                on_click=_clear_executive_selections,
+                args=(
+                    "executive_income_charity",
+                    "executive_income_charity_category",
+                    "executive_income_charity_subcategory",
+                ),
+                use_container_width=True,
+            )
+
+        type_rows = period_rows[period_rows["income_charity_type"].eq(row_type)].copy()
+        target_message = _income_charity_target_message(charity_income_pct)
+        if target_message:
+            st.caption(target_message)
+        if type_rows.empty:
+            st.info(f"No {row_type} transactions exist in the current report period.")
+        else:
+            category_rows = _executive_level_rows(type_rows, "category", months)
+            _render_executive_click_rows(
+                "Categories",
+                category_rows,
+                "income_charity_category",
+                months,
+                month_labels,
+                show_all_months=show_all_months,
+                show_zero_explanations=False,
+                selection_key="executive_income_charity_category",
+                clear_selection_keys=["executive_income_charity_subcategory"],
+                render_child=lambda category: render_selected_category(row_type, type_rows, category),
+                inline_selection=True,
+            )
+
+        render_summary_strip([
+            ("Income total", _money(income_total)),
+            ("Charity total", _money(charity_total)),
+            ("Charity / Income", _percent(charity_income_pct)),
+            (f"{row_type} transactions", len(type_rows)),
+        ])
+        st.caption(
+            "This analysis is separate from the existing Reporting Group totals. "
+            "Charity / Income compares the absolute Charity amount with the absolute Income amount."
+        )
+
+        monthly_frame = pd.DataFrame([{
+            "Type": row_type,
+            **{month_labels[month]: monthly[row_type][month] for month in months},
+        }])
+        cumulative_frame = pd.DataFrame([{
+            "Type": row_type,
+            **{month_labels[month]: cumulative[row_type][month] for month in months},
+        }])
+        st.markdown("#### Monthly values")
+        st.dataframe(monthly_frame, use_container_width=True, hide_index=True)
+        st.markdown("#### Cumulative from January")
+        st.dataframe(cumulative_frame, use_container_width=True, hide_index=True)
+
+    _render_executive_click_rows(
+        "4. Income and Charity",
+        summary_rows,
+        "income_charity",
+        months,
+        month_labels,
+        show_all_months=show_all_months,
+        show_zero_explanations=False,
+        clear_selection_keys=[
+            "executive_income_charity_category",
+            "executive_income_charity_subcategory",
+        ],
+        render_child=render_selected_type,
+        inline_selection=True,
     )
 
 
@@ -4456,6 +4625,7 @@ def render_executive_report():
         visible_report_groups,
         categories_df=categories_df,
         show_all_months=show_all_months,
+        inline_hierarchy=True,
     )
     if show_income_charity:
         _render_income_charity_section(

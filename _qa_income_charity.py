@@ -161,15 +161,27 @@ def main():
         True,
     )
     assert_equal(
-        "Item 19 detail is hidden until a row is selected",
-        'if selected_type not in {"Income", "Charity"}:' in item19_source
-        and "return" in item19_source,
+        "Item 19 detail is rendered only by the selected row",
+        "render_child=render_selected_type" in item19_source,
         True,
     )
     assert_equal(
         "Item 19 has explicit close control",
-        'f"Close {selected_type} analysis"' in item19_source,
+        'f"Close {row_type} analysis"' in item19_source,
         True,
+    )
+    assert_equal(
+        "Item 19 categories and subcategories use inline native rows",
+        '"income_charity_category"' in item19_source
+        and '"income_charity_subcategory"' in item19_source
+        and "render_child=lambda category" in item19_source
+        and "render_child=lambda subcategory" in item19_source,
+        True,
+    )
+    assert_equal(
+        "Item 19 no longer uses detached category selectors",
+        "st.selectbox(" in item19_source,
+        False,
     )
     assert_equal(
         "Item 19 target uses the existing verified percentage",

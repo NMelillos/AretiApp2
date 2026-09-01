@@ -129,7 +129,28 @@ def main():
         "child hierarchy controls remain locally indented and right-aligned",
         'div[class*="st-key-executive_category_"]' in source
         and 'div[class*="st-key-executive_subcategory_"]' in source
+        and "align-self: flex-end !important;" in source
+        and "width: 80% !important;" in source
         and "text-align: right;" in source,
+        True,
+    )
+    assert_equal(
+        "Reporting Group and Category buttons preserve the 1.25 width hierarchy",
+        'div[class*="st-key-executive_group_"] button' in source
+        and "align-self: flex-end !important;" in source
+        and "width: 80% !important;" in source,
+        True,
+    )
+    assert_equal(
+        "hierarchy branch styling does not shift the financial grid",
+        "margin: 0 0 8px 0 !important;" in source
+        and "padding: 0 0 2px 0 !important;" in source,
+        True,
+    )
+    assert_equal(
+        "Category connector is scoped to descendants and excludes sibling Categories",
+        'div[class*="st-key-executive_hierarchy_branch_category"]::before' in source
+        and 'div[class*="st-key-executive_hierarchy_branch_group"]::before' not in source,
         True,
     )
     assert_equal(

@@ -594,9 +594,21 @@ st.markdown(
     }
     div[class*="st-key-income_charity_branch_"],
     div[class*="st-key-executive_hierarchy_branch_"] {
-        border-left: 3px solid var(--accent);
-        margin: 0 0 8px 10px !important;
-        padding: 0 0 2px 8px !important;
+        margin: 0 0 8px 0 !important;
+        padding: 0 0 2px 0 !important;
+        position: relative;
+    }
+    div[class*="st-key-income_charity_branch_category"]::before,
+    div[class*="st-key-income_charity_branch_subcategory"]::before,
+    div[class*="st-key-executive_hierarchy_branch_category"]::before,
+    div[class*="st-key-executive_hierarchy_branch_subcategory"]::before {
+        background: var(--accent);
+        content: "";
+        left: 10px;
+        position: absolute;
+        top: 0;
+        bottom: 2px;
+        width: 3px;
     }
     div[class*="st-key-income_charity_branch_"][data-testid="stVerticalBlock"],
     div[class*="st-key-income_charity_branch_"] > div[data-testid="stVerticalBlock"],
@@ -608,10 +620,19 @@ st.markdown(
         border-left: 0;
         margin-left: 0;
     }
+    div[class*="st-key-executive_group_"] button,
+    div[class*="st-key-executive_income_charity_"] button {
+        justify-content: flex-end !important;
+    }
+    div[class*="st-key-executive_group_"] button p,
+    div[class*="st-key-executive_income_charity_"] button p {
+        width: 100%;
+        text-align: right;
+    }
     div[class*="st-key-executive_category_"],
     div[class*="st-key-executive_income_charity_category_"] {
-        margin-left: 12px !important;
-        width: calc(100% - 12px) !important;
+        align-self: flex-end !important;
+        width: 80% !important;
     }
     div[class*="st-key-executive_subcategory_"],
     div[class*="st-key-executive_income_charity_subcategory_"] {

@@ -122,7 +122,7 @@ def main():
     setup_source = source[source.index('elif page == "Setup":'):]
     assert_equal(
         "target message renders before any Item 19 selection",
-        item19_source.index("target_message = _income_charity_target_message")
+        item19_source.index("target_summary_message = _income_charity_target_summary_message")
         < item19_source.index("def render_selected_subcategory"),
         True,
     )

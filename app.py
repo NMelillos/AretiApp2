@@ -592,6 +592,37 @@ st.markdown(
         margin: 2px 0 4px 10px;
         padding: 3px 8px;
     }
+    div[class*="st-key-income_charity_branch_"] {
+        border-left: 3px solid var(--accent);
+        margin: 0 0 8px 10px !important;
+        padding: 0 0 2px 8px !important;
+    }
+    div[class*="st-key-income_charity_branch_"][data-testid="stVerticalBlock"],
+    div[class*="st-key-income_charity_branch_"] > div[data-testid="stVerticalBlock"] {
+        gap: 2px !important;
+    }
+    div[class*="st-key-executive_income_charity_category_"] {
+        margin-left: 12px !important;
+        width: calc(100% - 12px) !important;
+    }
+    div[class*="st-key-executive_income_charity_subcategory_"] {
+        margin-left: 22px !important;
+        width: calc(100% - 22px) !important;
+    }
+    div[class*="st-key-executive_income_charity_category_"] button,
+    div[class*="st-key-executive_income_charity_subcategory_"] button {
+        font-size: 10px !important;
+    }
+    div[class*="st-key-close_income_charity_analysis_"] {
+        margin: 2px 0 2px 10px !important;
+        width: fit-content !important;
+    }
+    div[class*="st-key-close_income_charity_analysis_"] button {
+        min-height: 24px !important;
+        padding: 2px 10px !important;
+        font-size: 11px !important;
+        line-height: 1.1 !important;
+    }
     .drill-total-cell {
         border-top: 2px solid var(--accent);
         font-weight: 800;
@@ -3128,11 +3159,14 @@ def _render_executive_click_rows(
     inline_selection=False,
     income_context=False,
     intro_captions=None,
+    show_title=True,
+    show_header=True,
 ):
-    st.markdown(
-        f"<div class=\"executive-section-title\">{escape(title)}</div>",
-        unsafe_allow_html=True,
-    )
+    if show_title:
+        st.markdown(
+            f"<div class=\"executive-section-title\">{escape(title)}</div>",
+            unsafe_allow_html=True,
+        )
     for caption in intro_captions or []:
         st.caption(caption)
     if not rows:
@@ -3185,21 +3219,22 @@ def _render_executive_click_rows(
             """,
             unsafe_allow_html=True,
         )
-    header_cols = st.columns(widths)
-    col_idx = 0
-    header_cols[col_idx].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
-    for _, label, _, _ in base_defs:
-        col_idx += 1
-        header_cols[col_idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
-    for month in display_months:
-        col_idx += 1
-        header_cols[col_idx].markdown(
-            f"<div class=\"summary-label\">{escape(month_labels[month])}</div>",
-            unsafe_allow_html=True,
-        )
-    for _, label, _, _, _ in tail_defs:
-        col_idx += 1
-        header_cols[col_idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
+    if show_header:
+        header_cols = st.columns(widths)
+        col_idx = 0
+        header_cols[col_idx].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
+        for _, label, _, _ in base_defs:
+            col_idx += 1
+            header_cols[col_idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
+        for month in display_months:
+            col_idx += 1
+            header_cols[col_idx].markdown(
+                f"<div class=\"summary-label\">{escape(month_labels[month])}</div>",
+                unsafe_allow_html=True,
+            )
+        for _, label, _, _, _ in tail_defs:
+            col_idx += 1
+            header_cols[col_idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
 
     selection_key = selection_key or f"executive_{level}"
     for idx, row in enumerate(rows):
@@ -4518,6 +4553,20 @@ def _income_charity_target_variance_message(income_total, charity_total):
     return f"Amount {direction} the 10% target: {_money(abs(variance))}."
 
 
+def _income_charity_target_summary_message(percentage, income_total, charity_total):
+    if percentage is None:
+        return None
+    percentage = float(percentage)
+    lead = f"Charity is at {_percent(percentage)} of income."
+    if abs(percentage - 10.0) <= 1e-9:
+        return f"{lead} Charity is meeting the Family’s target of 10%."
+    variance = _income_charity_target_variance(income_total, charity_total)
+    if variance is None:
+        return lead
+    direction = "exceeding" if variance > 0 else "below"
+    return f"{lead} Charity is {direction} the Family’s target of 10% by {_money(abs(variance))}."
+
+
 def _render_income_charity_transactions(transaction_rows):
     transaction_rows = transaction_rows.copy()
     transaction_rows["txn_date"] = pd.to_datetime(
@@ -4584,13 +4633,12 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
             "executive_income_charity_subcategory",
         )
 
-    target_captions = []
-    target_message = _income_charity_target_message(charity_income_pct)
-    if target_message:
-        target_captions.append(target_message)
-        target_variance_message = _income_charity_target_variance_message(income_total, charity_total)
-        if target_variance_message:
-            target_captions.append(target_variance_message)
+    target_summary_message = _income_charity_target_summary_message(
+        charity_income_pct,
+        income_total,
+        charity_total,
+    )
+    target_captions = [target_summary_message] if target_summary_message else []
 
     def render_selected_subcategory(row_type, category, category_rows, subcategory):
         trail = (
@@ -4630,41 +4678,38 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
         )
 
     def render_selected_type(row_type):
-        st.markdown(
-            f"<div class=\"drill-inline-context\">{escape(row_type)}</div>",
-            unsafe_allow_html=True,
-        )
-        type_rows = period_rows[period_rows["income_charity_type"].eq(row_type)].copy()
-        if type_rows.empty:
-            st.info(f"No {row_type} transactions exist in the current report period.")
-        else:
-            category_rows = _executive_level_rows(type_rows, "category", months)
-            _render_executive_click_rows(
-                "Categories",
-                category_rows,
-                "income_charity_category",
-                months,
-                month_labels,
-                show_all_months=show_all_months,
-                show_zero_explanations=False,
-                selection_key="executive_income_charity_category",
-                clear_selection_keys=["executive_income_charity_subcategory"],
-                render_child=lambda category: render_selected_category(row_type, type_rows, category),
-                inline_selection=True,
-                income_context=row_type == "Income",
-            )
-        close_col, _ = st.columns([1, 5])
-        with close_col:
+        with st.container(key=f"income_charity_branch_{row_type.lower()}"):
+            type_rows = period_rows[period_rows["income_charity_type"].eq(row_type)].copy()
+            if type_rows.empty:
+                st.info(f"No {row_type} transactions exist in the current report period.")
+            else:
+                category_rows = _executive_level_rows(type_rows, "category", months)
+                _render_executive_click_rows(
+                    "Categories",
+                    category_rows,
+                    "income_charity_category",
+                    months,
+                    month_labels,
+                    show_all_months=show_all_months,
+                    show_zero_explanations=False,
+                    selection_key="executive_income_charity_category",
+                    clear_selection_keys=["executive_income_charity_subcategory"],
+                    render_child=lambda category: render_selected_category(row_type, type_rows, category),
+                    inline_selection=True,
+                    income_context=row_type == "Income",
+                    show_title=False,
+                    show_header=False,
+                )
             st.button(
-                f"Close {row_type} analysis",
-                key="close_income_charity_analysis",
+                "Close",
+                key=f"close_income_charity_analysis_{row_type.lower()}",
+                help=f"Close {row_type} analysis",
                 on_click=_clear_executive_selections,
                 args=(
                     "executive_income_charity",
                     "executive_income_charity_category",
                     "executive_income_charity_subcategory",
                 ),
-                use_container_width=True,
             )
 
     _render_executive_click_rows(

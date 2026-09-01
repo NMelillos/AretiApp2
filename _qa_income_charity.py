@@ -152,6 +152,36 @@ def main():
         target_message(production_percentage),
         "Charity is exceeding the Family’s target of 10%.",
     )
+    helper_names = {
+        "_money",
+        "_percent",
+        "_income_charity_target_variance",
+        "_income_charity_target_summary_message",
+    }
+    helper_nodes = [
+        node
+        for node in source_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in helper_names
+    ]
+    summary_namespace = {"pd": pd}
+    exec(compile(ast.Module(body=helper_nodes, type_ignores=[]), "app.py", "exec"), summary_namespace)
+    summary_message = summary_namespace["_income_charity_target_summary_message"]
+    assert_equal(
+        "above-target summary is one dynamic message",
+        summary_message(production_percentage, 187548.01, -38513.07),
+        "Charity is at 20.5% of income. Charity is exceeding the Family’s target of 10% by $19,758.",
+    )
+    assert_equal(
+        "below-target summary is mathematically correct",
+        summary_message(5.0, 1000, -50),
+        "Charity is at 5.0% of income. Charity is below the Family’s target of 10% by $50.",
+    )
+    assert_equal(
+        "exact-target summary is neutral",
+        summary_message(10.0, 1000, -100),
+        "Charity is at 10.0% of income. Charity is meeting the Family’s target of 10%.",
+    )
+    assert_equal("undefined-income summary remains safe", summary_message(None, 0, -50), None)
     item19_start = source.index("def _render_income_charity_section")
     third_start = source.index("def render_third_link_report")
     item19_source = source[item19_start:third_start]
@@ -167,7 +197,7 @@ def main():
     )
     assert_equal(
         "Item 19 has explicit close control",
-        'f"Close {row_type} analysis"' in item19_source,
+        '"Close",' in item19_source and 'help=f"Close {row_type} analysis"' in item19_source,
         True,
     )
     assert_equal(
@@ -184,16 +214,18 @@ def main():
         False,
     )
     assert_equal(
-        "Item 19 target uses the existing verified percentage",
-        "_income_charity_target_message(charity_income_pct)" in item19_source,
+        "Item 19 summary uses the existing verified percentage and totals",
+        "_income_charity_target_summary_message(" in item19_source
+        and "charity_income_pct," in item19_source
+        and "income_total," in item19_source
+        and "charity_total," in item19_source,
         True,
     )
     assert_equal(
-        "Item 19 target messages render immediately below the section heading",
-        "target_captions.append(target_message)" in item19_source
-        and "target_captions.append(target_variance_message)" in item19_source
+        "Item 19 renders one target message immediately below the section heading",
+        "target_captions = [target_summary_message] if target_summary_message else []" in item19_source
         and "intro_captions=target_captions" in item19_source
-        and "st.caption(target_message)" not in item19_source,
+        and "target_variance_message" not in item19_source,
         True,
     )
     selected_type_source = item19_source[
@@ -204,7 +236,14 @@ def main():
     assert_equal(
         "Item 19 close control follows the expanded branch content",
         selected_type_source.index('"Categories"')
-        < selected_type_source.index('f"Close {row_type} analysis"'),
+        < selected_type_source.index('"Close",'),
+        True,
+    )
+    assert_equal(
+        "Item 19 branch is locally compact without changing the shared hierarchy default",
+        'with st.container(key=f"income_charity_branch_{row_type.lower()}")' in selected_type_source
+        and "show_title=False" in selected_type_source
+        and "show_header=False" in selected_type_source,
         True,
     )
     assert_equal(

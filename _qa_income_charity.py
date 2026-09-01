@@ -240,10 +240,20 @@ def main():
         True,
     )
     assert_equal(
-        "Item 19 branch is locally compact without changing the shared hierarchy default",
+        "Item 19 branch retains its local compact presentation",
         'with st.container(key=f"income_charity_branch_{row_type.lower()}")' in selected_type_source
         and "show_title=False" in selected_type_source
         and "show_header=False" in selected_type_source,
+        True,
+    )
+    assert_equal(
+        "top-level Income and Charity share percentages are display-only blanks",
+        "blank_share_pct=True" in item19_source,
+        True,
+    )
+    assert_equal(
+        "Income and Charity child percentages remain enabled",
+        "blank_share_pct=True" not in selected_type_source,
         True,
     )
     assert_equal(

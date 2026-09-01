@@ -119,6 +119,20 @@ def main():
         True,
     )
     assert_equal(
+        "shared inline hierarchy branches use compact scoped containers",
+        'child_branch_key="executive_hierarchy_branch_group"' in drilldown_source
+        and 'child_branch_key="executive_hierarchy_branch_category"' in drilldown_source
+        and 'child_branch_key="executive_hierarchy_branch_subcategory"' in drilldown_source,
+        True,
+    )
+    assert_equal(
+        "child hierarchy controls remain locally indented and right-aligned",
+        'div[class*="st-key-executive_category_"]' in source
+        and 'div[class*="st-key-executive_subcategory_"]' in source
+        and "text-align: right;" in source,
+        True,
+    )
+    assert_equal(
         "protected detached renderer keeps its previous explicit lifecycle",
         "toggle=False" in renderer_source and "st.rerun()" in renderer_source,
         True,

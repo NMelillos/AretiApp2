@@ -592,26 +592,45 @@ st.markdown(
         margin: 2px 0 4px 10px;
         padding: 3px 8px;
     }
-    div[class*="st-key-income_charity_branch_"] {
+    div[class*="st-key-income_charity_branch_"],
+    div[class*="st-key-executive_hierarchy_branch_"] {
         border-left: 3px solid var(--accent);
         margin: 0 0 8px 10px !important;
         padding: 0 0 2px 8px !important;
     }
     div[class*="st-key-income_charity_branch_"][data-testid="stVerticalBlock"],
-    div[class*="st-key-income_charity_branch_"] > div[data-testid="stVerticalBlock"] {
+    div[class*="st-key-income_charity_branch_"] > div[data-testid="stVerticalBlock"],
+    div[class*="st-key-executive_hierarchy_branch_"][data-testid="stVerticalBlock"],
+    div[class*="st-key-executive_hierarchy_branch_"] > div[data-testid="stVerticalBlock"] {
         gap: 2px !important;
     }
+    div[class*="st-key-executive_hierarchy_branch_"] .drill-inline-context {
+        border-left: 0;
+        margin-left: 0;
+    }
+    div[class*="st-key-executive_category_"],
     div[class*="st-key-executive_income_charity_category_"] {
         margin-left: 12px !important;
         width: calc(100% - 12px) !important;
     }
+    div[class*="st-key-executive_subcategory_"],
     div[class*="st-key-executive_income_charity_subcategory_"] {
         margin-left: 22px !important;
         width: calc(100% - 22px) !important;
     }
+    div[class*="st-key-executive_category_"] button,
+    div[class*="st-key-executive_subcategory_"] button,
     div[class*="st-key-executive_income_charity_category_"] button,
     div[class*="st-key-executive_income_charity_subcategory_"] button {
         font-size: 10px !important;
+        justify-content: flex-end !important;
+    }
+    div[class*="st-key-executive_category_"] button p,
+    div[class*="st-key-executive_subcategory_"] button p,
+    div[class*="st-key-executive_income_charity_category_"] button p,
+    div[class*="st-key-executive_income_charity_subcategory_"] button p {
+        width: 100%;
+        text-align: right;
     }
     div[class*="st-key-close_income_charity_analysis_"] {
         margin: 2px 0 2px 10px !important;
@@ -3161,6 +3180,8 @@ def _render_executive_click_rows(
     intro_captions=None,
     show_title=True,
     show_header=True,
+    blank_share_pct=False,
+    child_branch_key=None,
 ):
     if show_title:
         st.markdown(
@@ -3200,7 +3221,12 @@ def _render_executive_click_rows(
     if show_all_months:
         base_defs.extend([
             ("total", "Sum since Jan", 1, lambda row: _money(row["total"])),
-            ("share_pct", "% OF TOTAL", 0.85, lambda row: _percent(row["share_pct"])),
+            (
+                "share_pct",
+                "% OF TOTAL",
+                0.85,
+                (lambda row: "") if blank_share_pct else (lambda row: _percent(row["share_pct"])),
+            ),
             ("average", "Average", 1, lambda row: _money(row["average"])),
         ])
     first_col_width = 1.95 if show_all_months and ai_prompts is not None else 1.75 if show_all_months else 1.55
@@ -3318,7 +3344,11 @@ def _render_executive_click_rows(
                 unsafe_allow_html=True,
             )
         if not is_total and render_child is not None and st.session_state.get(selection_key) == row["value"]:
-            render_child(row["value"])
+            if child_branch_key:
+                with st.container(key=child_branch_key):
+                    render_child(row["value"])
+            else:
+                render_child(row["value"])
     zero_rows = []
     for row in rows:
         if row.get("is_total"):
@@ -4384,6 +4414,7 @@ def _render_executive_drilldown(
             show_zero_explanations=show_zero_explanations,
             render_child=lambda subcategory: render_selected_subcategory(group, category, subcategory),
             inline_selection=True,
+            child_branch_key="executive_hierarchy_branch_subcategory",
         )
 
     def render_selected_group(group):
@@ -4411,6 +4442,7 @@ def _render_executive_drilldown(
             show_zero_explanations=show_zero_explanations,
             render_child=lambda category: render_selected_category(group, group_expenses, category),
             inline_selection=True,
+            child_branch_key="executive_hierarchy_branch_category",
         )
 
     _render_executive_click_rows(
@@ -4424,6 +4456,7 @@ def _render_executive_drilldown(
         show_zero_explanations=show_zero_explanations,
         render_child=render_selected_group,
         inline_selection=True,
+        child_branch_key="executive_hierarchy_branch_group",
     )
 
 
@@ -4727,6 +4760,7 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
         render_child=render_selected_type,
         inline_selection=True,
         intro_captions=target_captions,
+        blank_share_pct=True,
     )
 
 

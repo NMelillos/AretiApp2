@@ -127,15 +127,16 @@ def income_charity_scope(report_rows):
     report_group = scoped.get("report_group", pd.Series("", index=scoped.index)).fillna("").astype(str).str.strip()
     category_key = category.str.casefold()
     subcategory_key = subcategory.str.casefold()
+    report_group_key = report_group.str.casefold()
 
     row_type = pd.Series("", index=scoped.index, dtype=str)
     row_type.loc[category_key.eq("charity")] = "Charity"
-    row_type.loc[category_key.eq("income")] = "Income"
+    row_type.loc[report_group_key.eq("income")] = "Income"
     for (special_category, special_subcategory), expected_group in INCOME_CHARITY_SPECIAL_INCOME.items():
         special_mask = (
             category_key.eq(special_category)
             & subcategory_key.eq(special_subcategory)
-            & report_group.str.casefold().eq(expected_group.casefold())
+            & report_group_key.eq(expected_group.casefold())
         )
         row_type.loc[special_mask] = "Income"
 

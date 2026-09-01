@@ -74,7 +74,7 @@ def main():
         {"id": 1, "category": "Operations", "subcategory": "General", "report_group": "A"},
         {"id": 2, "category": "Charity", "subcategory": "Support", "report_group": "A"},
         {"id": 3, "category": "Operations", "subcategory": "General", "report_group": "B"},
-        {"id": 4, "category": "Income", "subcategory": "Interest earned", "report_group": "Income deposits"},
+        {"id": 4, "category": "Income", "subcategory": "Interest earned", "report_group": "Income"},
         {"id": 5, "category": "Walt Disney house tour income", "subcategory": "Income", "report_group": "Woking Way LLC"},
         {"id": 6, "category": "Technology", "subcategory": "Hosting", "report_group": "Woking Way LLC"},
     ])
@@ -92,7 +92,7 @@ def main():
     )
     assert_equal("Item 19 source rows remain available", income_charity_scope(rows)["id"].tolist(), [2, 4, 5])
     assert_equal("mixed reporting group remains available", "Woking Way LLC" in group_rows["report_group"].tolist(), True)
-    assert_equal("dedicated Income group is absent", "Income deposits" in group_rows["report_group"].tolist(), False)
+    assert_equal("dedicated Income group is absent", "Income" in group_rows["report_group"].tolist(), False)
 
     baseline_percentage = income_charity_percentage(187548.01, -38513.07)
     assert_close("protected Item 19 percentage", baseline_percentage, 20.535, tolerance=0.001)

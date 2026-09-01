@@ -60,8 +60,8 @@ def reset_db():
     if path.exists():
         path.unlink()
     db.init_db()
-    db.add_category("Income", "Refund", "1-income")
-    db.add_category("Income", "Amazon", "1-income")
+    db.add_category("Income", "Refund", "Income")
+    db.add_category("Income", "Amazon", "Income")
     db.add_category("Business", "Software", "2-business")
     db.add_category("Business", "Services", "2-business")
 

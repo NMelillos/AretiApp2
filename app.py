@@ -190,6 +190,53 @@ def active_financial_transactions(df):
     return filter_financially_active_transactions(df)
 
 
+def _post_cutoff_reviewed_summary(transactions, cutoff):
+    if transactions is None or transactions.empty:
+        return {"count": 0, "latest_date": None}
+
+    active = active_financial_transactions(transactions)
+    if active.empty:
+        return {"count": 0, "latest_date": None}
+
+    status = active.get("status", pd.Series("", index=active.index)).fillna("").astype(str)
+    reviewed = pd.to_numeric(
+        active.get("reviewed", pd.Series(0, index=active.index)),
+        errors="coerce",
+    ).fillna(0)
+    reviewed_mask = status.eq("reviewed") | reviewed.eq(1)
+    dates = pd.to_datetime(active.get("txn_date", pd.Series(pd.NaT, index=active.index)), errors="coerce")
+    cutoff_ts = pd.Timestamp(cutoff)
+    post_cutoff_dates = dates[reviewed_mask & dates.notna() & dates.gt(cutoff_ts)]
+    if post_cutoff_dates.empty:
+        return {"count": 0, "latest_date": None}
+    return {
+        "count": int(len(post_cutoff_dates)),
+        "latest_date": post_cutoff_dates.max().date(),
+    }
+
+
+def _render_report_cutoff_notice(transactions, cutoff, setup=False):
+    summary = _post_cutoff_reviewed_summary(transactions, cutoff)
+    if summary["count"] <= 0:
+        return summary
+
+    cutoff_text = pd.Timestamp(cutoff).strftime("%d/%m/%Y")
+    latest_text = summary["latest_date"].strftime("%d/%m/%Y")
+    if setup:
+        st.info(
+            f"There are {summary['count']} reviewed transactions after the current report date. "
+            f"Latest: {latest_text}."
+        )
+    else:
+        st.warning(
+            f"Report date notice: {summary['count']} reviewed transactions dated after {cutoff_text} "
+            "are not included in this report.\n\n"
+            f"Latest reviewed transaction: {latest_text}.\n\n"
+            "To include them, update 'Report until' in Setup."
+        )
+    return summary
+
+
 @st.cache_data(show_spinner=False, ttl=_DB_CACHE_TTL_SECONDS)
 def get_accounts():
     return _db_get_accounts()
@@ -4813,6 +4860,7 @@ def render_executive_report():
     default_end = date_values.max().date() if not date_values.empty else app_now().date()
     cutoff = get_configured_report_until(default_end)
     st.caption(f"Report until {cutoff.strftime('%d/%m/%Y')} (controlled in Setup)")
+    _render_report_cutoff_notice(all_transactions, cutoff)
     cutoff_ts = pd.Timestamp(cutoff)
     filtered = active_transactions[active_transactions["txn_date"] <= cutoff_ts].copy()
     active_database_rows = filtered.copy()
@@ -4943,6 +4991,7 @@ def render_third_link_report():
     default_end = active_transactions["txn_date"].max().date()
     cutoff = get_configured_report_until(default_end)
     cutoff_ts = pd.Timestamp(cutoff)
+    _render_report_cutoff_notice(all_transactions, cutoff)
     filtered = active_transactions[active_transactions["txn_date"] <= cutoff_ts].copy()
     _perf_log("third_link.apply_cutoff", step_started)
     if filtered.empty:
@@ -6256,6 +6305,7 @@ elif page == "Setup":
     setup_categories = get_categories(include_subcategories=True)
     setup_accounts = get_accounts()
     setup_rates = get_rates()
+    setup_transactions = get_all_transactions()
     setup_missing = missing_setup_items(setup_categories, setup_accounts, setup_rates)
     setup_missing_rates = missing_account_rate_types(setup_accounts, setup_rates)
     missing_shared = [
@@ -6314,6 +6364,7 @@ elif page == "Setup":
         key="setup_report_until",
         help="Executive reports and the third link read this date from Setup.",
     )
+    _render_report_cutoff_notice(setup_transactions, configured_report_until, setup=True)
     if st.button("Save report date", key="save_setup_report_until"):
         set_app_setting(REPORT_UNTIL_SETTING_KEY, setup_report_until.isoformat())
         st.success(f"Saved report date: {setup_report_until.strftime('%d/%m/%Y')}")
@@ -6472,7 +6523,7 @@ elif page == "Setup":
     st.download_button(
         "Download full backup Excel",
         data=dataframe_to_excel_bytes({
-            "Transactions": get_all_transactions(),
+            "Transactions": setup_transactions,
             "Statement balances": get_statement_balances(),
             "Import history": get_import_history(),
             "Memory": get_memory(),

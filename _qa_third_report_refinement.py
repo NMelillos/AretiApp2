@@ -77,6 +77,7 @@ def main():
         {"id": 4, "category": "Income", "subcategory": "Interest earned", "report_group": "Income"},
         {"id": 5, "category": "Walt Disney house tour income", "subcategory": "Income", "report_group": "Woking Way LLC"},
         {"id": 6, "category": "Technology", "subcategory": "Hosting", "report_group": "Woking Way LLC"},
+        {"id": 7, "category": "Cypress Apartments-TB Tribute", "subcategory": "Income", "report_group": "TB Tribute Ltd"},
     ])
     categories = rows[["category", "subcategory", "report_group"]].copy()
     rows_before = rows.to_dict("records")
@@ -84,13 +85,18 @@ def main():
     group_rows, group_categories = scope_fn(rows, categories)
     assert_equal("THIRD scope does not mutate report rows", rows.to_dict("records"), rows_before)
     assert_equal("THIRD scope does not mutate mappings", categories.to_dict("records"), categories_before)
-    assert_equal("Income and Charity rows excluded from group scope", group_rows["id"].tolist(), [1, 3, 6])
+    assert_equal("only approved Woking income is added to group scope", group_rows["id"].tolist(), [1, 3, 5, 6])
+    assert_equal("retained income has the exact approved identity", group_rows.loc[group_rows["id"].eq(5)].to_dict("records"), [
+        {"id": 5, "category": "Walt Disney house tour income", "subcategory": "Income", "report_group": "Woking Way LLC"},
+    ])
+    assert_equal("TB Tribute income stays excluded", 7 in group_rows["id"].tolist(), False)
+    assert_equal("each hierarchy transaction appears once", group_rows["id"].is_unique, True)
     assert_equal(
-        "Income and Charity mappings excluded from group setup scope",
+        "only approved Woking income mapping is retained in setup scope",
         group_categories["category"].tolist(),
-        ["Operations", "Operations", "Technology"],
+        ["Operations", "Operations", "Walt Disney house tour income", "Technology"],
     )
-    assert_equal("Item 19 source rows remain available", income_charity_scope(rows)["id"].tolist(), [2, 4, 5])
+    assert_equal("Item 19 source rows remain available once each", income_charity_scope(rows)["id"].tolist(), [2, 4, 5, 7])
     assert_equal("mixed reporting group remains available", "Woking Way LLC" in group_rows["report_group"].tolist(), True)
     assert_equal("dedicated Income group is absent", "Income" in group_rows["report_group"].tolist(), False)
 

@@ -3028,12 +3028,12 @@ def _executive_report_group_options(categories_df, expenses):
 
 
 def _third_report_group_scope(report_rows, categories_df):
-    """Keep Item 19 rows separate from THIRD reporting-group calculations."""
-    from reporting import income_charity_scope
+    """Apply the approved Item 19 exclusions to THIRD rows and setup options."""
+    from reporting import third_hierarchy_item19_exclusions
 
-    item19_rows = income_charity_scope(report_rows)
+    item19_rows = third_hierarchy_item19_exclusions(report_rows)
     group_rows = report_rows.drop(index=item19_rows.index).copy()
-    item19_categories = income_charity_scope(categories_df)
+    item19_categories = third_hierarchy_item19_exclusions(categories_df)
     group_categories = categories_df.drop(index=item19_categories.index).copy()
     return group_rows, group_categories
 

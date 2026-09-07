@@ -17,6 +17,11 @@ INCOME_CHARITY_SPECIAL_INCOME = {
     ("cypress apartments-tb tribute", "income"): "TB Tribute Ltd",
 }
 
+# Approved THIRD hierarchy exceptions reuse the canonical Item 19 group mapping.
+THIRD_HIERARCHY_EMBEDDED_INCOME = frozenset({
+    ("walt disney house tour income", "income"),
+})
+
 
 def _clean_text(value):
     if pd.isna(value):
@@ -142,6 +147,22 @@ def income_charity_scope(report_rows):
 
     scoped["income_charity_type"] = row_type
     return scoped[scoped["income_charity_type"].ne("")].copy()
+
+
+def third_hierarchy_item19_exclusions(report_rows):
+    """Exclude Item 19 rows except centrally approved embedded group income."""
+    scoped = income_charity_scope(report_rows)
+    retained = pd.Series(False, index=scoped.index)
+    for category, subcategory in THIRD_HIERARCHY_EMBEDDED_INCOME:
+        group = INCOME_CHARITY_SPECIAL_INCOME[(category, subcategory)]
+        match = pd.Series(True, index=scoped.index)
+        for column, expected in (
+            ("category", category), ("subcategory", subcategory), ("report_group", group),
+        ):
+            values = scoped.get(column, pd.Series("", index=scoped.index))
+            match &= values.fillna("").astype(str).str.strip().str.casefold().eq(expected.casefold())
+        retained |= match
+    return scoped.loc[~retained].copy()
 
 
 def income_charity_month_values(report_rows, months):

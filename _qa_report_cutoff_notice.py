@@ -119,7 +119,7 @@ def main():
     assert_equal("warning does not describe missing data", "missing transaction" in helper_source.casefold(), False)
     assert_equal("warning never changes report date", "set_app_setting" in helper_source, False)
     assert_equal("Executive report renders cutoff warning", "_render_report_cutoff_notice(all_transactions, cutoff)" in source[executive_start:third_start], True)
-    assert_equal("THIRD report renders cutoff warning", "_render_report_cutoff_notice(all_transactions, cutoff)" in source[third_start:navigation_start], True)
+    assert_equal("THIRD report hides cutoff warning", "_render_report_cutoff_notice(all_transactions, cutoff)" in source[third_start:navigation_start], False)
     assert_equal("ordinary Reports has no cutoff warning", "_render_report_cutoff_notice" in reports_source, False)
     assert_equal("Setup renders informational cutoff notice", "_render_report_cutoff_notice(setup_transactions, configured_report_until, setup=True)" in setup_source, True)
     assert_equal("Setup reuses transactions for backup", '"Transactions": setup_transactions' in setup_source, True)

@@ -33,6 +33,14 @@ def main():
     old, new = helpers(baseline), helpers(source)
     old_nodes = {n.name: ast.dump(n) for n in ast.parse(baseline).body if isinstance(n, ast.FunctionDef)}
     new_nodes = {n.name: ast.dump(n) for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)}
+    # The later approved display-only correction removes exactly this THIRD call.
+    old_third = next(n for n in ast.parse(baseline).body if isinstance(n, ast.FunctionDef) and n.name == "render_third_link_report")
+    notice_calls = [n for n in old_third.body if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
+                    and isinstance(n.value.func, ast.Name) and n.value.func.id == "_render_report_cutoff_notice"]
+    assert len(notice_calls) == 1
+    old_third.body.remove(notice_calls[0])
+    assert ast.dump(old_third) == new_nodes["render_third_link_report"]
+    old_nodes["render_third_link_report"] = ast.dump(old_third)
     assert {k for k in old_nodes if old_nodes[k] != new_nodes[k]} <= {"_third_report_group_scope"}
     print("PASS: Executive and all other function ASTs unchanged")
     report_baseline = subprocess.check_output(["git", "show", f"{BASE}:reporting.py"]).decode("utf-8")

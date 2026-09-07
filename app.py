@@ -4991,7 +4991,6 @@ def render_third_link_report():
     default_end = active_transactions["txn_date"].max().date()
     cutoff = get_configured_report_until(default_end)
     cutoff_ts = pd.Timestamp(cutoff)
-    _render_report_cutoff_notice(all_transactions, cutoff)
     filtered = active_transactions[active_transactions["txn_date"] <= cutoff_ts].copy()
     _perf_log("third_link.apply_cutoff", step_started)
     if filtered.empty:

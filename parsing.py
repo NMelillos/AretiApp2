@@ -1336,6 +1336,149 @@ def _frame_from_pdf_rows(rows):
     return df.reset_index(drop=True)
 
 
+class SafraParseError(ValueError):
+    """A recognized Safra statement cannot be safely reconciled."""
+
+
+def _parse_safra_pdf_text(text):
+    from decimal import Decimal
+
+    date = r"\d{2}\.\d{2}\.\d{4}"
+    money = r"[+-]?(?:\d{1,3}(?: \d{3})+|\d+),\d{2}"
+    heading = re.compile(rf"Account statement in ([A-Z]{{3}}) ({date}) to ({date})")
+    header = re.compile(r"^(?:Client number )?Date Ref\. no\. Transaction Value date Debit Credit Balance in ([A-Z]{3})$")
+    balance = re.compile(rf"({date}) Balance( carried forward)?( in your favour| in our favour)? ({money})")
+    transaction = re.compile(rf"({date}) (\d+) (.+?) ({date}) ({money}) ({money})")
+    data_marker = re.compile(r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b|Date Ref\.|Value date Debit|Balance carried|Balance in|No bookings")
+    rows = []
+    section = None
+    identities = set()
+
+    def fail(detail):
+        raise SafraParseError("Safra statement validation failed: " + detail)
+
+    def parsed_date(value):
+        try:
+            return datetime.strptime(value, "%d.%m.%Y").date()
+        except ValueError:
+            fail("invalid date")
+
+    def amount(value):
+        return Decimal(value.replace(" ", "").replace(",", "."))
+
+    def finish():
+        if section is None:
+            return
+        if not section["header"] or section["closing"] is None:
+            fail("missing column header or closing balance")
+        if section["empty"]:
+            if section["count"]:
+                fail("bookings in a no-bookings section")
+            if section["previous"] is not None and section["previous"] != section["closing"]:
+                fail("no-bookings balance mismatch")
+        elif section["previous"] is None or not section["count"]:
+            fail("missing opening balance or bookings")
+        elif section["previous"] != section["closing"]:
+            fail("closing balance mismatch")
+
+    for raw in text.splitlines():
+        line = re.sub(r"\s+", " ", raw).strip()
+        if not line:
+            continue
+        match = heading.fullmatch(line)
+        if match:
+            currency, start, end = match.groups()
+            start, end = parsed_date(start), parsed_date(end)
+            if start > end:
+                fail("invalid statement period")
+            if section and section["closing"] is None:
+                if (currency, start, end) == (section["currency"], section["start"], section["end"]):
+                    continue
+                finish()
+            else:
+                finish()
+            section = dict(currency=currency, start=start, end=end, header=False,
+                           previous=None, closing=None, count=0, empty=False)
+            continue
+        if line.startswith("Account statement in"):
+            fail("malformed statement heading")
+        if re.fullmatch(rf"[^\d,]+, {date}", line):
+            continue  # Issue-place/date sidebar can interleave with the table.
+        if section is None:
+            if data_marker.search(line):
+                fail("statement data before a currency section heading")
+            continue
+        match = header.search(line)
+        if match:
+            if match.group(1) != section["currency"]:
+                fail("column currency does not match section")
+            section["header"] = True
+            continue
+        if "No bookings were carried out during the period stated." == line:
+            section["empty"] = True
+            continue
+        match = balance.fullmatch(line)
+        if match:
+            when, carried, side, value = match.groups()
+            when = parsed_date(when)
+            value = amount(value)
+            if side:
+                if value < 0:
+                    fail("ambiguous balance sign")
+                if side == " in our favour":
+                    value = -value
+            if not section["header"]:
+                fail("balance before column header")
+            if carried:
+                if section["previous"] is not None or section["closing"] is not None or when > section["start"]:
+                    fail("ambiguous opening balance")
+                section["previous"] = value
+            else:
+                if section["closing"] is not None or when != section["end"]:
+                    fail("ambiguous closing balance")
+                section["closing"] = value
+            continue
+        match = transaction.fullmatch(line)
+        if match:
+            when, reference, description, value_date, magnitude, running = match.groups()
+            if re.search(date, description) or re.search(money, description):
+                fail("ambiguous or merged booking rows")
+            if magnitude.startswith(("+", "-")):
+                fail("signed debit/credit magnitude requires manual validation")
+            when = parsed_date(when)
+            parsed_date(value_date)
+            if (not section["header"] or section["previous"] is None
+                    or section["closing"] is not None or section["empty"]):
+                fail("booking outside an open transaction section")
+            if not section["start"] <= when <= section["end"]:
+                fail("booking date outside statement period")
+            if re.search(r"\b(?:EUR|USD|CHF|GBP)\b", description):
+                fail("explicit booking currency requires manual validation")
+            magnitude, running = amount(magnitude), amount(running)
+            delta = running - section["previous"]
+            # Blank debit/credit columns collapse in extracted text. A single
+            # magnitude must agree exactly with the signed running-balance delta.
+            if magnitude <= 0 or abs(delta) != magnitude:
+                fail("ambiguous debit/credit or running balance mismatch")
+            identity = (section["currency"], reference, when)
+            if identity in identities:
+                fail("duplicate booking reference")
+            identities.add(identity)
+            rows.append([when.isoformat(), reference + " " + description + " | Value date: " + value_date,
+                         str(delta), section["currency"], "Safra currency section"])
+            section["previous"] = running
+            section["count"] += 1
+            continue
+        if data_marker.search(line):
+            fail("unrecognized statement data")
+        if section["previous"] is not None and section["closing"] is None:
+            fail("unrecognized content within bookings")
+    finish()
+    if section is None:
+        fail("missing currency section")
+    return rows
+
+
 def parse_pdf(uploaded_file):
     rows = []
     diagnostics = {}
@@ -1346,7 +1489,18 @@ def parse_pdf(uploaded_file):
                 text = "\n".join(page.extract_text() or "" for page in pdf.pages)
                 text_upper = text.upper()
                 text_compact = re.sub(r"[^A-Z0-9]", "", text_upper)
-                if "Revolut Bank" in text or "Account transactions from" in text:
+                safra_text = "\n".join(re.sub(r"\s+", " ", line).strip() for line in text.splitlines())
+                if (re.search(r"(?im)^Bank\s*J\.?\s*Safra\s*Sarasin\s*AG\s*$", safra_text)
+                        and (re.search(r"(?im)^Account statement\b", safra_text)
+                             or "date ref. no. transaction value date debit credit balance in" in safra_text.lower())):
+                    try:
+                        rows = _parse_safra_pdf_text(text)
+                        return _frame_from_pdf_rows(rows)
+                    except SafraParseError:
+                        raise
+                    except Exception as exc:
+                        raise SafraParseError("Safra statement could not be validated; no rows imported.") from exc
+                elif "Revolut Bank" in text or "Account transactions from" in text:
                     rows = _parse_revolut_pdf_text(text)
                     diagnostics = _revolut_status_counts(text)
                 elif "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
@@ -1372,7 +1526,7 @@ def parse_pdf(uploaded_file):
                     diagnostics["completed_rows"] = len(frame)
                     frame.attrs["parse_diagnostics"] = diagnostics
                 return frame
-        except RevolutBusinessParseError:
+        except (RevolutBusinessParseError, SafraParseError):
             raise
         except Exception:
             rows = []

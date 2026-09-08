@@ -369,7 +369,97 @@ def _revolut_status_counts(text):
     return counts
 
 
+class RevolutBusinessParseError(ValueError):
+    """A recognized business statement failed reconciliation."""
+
+
+def _parse_revolut_business_pdf_text(text):
+    """Read day-first business statements, checking each currency summary."""
+    from decimal import Decimal
+
+    money = re.compile(r"([\u20ac\u00a3$])\s*(\d[\d ,]*\.\d{2})")
+    date = re.compile(r"^(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})\s+(.+)$")
+    rows, summary, pending = [], {}, []
+    currency = ""
+    active = False
+
+    def finish():
+        if not summary:
+            return
+        if set(summary) != {"Opening balance", "Money in", "Money out", "Closing balance"}:
+            raise RevolutBusinessParseError("Incomplete Revolut business balance summary")
+        solutions = []
+        for order in (list(range(len(pending))), list(reversed(range(len(pending))))):
+            previous = summary["Opening balance"]
+            credits = debits = Decimal("0")
+            signed = {}
+            for index in order:
+                _, _, amount, balance = pending[index]
+                delta = balance - previous
+                if abs(delta) != amount:
+                    break
+                signed[index] = delta
+                credits += max(delta, Decimal("0"))
+                debits += max(-delta, Decimal("0"))
+                previous = balance
+            else:
+                if (credits == summary["Money in"] and debits == summary["Money out"]
+                        and previous == summary["Closing balance"] and signed not in solutions):
+                    solutions.append(signed)
+        if len(solutions) != 1:
+            raise RevolutBusinessParseError("Revolut business transactions do not reconcile unambiguously")
+        for index, (parsed_date, description, _, _) in enumerate(pending):
+            rows.append([parsed_date, description, float(solutions[0][index]), currency, "statement row symbol"])
+
+    for raw in text.splitlines():
+        line = re.sub(r"\s+", " ", raw).strip()
+        label = next((label for label in ("Opening balance", "Money in", "Money out", "Closing balance")
+                      if line.startswith(label + " ")), None)
+        if label:
+            if label == "Opening balance":
+                finish()
+                summary = {}
+                pending = []
+                active = False
+            values = list(money.finditer(line))
+            if len(values) != 1:
+                raise RevolutBusinessParseError("Invalid Revolut business summary amount")
+            value = Decimal(values[0][2].replace(" ", "").replace(",", ""))
+            summary[label] = value
+            if label == "Opening balance":
+                currency = {"\u20ac": "EUR", "\u00a3": "GBP", "$": "USD"}[values[0][1]]
+            continue
+        if line.startswith("Transactions from "):
+            active = True
+            continue
+        if line.startswith("Transaction types"):
+            active = False
+            continue
+        match = date.match(line)
+        if not active or not match:
+            continue
+        values = list(money.finditer(match[2]))
+        if len(values) != 2 or not summary:
+            raise RevolutBusinessParseError("Invalid Revolut business transaction row")
+        amount, balance = [Decimal(v[2].replace(" ", "").replace(",", "")) for v in values]
+        if any(v[1] != {"EUR": "\u20ac", "GBP": "\u00a3", "USD": "$"}[currency] for v in values):
+            raise RevolutBusinessParseError("Revolut business transaction currency mismatch")
+        description = match[2][:values[0].start()].strip()
+        if not description:
+            raise RevolutBusinessParseError("Missing Revolut business transaction description")
+        try:
+            parsed_date = datetime.strptime(match[1], "%d %b %Y").strftime("%Y-%m-%d")
+        except ValueError as exc:
+            raise RevolutBusinessParseError("Invalid Revolut business transaction date") from exc
+        pending.append((parsed_date, description, amount, balance))
+    finish()
+    return rows
+
+
 def _parse_revolut_pdf_text(text):
+    if ("Revolut Bank" in text and "Transactions from " in text
+            and "Date (UTC) Description Money out Money in Balance" in text):
+        return _parse_revolut_business_pdf_text(text)
     lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
     rows = []
     current = None
@@ -1265,6 +1355,8 @@ def parse_pdf(uploaded_file):
                     diagnostics["completed_rows"] = len(frame)
                     frame.attrs["parse_diagnostics"] = diagnostics
                 return frame
+        except RevolutBusinessParseError:
+            raise
         except Exception:
             rows = []
 

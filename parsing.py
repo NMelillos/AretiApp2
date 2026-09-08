@@ -377,11 +377,20 @@ def _parse_revolut_business_pdf_text(text):
     """Read day-first business statements, checking each currency summary."""
     from decimal import Decimal
 
-    money = re.compile(r"([\u20ac\u00a3$])\s*(\d[\d ,]*\.\d{2})")
+    sign = r"[+\-\u2212\u2010\u2011\u2012\u2013\u2014\u2015\uFE58\uFE63\uFF0D]"
+    money = re.compile(rf"(?P<before>{sign}?)\s*(?P<currency>[\u20ac\u00a3$])\s*"
+                       rf"(?P<after>{sign}?)\s*(?P<number>\d[\d ,]*\.\d{{2}})")
     date = re.compile(r"^(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})\s+(.+)$")
     rows, summary, pending = [], {}, []
     currency = ""
     active = False
+
+    def signed_value(token):
+        if token["before"] and token["after"]:
+            raise RevolutBusinessParseError("Ambiguous Revolut business amount sign")
+        value = Decimal(token["number"].replace(" ", "").replace(",", ""))
+        token_sign = MINUS_CHARS_RE.sub("-", token["before"] or token["after"])
+        return -value if token_sign == "-" else value
 
     def finish():
         if not summary:
@@ -403,7 +412,8 @@ def _parse_revolut_business_pdf_text(text):
                 debits += max(-delta, Decimal("0"))
                 previous = balance
             else:
-                if (credits == summary["Money in"] and debits == summary["Money out"]
+                # Money out is a debit magnitude, displayed unsigned or with a minus.
+                if (credits == summary["Money in"] and debits == abs(summary["Money out"])
                         and previous == summary["Closing balance"] and signed not in solutions):
                     solutions.append(signed)
         if len(solutions) != 1:
@@ -421,13 +431,18 @@ def _parse_revolut_business_pdf_text(text):
                 summary = {}
                 pending = []
                 active = False
-            values = list(money.finditer(line))
-            if len(values) != 1:
+            token = money.fullmatch(line[len(label):].strip())
+            if token is None:
                 raise RevolutBusinessParseError("Invalid Revolut business summary amount")
-            value = Decimal(values[0][2].replace(" ", "").replace(",", ""))
-            summary[label] = value
+            value = signed_value(token)
+            summary_currency = {"\u20ac": "EUR", "\u00a3": "GBP", "$": "USD"}[token["currency"]]
             if label == "Opening balance":
-                currency = {"\u20ac": "EUR", "\u00a3": "GBP", "$": "USD"}[values[0][1]]
+                currency = summary_currency
+            elif not summary or summary_currency != currency:
+                raise RevolutBusinessParseError("Revolut business summary currency mismatch")
+            if label in summary:
+                raise RevolutBusinessParseError("Duplicate Revolut business summary amount")
+            summary[label] = value
             continue
         if line.startswith("Transactions from "):
             active = True
@@ -441,8 +456,10 @@ def _parse_revolut_business_pdf_text(text):
         values = list(money.finditer(match[2]))
         if len(values) != 2 or not summary:
             raise RevolutBusinessParseError("Invalid Revolut business transaction row")
-        amount, balance = [Decimal(v[2].replace(" ", "").replace(",", "")) for v in values]
-        if any(v[1] != {"EUR": "\u20ac", "GBP": "\u00a3", "USD": "$"}[currency] for v in values):
+        amount, balance = [signed_value(v) for v in values]
+        if amount < 0:
+            raise RevolutBusinessParseError("Expected Revolut business transaction magnitude")
+        if any(v["currency"] != {"EUR": "\u20ac", "GBP": "\u00a3", "USD": "$"}[currency] for v in values):
             raise RevolutBusinessParseError("Revolut business transaction currency mismatch")
         description = match[2][:values[0].start()].strip()
         if not description:

@@ -617,6 +617,7 @@ def _canonical_account_number(value):
 
 
 _RATE_TYPE_TOKENS = [
+    ("CHF", ("CHF",)),
     ("EUR", ("EUR", "EURO")),
     ("GBP", ("GBP", "POUND", "STERLING")),
     ("ILS", ("ILS", "SHEKEL", "SHEKELS")),

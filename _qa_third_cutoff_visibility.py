@@ -24,7 +24,13 @@ def main():
     print("PASS: entire app AST identical except one THIRD notice call; Executive, auth gate and writes unchanged")
     for name in ("auth.py", "reporting.py", "db.py", "requirements.txt", "render.yaml"):
         expected = subprocess.check_output(["git", "show", f"{BASE}:{name}"])
-        assert Path(name).read_bytes().replace(b"\r\n", b"\n") == expected.replace(b"\r\n", b"\n"), name
+        actual = Path(name).read_bytes().replace(b"\r\n", b"\n")
+        if name == "db.py":
+            # Later CHF import correction changes only this currency token.
+            token = b'    ("CHF", ("CHF",)),\n'
+            assert actual.count(token) == 1
+            actual = actual.replace(token, b"", 1)
+        assert actual == expected.replace(b"\r\n", b"\n"), name
     current_third = function(new, "render_third_link_report")
     assert "_render_report_cutoff_notice" not in ast.unparse(current_third)
     for phrase in ("Report date notice:", "Latest reviewed transaction:", "To include them, update"):

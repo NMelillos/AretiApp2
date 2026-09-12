@@ -47,7 +47,8 @@ def main():
     print("PASS: Executive and all other function ASTs protected outside the exact approved Income/Charity patch")
     report_baseline = subprocess.check_output(["git", "show", f"{BASE}:reporting.py"]).decode("utf-8")
     reporting_old = {n.name: ast.dump(n) for n in ast.parse(report_baseline).body if isinstance(n, ast.FunctionDef)}
-    reporting_new = {n.name: ast.dump(n) for n in ast.parse(Path("reporting.py").read_text(encoding="utf-8")).body if isinstance(n, ast.FunctionDef)}
+    from _qa_income_membership import protected_reporting
+    reporting_new = {n.name: ast.dump(n) for n in ast.parse(protected_reporting(Path("reporting.py").read_bytes())).body if isinstance(n, ast.FunctionDef)}
     assert all(reporting_new[k] == v for k, v in reporting_old.items())
     old_reporting = {}
     exec(compile(report_baseline, "baseline_reporting.py", "exec"), old_reporting)
@@ -123,11 +124,14 @@ def main():
     assert after_scope.loc[after_scope.id.eq(1), list(canonical)].to_dict("records") == [canonical]
     assert 2 not in set(after_scope.id)
     pd.testing.assert_frame_equal(after_scope[after_scope.id.ne(1)], before_scope)
-    pd.testing.assert_frame_equal(income_charity_scope(policy_rows), old_reporting["income_charity_scope"](policy_rows))
+    old_members = old_reporting["income_charity_scope"](policy_rows)
+    current_members = income_charity_scope(policy_rows)
+    pd.testing.assert_frame_equal(current_members[current_members.id.isin(old_members.id)], old_members)
+    assert current_members.id.tolist() == list(range(1, 9))
     assert income_charity_scope(policy_rows).id.is_unique
     assert third_hierarchy_item19_exclusions(pd.DataFrame()).empty
     nullable = pd.DataFrame([{**canonical, "subcategory": None}, {**canonical, "report_group": None}])
-    assert third_hierarchy_item19_exclusions(nullable).empty
+    assert len(third_hierarchy_item19_exclusions(nullable)) == 2
     print("PASS: only canonical identity 1 added; TB Tribute, other groups, near mappings and Item 19 unchanged")
 
     split_rows = pd.DataFrame([

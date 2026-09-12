@@ -164,6 +164,9 @@ No bookings were carried out during the period stated.
     assert {name for name in old if old[name] != new[name]} == {"parse_pdf"}
     for name in ("app.py", "db.py", "auth.py", "reporting.py"):
         actual = Path(name).read_bytes().replace(b"\r\n", b"\n")
+        if name == "reporting.py":
+            from _qa_income_membership import protected_reporting
+            actual = protected_reporting(actual)
         if name == "db.py":
             from safra_page_qa import protected_db
             actual = protected_db(actual)

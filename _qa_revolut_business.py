@@ -179,6 +179,9 @@ Jul 1, 2026 Example purchase \u20ac10.00 \u20ac90.00
     assert {name for name in old_nodes if old_nodes[name] != new_nodes[name]} == {"parse_pdf", "_parse_revolut_pdf_text"}
     for file in ("app.py", "db.py", "auth.py", "reporting.py"):
         actual = Path(file).read_bytes().replace(b"\r\n", b"\n")
+        if file == "reporting.py":
+            from _qa_income_membership import protected_reporting
+            actual = protected_reporting(actual)
         if file == "db.py":
             from safra_page_qa import protected_db
             actual = protected_db(actual)

@@ -120,6 +120,12 @@ def _assign_report_groups(tx, categories):
     return tx
 
 
+def is_income(category, subcategory=""):
+    """Income membership is independent of reporting-group assignment."""
+    return any(re.search(r"\bincome\b", _clean_text(value), flags=re.IGNORECASE)
+               for value in (category, subcategory))
+
+
 def income_charity_scope(report_rows):
     """Return Item 19 rows without changing the normal report dataset."""
     scoped = report_rows.copy()
@@ -129,21 +135,12 @@ def income_charity_scope(report_rows):
 
     category = scoped.get("category", pd.Series("", index=scoped.index)).fillna("").astype(str).str.strip()
     subcategory = scoped.get("subcategory", pd.Series("", index=scoped.index)).fillna("").astype(str).str.strip()
-    report_group = scoped.get("report_group", pd.Series("", index=scoped.index)).fillna("").astype(str).str.strip()
     category_key = category.str.casefold()
-    subcategory_key = subcategory.str.casefold()
-    report_group_key = report_group.str.casefold()
 
     row_type = pd.Series("", index=scoped.index, dtype=str)
     row_type.loc[category_key.eq("charity")] = "Charity"
-    row_type.loc[report_group_key.eq("income")] = "Income"
-    for (special_category, special_subcategory), expected_group in INCOME_CHARITY_SPECIAL_INCOME.items():
-        special_mask = (
-            category_key.eq(special_category)
-            & subcategory_key.eq(special_subcategory)
-            & report_group_key.eq(expected_group.casefold())
-        )
-        row_type.loc[special_mask] = "Income"
+    income_mask = pd.Series([is_income(cat, sub) for cat, sub in zip(category, subcategory)], index=scoped.index)
+    row_type.loc[income_mask] = "Income"
 
     scoped["income_charity_type"] = row_type
     return scoped[scoped["income_charity_type"].ne("")].copy()

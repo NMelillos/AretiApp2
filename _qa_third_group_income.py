@@ -120,10 +120,11 @@ def main():
     ])
     before_scope, _ = old["_third_report_group_scope"](policy_rows, policy_rows)
     after_scope, _ = new["_third_report_group_scope"](policy_rows, policy_rows)
-    assert set(after_scope.id) - set(before_scope.id) == {1}
+    assert set(after_scope.id) - set(before_scope.id) == {1, 2, 6, 7, 8}
     assert after_scope.loc[after_scope.id.eq(1), list(canonical)].to_dict("records") == [canonical]
-    assert 2 not in set(after_scope.id)
-    pd.testing.assert_frame_equal(after_scope[after_scope.id.ne(1)], before_scope)
+    assert after_scope.id.tolist() == [1, 2, 6, 7, 8]
+    pd.testing.assert_frame_equal(after_scope, policy_rows[policy_rows.id.isin([1, 2, 6, 7, 8])])
+    pd.testing.assert_frame_equal(after_scope[~after_scope.id.isin([1, 2, 6, 7, 8])], before_scope)
     old_members = old_reporting["income_charity_scope"](policy_rows)
     current_members = income_charity_scope(policy_rows)
     pd.testing.assert_frame_equal(current_members[current_members.id.isin(old_members.id)], old_members)
@@ -131,8 +132,8 @@ def main():
     assert income_charity_scope(policy_rows).id.is_unique
     assert third_hierarchy_item19_exclusions(pd.DataFrame()).empty
     nullable = pd.DataFrame([{**canonical, "subcategory": None}, {**canonical, "report_group": None}])
-    assert len(third_hierarchy_item19_exclusions(nullable)) == 2
-    print("PASS: only canonical identity 1 added; TB Tribute, other groups, near mappings and Item 19 unchanged")
+    assert third_hierarchy_item19_exclusions(nullable).index.tolist() == [1]
+    print("PASS: all Income rows retain existing groups; dedicated Income and Charity stay separate; Item 19 unchanged")
 
     split_rows = pd.DataFrame([
         {**canonical, "id": 10, "amount": 100, "amount_usd": 100, "split_group_id": "qa-split", "split_parent_id": None, "split_allocation_index": None},

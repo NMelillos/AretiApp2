@@ -85,16 +85,16 @@ def main():
     group_rows, group_categories = scope_fn(rows, categories)
     assert_equal("THIRD scope does not mutate report rows", rows.to_dict("records"), rows_before)
     assert_equal("THIRD scope does not mutate mappings", categories.to_dict("records"), categories_before)
-    assert_equal("only approved Woking income is added to group scope", group_rows["id"].tolist(), [1, 3, 5, 6])
+    assert_equal("Income remains visible in its existing group", group_rows["id"].tolist(), [1, 3, 5, 6, 7])
     assert_equal("retained income has the exact approved identity", group_rows.loc[group_rows["id"].eq(5)].to_dict("records"), [
         {"id": 5, "category": "Walt Disney house tour income", "subcategory": "Income", "report_group": "Woking Way LLC"},
     ])
-    assert_equal("TB Tribute income stays excluded", 7 in group_rows["id"].tolist(), False)
+    assert_equal("TB Tribute income keeps its existing group", 7 in group_rows["id"].tolist(), True)
     assert_equal("each hierarchy transaction appears once", group_rows["id"].is_unique, True)
     assert_equal(
-        "only approved Woking income mapping is retained in setup scope",
+        "existing Income reporting-group mappings retained in setup scope",
         group_categories["category"].tolist(),
-        ["Operations", "Operations", "Walt Disney house tour income", "Technology"],
+        ["Operations", "Operations", "Walt Disney house tour income", "Technology", "Cypress Apartments-TB Tribute"],
     )
     assert_equal("Item 19 source rows remain available once each", income_charity_scope(rows)["id"].tolist(), [2, 4, 5, 7])
     assert_equal("mixed reporting group remains available", "Woking Way LLC" in group_rows["report_group"].tolist(), True)

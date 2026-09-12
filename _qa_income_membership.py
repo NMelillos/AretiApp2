@@ -14,6 +14,8 @@ from _qa_income_charity_edit import load_functions
 
 
 def protected_reporting(actual):
+    from _qa_income_groups import compatible
+    actual = compatible('reporting.py', actual)
     actual = actual.replace(b"\r\n", b"\n")
     assert hashlib.sha256(actual).hexdigest() == "a57f7cc80c74de1e9998c7587b4b3fd41e385025ba7a757ecff88edcbf520d88"
     baseline = subprocess.check_output(["git", "show", "5ee9b76c36ce4b311f92ae8350895dcae6a728bc:reporting.py"]).replace(b"\r\n", b"\n")

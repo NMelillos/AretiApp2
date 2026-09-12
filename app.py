@@ -4684,6 +4684,15 @@ def _save_income_charity_edits(baseline, edited, categories_df):
         if label not in allowed:
             raise ValueError("Choose a valid Category / Subcategory pair from Setup.")
         category, subcategory = _parse_category_pair_label(label)
+        from reporting import _assign_report_groups, is_income
+        if is_income(before["category"], before["subcategory"]):
+            original_group = _assign_report_groups(pd.DataFrame([before]), categories_df).iloc[0]["report_group"]
+            expected_group = before.get("report_group", original_group)
+            target_group = _assign_report_groups(pd.DataFrame([{
+                "category": category, "subcategory": subcategory,
+            }]), categories_df).iloc[0]["report_group"]
+            if target_group != expected_group or original_group != expected_group:
+                raise ValueError("Income edits must preserve Reporting Group. Choose a Category / Subcategory in the same group.")
         reviewed = bool(before["reviewed"])
         status = str(before["status"] or "").strip().casefold()
         if status != ("reviewed" if reviewed else "pending"):

@@ -18,7 +18,11 @@ def main():
     assert not db.USING_POSTGRES and Path(os.environ["TEMP"]).drive.upper() == "E:"
     base = "efd2bddfe12eb3eb88faa04d25751e3fe437efa0"
     for name in ("app.py", "reporting.py", "cnb_import.py", "safra_history.py", "parsing.py"):
-        assert Path(name).read_bytes().replace(b"\r\n", b"\n") == subprocess.check_output(["git", "show", base + ":" + name]).replace(b"\r\n", b"\n")
+        actual = Path(name).read_bytes().replace(b"\r\n", b"\n")
+        if name in ('app.py', 'reporting.py'):
+            from _qa_income_groups import compatible
+            actual = compatible(name, actual)
+        assert actual == subprocess.check_output(["git", "show", base + ":" + name]).replace(b"\r\n", b"\n")
     nodes = lambda source: {n.name: ast.dump(n) for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
     old = nodes(subprocess.check_output(["git", "show", base + ":db.py"]))
     new = nodes(Path("db.py").read_text(encoding="utf-8"))

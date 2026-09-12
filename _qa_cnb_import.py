@@ -19,6 +19,8 @@ BASE = "1fd69b7fdf8d42636d8da339acf89805af43a122"
 
 
 def without_cnb_db(actual):
+    from _qa_safra_uat import without_uat_db
+    actual = without_uat_db(actual)
     source = actual.decode("utf-8")
     baseline = subprocess.check_output(["git", "show", BASE + ":db.py"]).decode().replace("\r\n", "\n")
     find = lambda s: next(n for n in ast.parse(s).body if isinstance(n, ast.FunctionDef) and n.name == "apply_account_and_rates")

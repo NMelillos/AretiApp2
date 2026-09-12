@@ -19,6 +19,8 @@ BASE = "aaf5535b36a6e1d092a34cefe86c57ddf52de0d1"
 
 
 def _app_without_authorized_income_charity_edits(source):
+    from _qa_safra_uat import without_uat_app
+    source = without_uat_app(source.replace("\r\n", "\n"))
     production = subprocess.check_output([
         "git", "show", "cb8b62a56007d49297fac3fdd408a307bee74377:app.py",
     ]).decode("utf-8").replace("\r\n", "\n")

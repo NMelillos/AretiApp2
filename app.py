@@ -5347,12 +5347,14 @@ if page == "Import":
                 '<span>Processing statement. Please wait until the preview appears.</span></div>',
                 unsafe_allow_html=True,
             )
-            parsed = parse_statement(file_bytes, uploaded_statement.name)
-            parse_diagnostics = dict(getattr(parsed, "attrs", {}).get("parse_diagnostics", {}) or {})
-            parsed = apply_account_and_rates(parsed, selected_account)
-            parsed = flag_duplicates(parsed)
-            classified = classify_statement_rows(parsed, get_memory())
-            progress_slot.empty()
+            try:
+                parsed = parse_statement(file_bytes, uploaded_statement.name)
+                parse_diagnostics = dict(getattr(parsed, "attrs", {}).get("parse_diagnostics", {}) or {})
+                parsed = apply_account_and_rates(parsed, selected_account)
+                parsed = flag_duplicates(parsed)
+                classified = classify_statement_rows(parsed, get_memory())
+            finally:
+                progress_slot.empty()
 
             st.success(f"Prepared {len(classified)} transactions for review.")
 

@@ -2141,13 +2141,20 @@ def _safra_page_accounts(df, accounts):
         if "statement_currency_source" in df and df.statement_currency_source.eq("Safra page header").any():
             raise ValueError("Safra page identity is missing; reprocess the statement.")
         return None
-    normalize = lambda value: re.sub(r"[\s.]", "", str(value)).upper()
+    def normalize(value, currency=""):
+        compact = re.sub(r"\s", "", str(value)).upper()
+        if "IBAN" in compact:
+            match = re.fullmatch(r"CURRENTACCOUNT([A-Z]{3})/IBAN(CH\d{19})", compact)
+            return match[2] if match and match[1] == currency else ""
+        if compact.startswith("CH"):
+            return compact if re.fullmatch(r"CH\d{19}", compact) else ""
+        return compact.replace(".", "")
     resolved = {}
     for section in sections:
         candidates = accounts[
             accounts.bank.fillna("").str.contains("Safra", case=False, regex=False)
-            & accounts.currency.fillna("").str.upper().eq(section["statement_currency"])
-            & accounts.account_number.map(normalize).isin([
+            & accounts.currency.fillna("").str.strip().str.upper().eq(section["statement_currency"])
+            & accounts.account_number.map(lambda value: normalize(value, section["statement_currency"])).isin([
                 normalize(section["source_account_number"]), normalize(section["source_iban"]),
             ])
         ]

@@ -2162,9 +2162,8 @@ def _safra_page_accounts(df, accounts):
         candidates = accounts[
             accounts.bank.fillna("").str.contains("Safra", case=False, regex=False)
             & accounts.currency.fillna("").str.strip().str.upper().eq(section["statement_currency"])
-            & accounts.account_number.map(lambda value: normalize(value, section["statement_currency"])).isin([
-                normalize(section["source_account_number"]), normalize(section["source_iban"]),
-            ])
+            & accounts.account_number.map(lambda value: normalize(value, section["statement_currency"])).eq(
+                normalize(section["source_iban"]))
         ]
         if len(candidates) != 1:
             raise ValueError("Safra page account must match exactly one existing Setup account.")

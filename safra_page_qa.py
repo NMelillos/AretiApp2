@@ -73,7 +73,7 @@ def fixture():
 
 def setup_accounts(rows):
     return pd.DataFrame([dict(bank="Safra", account_name=f"Synthetic {s['statement_currency']}",
-                              account_number=s["source_account_number"], currency=s["statement_currency"],
+                              account_number=s["source_iban"], currency=s["statement_currency"],
                               rate_type=f"{s['statement_currency']}/USD") for s in rows.attrs["safra_sections"]])
 
 
@@ -115,7 +115,7 @@ def run():
                 with patch.object(db, "get_accounts", return_value=invalid):
                     must_reject(lambda: db.apply_account_and_rates(rows, accounts.iloc[0].to_dict()))
             data = db.apply_account_and_rates(rows, accounts.iloc[0].to_dict())
-            assert data.account_number.eq("9.99999.9 9001").all()
+            assert data.account_number.eq(rows.attrs["safra_sections"][1]["source_iban"]).all()
             assert data.currency.eq("USD").all() and data.amount_usd.tolist() == data.Amount.tolist()
             with closing(db.get_connection()) as connection:
                 assert connection.execute("SELECT COUNT(*) FROM classified_transactions").fetchone()[0] == 0
@@ -129,7 +129,7 @@ def run():
                 saved = connection.execute("SELECT amount, currency, account_number, status, reviewed, original_description FROM classified_transactions ORDER BY id").fetchall()
             assert len(saved) == 6
             for stored, row in zip(saved, data.itertuples()):
-                assert stored == (row.Amount, "USD", "9.99999.9 9001", "pending", 0, row.Description)
+                assert stored == (row.Amount, "USD", rows.attrs["safra_sections"][1]["source_iban"], "pending", 0, row.Description)
     print("PASS: Safra page mapping, zero-booking sections, fail-closed mapping, preview isolation, concurrent/renamed retries and fresh-connection persistence")
 
 

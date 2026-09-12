@@ -18,7 +18,7 @@ import parsing
 BASE = "6669a65c7b744255013b80cb171c2f21dd2a7957"
 APPROVED = {
     "app.py": "42c469d2e4448246fd48690ab64ce78abc1ba4f8146e8f28cca00fc2b93bd7a2",
-    "db.py": "095b2b008bcbbde9d34079bd3d860d243e265d2a4b14229dd2bcf0e89597b916",
+    "db.py": "3dbd9c242fdf6299be24927f56dc84af64be4e66d5e4402f197c5052f8089011",
 }
 
 

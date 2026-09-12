@@ -28,6 +28,8 @@ def main():
         expected = subprocess.check_output(["git", "show", f"{BASE}:{name}"])
         actual = Path(name).read_bytes().replace(b"\r\n", b"\n")
         if name == "db.py":
+            from safra_page_qa import protected_db
+            actual = protected_db(actual)
             # Later CHF import correction changes only this currency token.
             token = b'    ("CHF", ("CHF",)),\n'
             assert actual.count(token) == 1

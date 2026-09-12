@@ -2135,12 +2135,42 @@ def _rate_type_from_account(account):
     return ""
 
 
+def _safra_page_accounts(df, accounts):
+    sections = df.attrs.get("safra_sections")
+    if sections is None:
+        if "statement_currency_source" in df and df.statement_currency_source.eq("Safra page header").any():
+            raise ValueError("Safra page identity is missing; reprocess the statement.")
+        return None
+    normalize = lambda value: re.sub(r"[\s.]", "", str(value)).upper()
+    resolved = {}
+    for section in sections:
+        candidates = accounts[
+            accounts.bank.fillna("").str.contains("Safra", case=False, regex=False)
+            & accounts.currency.fillna("").str.upper().eq(section["statement_currency"])
+            & accounts.account_number.map(normalize).isin([
+                normalize(section["source_account_number"]), normalize(section["source_iban"]),
+            ])
+        ]
+        if len(candidates) != 1:
+            raise ValueError("Safra page account must match exactly one existing Setup account.")
+        page = section["source_page"]
+        if page in resolved:
+            raise ValueError("Duplicate Safra page identity.")
+        resolved[page] = candidates.iloc[0].to_dict()
+    for _, row in df.iterrows():
+        matches = [section for section in sections if section["source_page"] == row.get("source_page")]
+        if len(matches) != 1 or any(row.get(key) != value for key, value in matches[0].items()):
+            raise ValueError("Safra transaction does not match its page header.")
+    return resolved
+
+
 def apply_account_and_rates(df, account):
     out = df.copy()
     account = account or {}
 
     rate_lookup = _load_rate_lookup()
     accounts = get_accounts()
+    safra_accounts = _safra_page_accounts(df, accounts)
     account_names = []
     banks = []
     account_numbers = []
@@ -2151,7 +2181,8 @@ def apply_account_and_rates(df, account):
     usd_values = []
 
     for _, row in out.iterrows():
-        row_account = _dynamic_amex_account(row, account, accounts)
+        row_account = (safra_accounts[row["source_page"]] if safra_accounts is not None
+                       else _dynamic_amex_account(row, account, accounts))
         statement_currency = _clean(row.get("statement_currency", "")).upper()
         existing_row_currency = _clean(row.get("currency", "")).upper()
         account_currency = _clean(row_account.get("currency", "")).upper()

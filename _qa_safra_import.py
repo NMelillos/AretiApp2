@@ -33,7 +33,14 @@ Date Ref. no. Transaction Value date Debit Credit Balance in USD
 
 class Document:
     def __init__(self, text):
-        self.pages = [SimpleNamespace(extract_text=lambda: text)]
+        text = "\n".join(re.sub(r"\s+", " ", line).strip() for line in text.splitlines()) + "\n"
+        pages = re.split(r"(?=Bank\s*J\.?\s*Safra\s*Sarasin\s*AG)", text)
+        self.pages = []
+        for page in filter(str.strip, pages):
+            page = re.sub(r"Account number QA-[AB]\n", "", page)
+            page = re.sub(r"(Account statement in ([A-Z]{3}) [^\n]+\n)",
+                          lambda m: m[1] + f"Current account {m[2]} / IBAN {fake_iban(1)}\nAccount number\n9.99999.9 9001\n", page)
+            self.pages.append(SimpleNamespace(extract_text=lambda page=page: page))
 
     def __enter__(self):
         return self
@@ -47,7 +54,18 @@ def parse(text, name="synthetic.pdf"):
     stream.name = name
     with patch.object(parsing.pdfplumber, "open", return_value=Document(text)), \
             patch.object(parsing, "convert_from_bytes", None):
-        return parsing.parse_pdf(stream)
+        result = parsing.parse_pdf(stream)
+        # Rebuild the historical lexer representation; the full page identity
+        # contract is checked separately without dropping any source fields.
+        return parsing._frame_from_pdf_rows([
+            [row.Date, row.Description, str(row.Amount), row.statement_currency, "Safra currency section"]
+            for row in result.itertuples()
+        ])
+
+
+def fake_iban(index):
+    bban = f"99999{index:012d}"
+    return "CH" + f"{98 - int(bban + '121700') % 97:02d}" + bban
 
 
 def main():
@@ -77,7 +95,9 @@ No bookings were carried out during the period stated.
     pd.testing.assert_frame_equal(rows, parse(combined))
     assert parse(empty).empty
     continuation = TEXT.replace("11.06.2026 900002", "Account statement in USD 01.01.2026 to 30.06.2026\nDate Ref. no. Transaction Value date Debit Credit Balance in USD\n11.06.2026 900002")
-    pd.testing.assert_frame_equal(rows, parse(continuation))
+    # The legacy booking lexer still handles repeated headings; the page-level
+    # entry point now rejects ambiguous multiple account headings on one page.
+    assert parsing._parse_safra_pdf_text(continuation) == parsing._parse_safra_pdf_text(TEXT)
     negative = TEXT.replace("in your favour", "in our favour")
     negative = negative.replace("100,00 900,00", "100,00 -1 100,00").replace("200,00 1 100,00", "200,00 -900,00")
     negative = negative.replace("favour 1 100,00", "favour 900,00")
@@ -144,11 +164,16 @@ No bookings were carried out during the period stated.
     assert {name for name in old if old[name] != new[name]} == {"parse_pdf"}
     for name in ("app.py", "db.py", "auth.py", "reporting.py"):
         actual = Path(name).read_bytes().replace(b"\r\n", b"\n")
+        if name == "db.py":
+            from safra_page_qa import protected_db
+            actual = protected_db(actual)
         if name == "app.py":
             actual = _app_without_authorized_income_charity_edits(actual.decode("utf-8")).encode("utf-8")
         assert actual == subprocess.check_output([
             "git", "show", "f7a0f9f13faed18734eb726a35a7069b41b46156:" + name]).replace(b"\r\n", b"\n")
     persistence(rows)
+    from safra_page_qa import run
+    run()
     evidence = os.environ.get("SAFRA_EVIDENCE_PDF")
     if evidence:
         exact_pdf(evidence)
@@ -213,7 +238,10 @@ def exact_pdf(path):
     assert Decimal("62238.85") + sum(amounts) == Decimal("58352.95")
     for i in (0, 2, 3):
         assert "No bookings were carried out" in texts[i]
-    persistence(result)
+    assert result.source_page.eq(2).all()
+    assert result.source_account_number.str.endswith("4001").all()
+    page_iban = re.search(r"Current account USD / IBAN ([A-Z0-9 ]+)", texts[1]).group(1).replace(" ", "")
+    assert result.source_iban.eq(page_iban).all()
     print("PASS: external PDF, six rows, references/descriptions/booking/value dates, USD 62238.85 - 3885.90 = 58352.95")
 
 

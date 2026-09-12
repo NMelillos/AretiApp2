@@ -1479,6 +1479,72 @@ def _parse_safra_pdf_text(text):
     return rows
 
 
+def _parse_safra_pages(pages):
+    frames = []
+    sections = []
+    identities = set()
+    for page_number, text in enumerate(pages, 1):
+        lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+        def header_values(label, pattern):
+            values = []
+            for line in lines:
+                if re.search(label, line, re.IGNORECASE):
+                    match = re.fullmatch(pattern, line)
+                    if match is None:
+                        raise SafraParseError("Safra page contains a malformed account header.")
+                    values.append(match.groups())
+            if not values or len(set(values)) != 1:
+                raise SafraParseError("Safra page contains missing or conflicting account headers.")
+            return values[0]
+
+        currency, _, _ = header_values(
+            r"^Account statement", r"Account statement in ([A-Z]{3}) (\d{2}\.\d{2}\.\d{4}) to (\d{2}\.\d{2}\.\d{4})")
+        # Normalize IBAN spacing before comparing all occurrences, not just
+        # whichever header happens to parse successfully first.
+        lines = [re.sub(r"(?<=IBAN )([A-Z0-9 ]+)$", lambda m: m[0].replace(" ", ""), line) for line in lines]
+        account_currency, iban = header_values(
+            r"^Current account|\bIBAN\b", r"Current account ([A-Z]{3}) / IBAN ([A-Z]{2}\d{2}[A-Z0-9]+)")
+        column_currency, = header_values(
+            r"Date Ref\.|Value date Debit",
+            r"(?:Client number )?Date Ref\. no\. Transaction Value date Debit Credit Balance in ([A-Z]{3})")
+        numbers = []
+        for i, line in enumerate(lines):
+            if re.match(r"Account number", line, re.IGNORECASE):
+                if line != "Account number" or i + 1 == len(lines) or not re.fullmatch(r"\d+\.\d+\.\d+ \d{4}", lines[i + 1]):
+                    raise SafraParseError("Safra page contains a malformed account number.")
+                numbers.append(lines[i + 1])
+        if not numbers or len(set(numbers)) != 1:
+            raise SafraParseError("Safra page contains missing or conflicting account numbers.")
+        number = numbers[0]
+        if currency != account_currency or currency != column_currency:
+            raise SafraParseError("Safra page account header is inconsistent.")
+        if not re.fullmatch(r"CH\d{19}", iban):
+            raise SafraParseError("Safra page requires a complete Swiss IBAN.")
+        numeric_iban = "".join(str(ord(c) - 55) if c.isalpha() else c for c in iban[4:] + iban[:4])
+        if int(numeric_iban) % 97 != 1:
+            raise SafraParseError("Safra page IBAN checksum failed.")
+        frame = _frame_from_pdf_rows(_parse_safra_pdf_text(text))
+        if not frame.empty and not frame.statement_currency.eq(currency).all():
+            raise SafraParseError("Safra transaction currency differs from its page.")
+        for row in frame.itertuples():
+            identity = (iban, number, currency, row.Date, row.Description.split(" ", 1)[0])
+            if identity in identities:
+                raise SafraParseError("Safra statement contains a duplicate booking reference across pages.")
+            identities.add(identity)
+        section = dict(source_page=page_number, statement_currency=currency,
+                       source_iban=iban, source_account_number=number)
+        for key, value in section.items():
+            frame[key] = value
+        frame["statement_currency_source"] = "Safra page header"
+        sections.append(section)
+        frames.append(frame)
+    if not frames:
+        raise SafraParseError("Safra statement has no pages.")
+    result = pd.concat(frames, ignore_index=True)
+    result.attrs["safra_sections"] = sections
+    return result
+
+
 def parse_pdf(uploaded_file):
     rows = []
     diagnostics = {}
@@ -1486,7 +1552,8 @@ def parse_pdf(uploaded_file):
         uploaded_file.seek(0)
         try:
             with pdfplumber.open(uploaded_file) as pdf:
-                text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+                pages = [page.extract_text() or "" for page in pdf.pages]
+                text = "\n".join(pages)
                 text_upper = text.upper()
                 text_compact = re.sub(r"[^A-Z0-9]", "", text_upper)
                 safra_text = "\n".join(re.sub(r"\s+", " ", line).strip() for line in text.splitlines())
@@ -1494,8 +1561,7 @@ def parse_pdf(uploaded_file):
                         and (re.search(r"(?im)^Account statement\b", safra_text)
                              or "date ref. no. transaction value date debit credit balance in" in safra_text.lower())):
                     try:
-                        rows = _parse_safra_pdf_text(text)
-                        return _frame_from_pdf_rows(rows)
+                        return _parse_safra_pages(pages)
                     except SafraParseError:
                         raise
                     except Exception as exc:

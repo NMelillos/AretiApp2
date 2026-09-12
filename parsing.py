@@ -3,6 +3,7 @@ from datetime import datetime
 from io import BytesIO
 
 import pandas as pd
+from cnb_import import CNBParseError, is_cnb, parse_cnb
 
 from utils import extract_beneficiary, infer_transaction_type, normalize_description, simplify_merchant
 
@@ -1556,6 +1557,13 @@ def parse_pdf(uploaded_file):
                 text = "\n".join(pages)
                 text_upper = text.upper()
                 text_compact = re.sub(r"[^A-Z0-9]", "", text_upper)
+                if is_cnb(text):
+                    try:
+                        return parse_cnb(pages, pdf.metadata)
+                    except CNBParseError:
+                        raise
+                    except Exception as exc:
+                        raise CNBParseError("CNB statement could not be validated; no rows imported.") from exc
                 safra_text = "\n".join(re.sub(r"\s+", " ", line).strip() for line in text.splitlines())
                 if (re.search(r"(?im)^Bank\s*J\.?\s*Safra\s*Sarasin\s*AG\s*$", safra_text)
                         and (re.search(r"(?im)^Account statement\b", safra_text)
@@ -1592,7 +1600,7 @@ def parse_pdf(uploaded_file):
                     diagnostics["completed_rows"] = len(frame)
                     frame.attrs["parse_diagnostics"] = diagnostics
                 return frame
-        except (RevolutBusinessParseError, SafraParseError):
+        except (RevolutBusinessParseError, SafraParseError, CNBParseError):
             raise
         except Exception:
             rows = []

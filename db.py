@@ -2171,6 +2171,10 @@ def apply_account_and_rates(df, account):
     rate_lookup = _load_rate_lookup()
     accounts = get_accounts()
     safra_accounts = _safra_page_accounts(df, accounts)
+    cnb_selected = None
+    if "statement_currency_source" in df and df.statement_currency_source.eq("CNB statement").any():
+        from cnb_import import cnb_account
+        cnb_selected = cnb_account(df, accounts)
     account_names = []
     banks = []
     account_numbers = []
@@ -2183,6 +2187,8 @@ def apply_account_and_rates(df, account):
     for _, row in out.iterrows():
         row_account = (safra_accounts[row["source_page"]] if safra_accounts is not None
                        else _dynamic_amex_account(row, account, accounts))
+        if cnb_selected is not None:
+            row_account = cnb_selected
         statement_currency = _clean(row.get("statement_currency", "")).upper()
         existing_row_currency = _clean(row.get("currency", "")).upper()
         account_currency = _clean(row_account.get("currency", "")).upper()

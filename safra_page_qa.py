@@ -16,6 +16,8 @@ BASE = "32024814feb1f56ff68a7014bbdb30d6be8ba3e8"
 
 
 def protected_db(actual):
+    from _qa_cnb_import import without_cnb_db
+    actual = without_cnb_db(actual)
     baseline = subprocess.check_output(["git", "show", BASE + ":db.py"]).decode("utf-8").replace("\r\n", "\n")
     source = actual.decode("utf-8")
     old = ast.parse(baseline)

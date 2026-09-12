@@ -1,5 +1,6 @@
 """Anonymised structural fixture; no client evidence or production connections."""
 import ast
+import hashlib
 import os
 from pathlib import Path
 from io import BytesIO
@@ -15,6 +16,53 @@ import pandas as pd
 import parsing
 
 BASE = "aaf5535b36a6e1d092a34cefe86c57ddf52de0d1"
+
+
+def _app_without_authorized_income_charity_edits(source):
+    production = subprocess.check_output([
+        "git", "show", "cb8b62a56007d49297fac3fdd408a307bee74377:app.py",
+    ]).decode("utf-8").replace("\r\n", "\n")
+    source = source.replace("\r\n", "\n")
+    approved = {
+        "_save_income_charity_edits": "f9d8c825c9f2b665b13d3a39d553ddd50188237aa96fbe74ea3f2f348cf940e2",
+        "_render_income_charity_editor": "c9bbd66ac2b579c5746e18d97801c9f64647587e8159543142c39c4f8b745f1e",
+        "_render_income_charity_transactions": "9c129839e87c49ca55a08468d3ed800aadab2da39b6e1d9744e7e3c981ec1106",
+        "_render_income_charity_section": "ae196ba3518e54f4b735a08635ef47cbd78315f376d961f1ee375cd7ab8484f3",
+        "render_executive_report": "be1e0f475797e6933c41832a494744502f4d48699ede46cd24f1df8a55d6bbf2",
+    }
+    def functions(text):
+        nodes = [n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef)]
+        assert len({n.name for n in nodes}) == len(nodes), "Duplicate application function"
+        return {n.name: n for n in nodes}
+    old, new = functions(production), functions(source)
+    added = {"_save_income_charity_edits", "_render_income_charity_editor"}
+    changed = approved.keys() - added
+    assert new.keys() - old.keys() == added and not old.keys() - new.keys()
+    assert {name for name in old if ast.dump(old[name]) != ast.dump(new[name])} == changed
+    lines, original = source.splitlines(keepends=True), production.splitlines(keepends=True)
+    for name, expected_hash in approved.items():
+        node = new[name]
+        body = "".join(lines[node.lineno - 1:node.end_lineno])
+        assert hashlib.sha256(body.encode("utf-8")).hexdigest() == expected_hash, name
+    insertion_start = new["_save_income_charity_edits"].lineno - 1
+    insertion_end = new["_render_income_charity_transactions"].lineno - 1
+    inserted = "".join(
+        "".join(lines[new[name].lineno - 1:new[name].end_lineno]) + "\n\n"
+        for name in ("_save_income_charity_edits", "_render_income_charity_editor")
+    )
+    assert "".join(lines[insertion_start:insertion_end]) == inserted, "Unexpected code in insertion span"
+    # Undo only the hash-pinned patch for legacy comparisons; protect all other
+    # functions, top-level code, comments and whitespace against production.
+    replacements = [(new[name].lineno - 1, new[name].end_lineno,
+                     original[old[name].lineno - 1:old[name].end_lineno]) for name in changed]
+    replacements.append((insertion_start, insertion_end, []))
+    for start, end, replacement in sorted(replacements, reverse=True):
+        lines[start:end] = replacement
+    restored = "".join(lines)
+    assert restored == production, "Application change outside the exact authorized patch"
+    return restored
+
+
 TEXT = """Revolut Bank
 Example Trading Limited
 Balance summary
@@ -130,7 +178,10 @@ Jul 1, 2026 Example purchase \u20ac10.00 \u20ac90.00
     new_nodes = {n.name: ast.dump(n) for n in ast.parse(Path("parsing.py").read_text(encoding="utf-8")).body if isinstance(n, ast.FunctionDef)}
     assert {name for name in old_nodes if old_nodes[name] != new_nodes[name]} == {"parse_pdf", "_parse_revolut_pdf_text"}
     for file in ("app.py", "db.py", "auth.py", "reporting.py"):
-        assert Path(file).read_bytes().replace(b"\r\n", b"\n") == subprocess.check_output(["git", "show", f"{BASE}:{file}"]).replace(b"\r\n", b"\n")
+        actual = Path(file).read_bytes().replace(b"\r\n", b"\n")
+        if file == "app.py":
+            actual = _app_without_authorized_income_charity_edits(actual.decode("utf-8")).encode("utf-8")
+        assert actual == subprocess.check_output(["git", "show", f"{BASE}:{file}"]).replace(b"\r\n", b"\n"), file
     with tempfile.TemporaryDirectory(prefix="revolut-qa-") as tmp:
         os.environ["ARETI_DB_PATH"] = str(Path(tmp) / "isolated.sqlite")
         import db

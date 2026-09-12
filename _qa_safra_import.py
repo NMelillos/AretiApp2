@@ -1,6 +1,7 @@
 """Synthetic Safra regression; optional confidential evidence stays outside Git."""
 import os
 import ast
+from _qa_revolut_business import _app_without_authorized_income_charity_edits
 import hashlib
 import re
 import subprocess
@@ -142,7 +143,10 @@ No bookings were carried out during the period stated.
     old, new = functions(baseline), functions(Path("parsing.py").read_text(encoding="utf-8"))
     assert {name for name in old if old[name] != new[name]} == {"parse_pdf"}
     for name in ("app.py", "db.py", "auth.py", "reporting.py"):
-        assert Path(name).read_bytes().replace(b"\r\n", b"\n") == subprocess.check_output([
+        actual = Path(name).read_bytes().replace(b"\r\n", b"\n")
+        if name == "app.py":
+            actual = _app_without_authorized_income_charity_edits(actual.decode("utf-8")).encode("utf-8")
+        assert actual == subprocess.check_output([
             "git", "show", "f7a0f9f13faed18734eb726a35a7069b41b46156:" + name]).replace(b"\r\n", b"\n")
     persistence(rows)
     evidence = os.environ.get("SAFRA_EVIDENCE_PDF")

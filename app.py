@@ -4668,7 +4668,111 @@ def _income_charity_target_summary_message(percentage, income_total, charity_tot
     return f"{lead} Charity is {direction} the Family’s target of 10% by {_money(abs(variance))}."
 
 
-def _render_income_charity_transactions(transaction_rows):
+def _save_income_charity_edits(baseline, edited, categories_df):
+    if baseline["id"].duplicated().any() or edited["id"].duplicated().any():
+        raise ValueError("Duplicate transaction IDs are not allowed.")
+    if set(baseline["id"]) != set(edited["id"]):
+        raise ValueError("The transaction selection changed. Cancel and reopen the table.")
+    allowed = set(_category_pair_options(categories_df)) - {""}
+    original = baseline.set_index("id")
+    changes = []
+    for _, row in edited.iterrows():
+        before = original.loc[row["id"]]
+        label = row[_CATEGORY_PAIR_COLUMN]
+        if label == _category_pair_label(before["category"], before["subcategory"]):
+            continue
+        if label not in allowed:
+            raise ValueError("Choose a valid Category / Subcategory pair from Setup.")
+        category, subcategory = _parse_category_pair_label(label)
+        reviewed = bool(before["reviewed"])
+        status = str(before["status"] or "").strip().casefold()
+        if status != ("reviewed" if reviewed else "pending"):
+            raise ValueError("The transaction review state changed. Cancel and reopen the table.")
+        changes.append({
+            "id": row["id"], "category": category, "subcategory": subcategory,
+            "reviewed": reviewed, "status": status,
+            "_expected_category": before["category"],
+            "_expected_subcategory": before["subcategory"],
+            "_expected_reviewed": reviewed,
+        })
+    if not changes:
+        return 0
+    # This existing workflow verifies the batch before commit and rolls back
+    # invalid, missing or stale rows. Never supply editable financial fields.
+    save_df = pd.DataFrame(changes)
+    count = save_reviewed_rows(save_df)
+    if count != len(save_df):
+        raise RuntimeError("The database did not confirm every transaction edit.")
+    return count
+
+
+def _render_income_charity_editor(transaction_rows):
+    if transaction_rows.empty:
+        return
+    scope = _scoped_editor_key("income_charity_editor", transaction_rows)
+    revision_key = f"{scope}_revision"
+    revision = st.session_state.get(revision_key, 0)
+    editor_key = f"{scope}_{revision}"
+    baseline_key = f"{editor_key}_baseline"
+    # Keep the displayed snapshot across form reruns for optimistic concurrency.
+    if baseline_key not in st.session_state:
+        st.session_state[baseline_key] = transaction_rows.copy(deep=True)
+    baseline = st.session_state[baseline_key]
+    categories_df = get_categories(include_subcategories=True)
+    visible = baseline.copy()
+    visible["txn_date"] = pd.to_datetime(visible["txn_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    visible["Amount USD"] = _executive_signed_amount_series(visible).values
+    visible = _with_category_pair_column(visible)
+    labels = {
+        "txn_date": "Date", "amount": "Statement amount", "currency": "Currency",
+        "report_group": "Reporting group", "original_description": "Full statement description",
+        "account_name": "Account", "id": "ID",
+    }
+    columns = ["txn_date", "Amount USD", "amount", "currency", _CATEGORY_PAIR_COLUMN,
+               "report_group", "original_description", "account_name", "id"]
+    visible = visible[[column for column in columns if column in visible]]
+    config = {column: st.column_config.Column(labels.get(column, column), disabled=True)
+              for column in visible if column != _CATEGORY_PAIR_COLUMN}
+    config[_CATEGORY_PAIR_COLUMN] = st.column_config.SelectboxColumn(
+        "Category / Subcategory", options=_category_pair_options(categories_df, current_df=baseline),
+        required=True,
+    )
+    st.markdown("#### Transactions")
+    message = st.session_state.pop("income_charity_save_message", None)
+    if message:
+        st.success(message)
+    with st.form(f"{editor_key}_form", clear_on_submit=False):
+        edited = st.data_editor(
+            visible, use_container_width=True, hide_index=True,
+            disabled=[column for column in visible if column != _CATEGORY_PAIR_COLUMN],
+            column_config=config, num_rows="fixed", key=editor_key,
+        )
+        save = st.form_submit_button("Save", type="primary")
+        cancel = st.form_submit_button("Cancel")
+    if cancel:
+        st.session_state.pop(baseline_key, None)
+        st.session_state[revision_key] = revision + 1
+        st.rerun()
+    if save:
+        try:
+            count = _save_income_charity_edits(baseline, edited, categories_df)
+        except Exception as exc:
+            st.error(f"Could not save transaction edits: {exc}")
+        else:
+            st.session_state.pop(baseline_key, None)
+            st.session_state[revision_key] = revision + 1
+            st.session_state["income_charity_save_message"] = (
+                f"Transaction edits saved successfully ({count})." if count
+                else "No transaction detail changes to apply."
+            )
+            _clear_transaction_read_caches()
+            st.rerun()
+
+
+def _render_income_charity_transactions(transaction_rows, *, editable=False):
+    if editable:
+        _render_income_charity_editor(transaction_rows)
+        return
     transaction_rows = transaction_rows.copy()
     transaction_rows["txn_date"] = pd.to_datetime(
         transaction_rows["txn_date"], errors="coerce"
@@ -4705,7 +4809,7 @@ def _render_income_charity_transactions(transaction_rows):
     )
 
 
-def _render_income_charity_section(report_rows, months, month_labels, show_all_months=False):
+def _render_income_charity_section(report_rows, months, month_labels, show_all_months=False, *, editable=False):
     from reporting import income_charity_month_values, income_charity_percentage
 
     scoped, monthly, _cumulative = income_charity_month_values(report_rows, months)
@@ -4750,7 +4854,10 @@ def _render_income_charity_section(report_rows, months, month_labels, show_all_m
         transaction_rows = category_rows[
             category_rows["subcategory"].fillna("").astype(str).str.strip().eq(subcategory)
         ].copy()
-        _render_income_charity_transactions(transaction_rows)
+        if editable:
+            _render_income_charity_transactions(transaction_rows, editable=True)
+        else:
+            _render_income_charity_transactions(transaction_rows)
 
     def render_selected_category(row_type, type_rows, category):
         st.markdown(
@@ -4938,6 +5045,7 @@ def render_executive_report():
             month_window,
             month_labels,
             show_all_months=show_all_months,
+            editable=not shared_report,
         )
 
 

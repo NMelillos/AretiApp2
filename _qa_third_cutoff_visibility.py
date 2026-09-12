@@ -1,5 +1,6 @@
 """Protect the one-call THIRD display change against the approved baseline."""
 import ast
+from _qa_revolut_business import _app_without_authorized_income_charity_edits
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,8 +21,9 @@ def main():
              and isinstance(n.value.func, ast.Name) and n.value.func.id == "_render_report_cutoff_notice"]
     assert len(calls) == 1
     third.body.remove(calls[0])
-    assert ast.dump(old) == ast.dump(new), "Only the THIRD notice call may change"
-    print("PASS: entire app AST identical except one THIRD notice call; Executive, auth gate and writes unchanged")
+    compatible = ast.parse(_app_without_authorized_income_charity_edits(source))
+    assert ast.dump(old) == ast.dump(compatible), "Only the THIRD notice call and exact approved editing patch may change"
+    print("PASS: entire app protected except one THIRD notice call and the exact approved Income/Charity patch")
     for name in ("auth.py", "reporting.py", "db.py", "requirements.txt", "render.yaml"):
         expected = subprocess.check_output(["git", "show", f"{BASE}:{name}"])
         actual = Path(name).read_bytes().replace(b"\r\n", b"\n")

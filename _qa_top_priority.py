@@ -1,10 +1,14 @@
 import ast
 import copy
+import csv
 import math
 import os
 import sys
 import time
+from contextlib import ExitStack
+from io import BytesIO, StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.pop("DATABASE_URL", None)
 os.environ.pop("POSTGRES_URL", None)
@@ -1100,16 +1104,78 @@ def test_report_group_audit_flags_missing_setup_pairs():
 def test_csv_amounts():
     assert_true("European amount with thousands", abs(_parse_amount("2.000,00") - 2000.0) < 0.001)
     assert_true("US amount with thousands", abs(_parse_amount("1,234.56") - 1234.56) < 0.001)
-    boc_path = Path(
-        r"C:\Users\Student\Dropbox\ARETI FILES ONE DRIVE\OneDrive_1_02-05-2026\Statement folder - New statements uploaded by Areti 02.04.2026\Bank of Cyprus\TransactionHistory_1775137479403.csv"
-    )
-    if boc_path.exists():
-        with boc_path.open("rb") as handle:
-            parsed = parse_csv(handle)
-        assert_true("available BOC CSV parses", len(parsed) == 20, f"rows={len(parsed)}")
-        assert_true("BOC thousands parsed correctly", parsed["Amount"].abs().max() >= 10000, parsed["Amount"].abs().max())
-    else:
-        print("SKIP: local BOC CSV sample not found")
+    text = StringIO(newline="")
+    writer = csv.writer(text)
+    writer.writerow(["Date", "Description", "Amount"])
+    expected = []
+    for index in range(20):
+        amount = (10000 + index * 1000 + 0.25) * (-1 if index % 2 else 1)
+        expected.append(amount)
+        formatted = f"{amount:,.2f}"
+        if index % 2:
+            formatted = formatted.translate(str.maketrans(",.", ".,"))
+        writer.writerow([f"2026-01-{index + 1:02d}", "", formatted])
+    fixture = BytesIO(text.getvalue().encode("utf-8"))
+    accesses = []
+
+    class ForbiddenQAAccess(BaseException):
+        # parse_csv catches Exception while trying encodings; policy failures
+        # must stop immediately rather than being treated as format failures.
+        pass
+
+    def masked(path):
+        parts = list(Path(path).parts)
+        for index, part in enumerate(parts):
+            if part.casefold() == "users" and index + 1 < len(parts):
+                parts[index + 1] = "<user>"
+            if part.casefold() in {"documents", "downloads", "dropbox"} or "onedrive" in part.casefold():
+                parts[index + 1:] = ["<redacted>"]
+                break
+        return str(Path(*parts))
+
+    def classify(operation, path):
+        if not isinstance(path, (str, bytes, os.PathLike)):
+            raise ForbiddenQAAccess(f"Unidentified {operation} target")
+        # Lexical normalization does not stat or open the target being checked.
+        normalized = os.path.abspath(os.path.normpath(os.fsdecode(path)))
+        parts = [part.casefold() for part in Path(normalized).parts]
+        forbidden_name = any(
+            part in {"documents", "downloads"} or any(
+                word in part for word in ("dropbox", "onedrive", "customer", "statement", "evidence")
+            ) for part in parts
+        )
+        document = Path(normalized).suffix.casefold() in {".csv", ".pdf", ".xls", ".xlsx", ".doc", ".docx"}
+        classification = "allowed runtime file" if not forbidden_name and not document else "protected document"
+        accesses.append((operation, masked(normalized), classification))
+        print(f"QA_ACCESS: {operation}: {masked(normalized)} [{classification}]", flush=True)
+        if classification == "protected document":
+            raise ForbiddenQAAccess(f"Blocked before {operation}: {masked(normalized)} [{classification}]")
+
+    def path_guard(operation, original):
+        def guarded(path, *args, **kwargs):
+            classify(operation, path)
+            return original(path, *args, **kwargs)
+        return guarded
+
+    targets = ("builtins.open", "io.open", "os.open", "pathlib.Path.open")
+    with ExitStack() as stack:
+        for target in targets:
+            module, name = target.rsplit(".", 1)
+            owner = Path if module == "pathlib.Path" else sys.modules[module]
+            original = getattr(owner, name)
+            stack.enter_context(patch.object(owner, name, autospec=True,
+                                            side_effect=path_guard(target, original)))
+        network_guard = stack.enter_context(patch(
+            "socket.socket.connect", side_effect=ForbiddenQAAccess("QA forbids network access")
+        ))
+        parsed = parse_csv(fixture)
+        network_guard.assert_not_called()
+    assert_true("CSV parser makes zero external document access attempts",
+                all(classification == "allowed runtime file" for _, _, classification in accesses))
+    assert_true("synthetic CSV parses twenty rows", len(parsed) == 20, f"rows={len(parsed)}")
+    assert_true("CSV thousands parsed correctly", parsed["Amount"].abs().max() >= 10000,
+                parsed["Amount"].abs().max())
+    assert_true("CSV preserves every signed European/US amount", parsed["Amount"].tolist() == expected)
 
 
 def main():

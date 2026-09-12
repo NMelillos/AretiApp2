@@ -1433,6 +1433,9 @@ def statement_already_imported(statement_hash):
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM statement_imports WHERE statement_hash = ?", (statement_hash,))
     exists = cur.fetchone()[0] > 0
+    if not exists:
+        cur.execute("SELECT COUNT(*) FROM statement_balances WHERE source = ?", ("Safra document " + statement_hash,))
+        exists = cur.fetchone()[0] > 0
     conn.close()
     return exists
 
@@ -1458,6 +1461,9 @@ def statement_balance_exists(statement_hash):
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM statement_balances WHERE statement_hash = ?", (statement_hash,))
     exists = cur.fetchone()[0] > 0
+    if not exists:
+        cur.execute("SELECT COUNT(*) FROM statement_balances WHERE source = ?", ("Safra document " + statement_hash,))
+        exists = cur.fetchone()[0] > 0
     conn.close()
     return exists
 
@@ -1485,7 +1491,7 @@ def get_statement_account(statement_hash):
     }
 
 
-def save_statement_balance(statement_hash, statement_name, balance, account=None):
+def save_statement_balance(statement_hash, statement_name, balance, account=None, *, _connection=None):
     balance = balance or {}
     account = account or {}
 
@@ -1520,7 +1526,7 @@ def save_statement_balance(statement_hash, statement_name, balance, account=None
         return 0
 
     now = _now()
-    conn = get_connection()
+    conn = _connection if _connection is not None else get_connection()
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO statement_balances
@@ -1564,9 +1570,11 @@ def save_statement_balance(statement_hash, statement_name, balance, account=None
         now,
         now,
     ))
-    conn.commit()
+    if _connection is None:
+        conn.commit()
     changed = cur.rowcount
-    conn.close()
+    if _connection is None:
+        conn.close()
     return changed
 
 
@@ -2241,8 +2249,11 @@ def build_statement_hash(file_bytes):
     return hashlib.sha256(file_bytes).hexdigest()
 
 
-def save_pending_transactions(df, statement_name, statement_hash):
-    conn = get_connection()
+def save_pending_transactions(df, statement_name, statement_hash, *, _connection=None):
+    if _connection is None and df.attrs.get("safra_sections"):
+        from safra_history import save_sections
+        return save_sections(__import__(__name__), df, statement_name, statement_hash)
+    conn = _connection if _connection is not None else get_connection()
     cur = conn.cursor()
     now = _now()
     cur.execute("""
@@ -2251,8 +2262,9 @@ def save_pending_transactions(df, statement_name, statement_hash):
         VALUES (?, ?, ?, 0)
     """, (statement_hash, statement_name, now))
     if cur.rowcount == 0:
-        conn.close()
-        record_duplicate_statement_attempt(statement_hash)
+        if _connection is None:
+            conn.close()
+            record_duplicate_statement_attempt(statement_hash)
         return 0, True, 0
 
     inserted = 0
@@ -2364,8 +2376,9 @@ def save_pending_transactions(df, statement_name, statement_hash):
         SET transaction_count = ?
         WHERE statement_hash = ?
     """, (inserted, statement_hash))
-    conn.commit()
-    conn.close()
+    if _connection is None:
+        conn.commit()
+        conn.close()
     return inserted, False, duplicate_lines
 
 

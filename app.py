@@ -5306,40 +5306,6 @@ if page == "Import":
                     st.cache_data.clear()
             st.stop()
 
-        balance_info = parse_statement_balance(file_bytes, uploaded_statement.name)
-        labels, lookup = account_options(accounts)
-        default_account_index = guess_account_index(file_bytes, uploaded_statement.name, accounts, labels, balance_info)
-        selected_label = st.selectbox("Account", labels, index=default_account_index)
-        selected_account = lookup[selected_label]
-        st.caption("Check this account carefully before importing. It controls the company/name, bank, account number, currency, rate type, and USD conversion.")
-        statement_currency = str(balance_info.get("currency") or "").strip().upper()
-        selected_currency = str(selected_account.get("currency", "") or "").strip().upper()
-        if statement_currency and selected_currency and statement_currency != selected_currency:
-            st.warning(
-                f"The statement appears to be {statement_currency}, but the selected account is {selected_currency}. "
-                "Please change the Account dropdown before importing if this is not correct."
-            )
-        statement_account_digits = re.sub(r"\D", "", str(balance_info.get("account_number", "")))
-        selected_account_digits = re.sub(r"\D", "", str(selected_account.get("account_number", "")))
-        if (
-            statement_account_digits
-            and selected_account_digits
-            and not (
-                statement_account_digits in selected_account_digits
-                or selected_account_digits in statement_account_digits
-                or statement_account_digits[-4:] == selected_account_digits[-4:]
-            )
-        ):
-            st.warning(
-                "The statement account number does not appear to match the selected account. "
-                "Please verify the Account dropdown before importing."
-            )
-        if is_amex_cardholder_statement(file_bytes, uploaded_statement.name):
-            st.info(
-                "AMEX cardholder CSV detected. Use the AMEX parent account; the app will append "
-                "the cardholder name from the CSV to each imported AMEX account number."
-            )
-
         try:
             progress_slot = st.empty()
             progress_slot.markdown(
@@ -5349,10 +5315,52 @@ if page == "Import":
             )
             try:
                 parsed = parse_statement(file_bytes, uploaded_statement.name)
+                balance_info = {}
+                selected_account = {}
+                if "safra_sections" not in parsed.attrs:
+                    balance_info = parse_statement_balance(file_bytes, uploaded_statement.name)
+                    labels, lookup = account_options(accounts)
+                    default_account_index = guess_account_index(file_bytes, uploaded_statement.name, accounts, labels, balance_info)
+                    selected_label = st.selectbox("Account", labels, index=default_account_index)
+                    selected_account = lookup[selected_label]
+                    st.caption("Check this account carefully before importing. It controls the company/name, bank, account number, currency, rate type, and USD conversion.")
+                    statement_currency = str(balance_info.get("currency") or "").strip().upper()
+                    selected_currency = str(selected_account.get("currency", "") or "").strip().upper()
+                    if statement_currency and selected_currency and statement_currency != selected_currency:
+                        st.warning(
+                            f"The statement appears to be {statement_currency}, but the selected account is {selected_currency}. "
+                            "Please change the Account dropdown before importing if this is not correct."
+                        )
+                    statement_account_digits = re.sub(r"\D", "", str(balance_info.get("account_number", "")))
+                    selected_account_digits = re.sub(r"\D", "", str(selected_account.get("account_number", "")))
+                    if (
+                        statement_account_digits
+                        and selected_account_digits
+                        and not (
+                            statement_account_digits in selected_account_digits
+                            or selected_account_digits in statement_account_digits
+                            or statement_account_digits[-4:] == selected_account_digits[-4:]
+                        )
+                    ):
+                        st.warning(
+                            "The statement account number does not appear to match the selected account. "
+                            "Please verify the Account dropdown before importing."
+                        )
+                    if is_amex_cardholder_statement(file_bytes, uploaded_statement.name):
+                        st.info(
+                            "AMEX cardholder CSV detected. Use the AMEX parent account; the app will append "
+                            "the cardholder name from the CSV to each imported AMEX account number."
+                        )
                 parse_diagnostics = dict(getattr(parsed, "attrs", {}).get("parse_diagnostics", {}) or {})
                 parsed = apply_account_and_rates(parsed, selected_account)
                 parsed = flag_duplicates(parsed)
                 classified = classify_statement_rows(parsed, get_memory())
+                if "safra_sections" in parsed.attrs:
+                    classified.attrs["safra_sections"] = parsed.attrs["safra_sections"]
+                    if classified.empty:
+                        classified = classified.reindex(columns=list(dict.fromkeys([
+                            *classified.columns, "match_type", "suggested_category", "suggested_subcategory",
+                        ])))
             finally:
                 progress_slot.empty()
 
@@ -5441,7 +5449,10 @@ if page == "Import":
                             "Check that the matching exchange rate exists in Setup > Rates."
                         )
 
-            if balance_has_values(balance_info):
+            if "safra_sections" in classified.attrs:
+                from safra_history import preview_sections
+                st.dataframe(preview_sections(classified, accounts), use_container_width=True, hide_index=True)
+            elif balance_has_values(balance_info):
                 currency = balance_info.get("currency") or selected_account.get("currency", "")
                 render_summary_strip([
                     ("Opening balance", display_money(balance_info.get("opening_balance"), currency)),
@@ -5476,8 +5487,12 @@ if page == "Import":
                 "dup_flag",
                 "duplicate_reason",
             ]
+            transaction_preview = classified[[col for col in preview_cols if col in classified.columns]]
+            if "safra_sections" in classified.attrs:
+                from safra_history import preview_transactions
+                transaction_preview = preview_transactions(classified)
             st.dataframe(
-                classified[[col for col in preview_cols if col in classified.columns]],
+                transaction_preview,
                 use_container_width=True,
                 height=360,
             )
@@ -5496,12 +5511,13 @@ if page == "Import":
                 if duplicate_statement:
                     st.warning("This statement already exists. It was not imported again.")
                 else:
-                    save_statement_balance(
-                        statement_hash,
-                        uploaded_statement.name,
-                        balance_info,
-                        selected_account,
-                    )
+                    if "safra_sections" not in classified.attrs:
+                        save_statement_balance(
+                            statement_hash,
+                            uploaded_statement.name,
+                            balance_info,
+                            selected_account,
+                        )
                     st.success(f"Imported {inserted} transactions to pending review.")
                     if skipped_duplicates:
                         st.info(f"Skipped {skipped_duplicates} duplicate transaction line(s).")
@@ -5567,6 +5583,9 @@ elif page == "Import History":
             "currency",
             "period_start",
             "period_end",
+            "opening_balance",
+            "money_in",
+            "money_out",
             "closing_balance",
             "duplicate_status",
             "last_duplicate_at",

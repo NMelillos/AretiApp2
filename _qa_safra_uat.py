@@ -21,6 +21,8 @@ def baseline(name):
 
 
 def without_uat_app(source):
+    from _qa_safra_history import without_history
+    source = without_history("app.py", source)
     original = baseline("app.py")
     lines = original.splitlines(keepends=True)
     start, = [i for i, line in enumerate(lines) if line == "            parsed = parse_statement(file_bytes, uploaded_statement.name)\n"]
@@ -35,6 +37,8 @@ def without_uat_app(source):
 
 
 def without_uat_db(actual):
+    from _qa_safra_history import without_history
+    actual = without_history("db.py", actual.decode("utf-8")).encode("utf-8")
     source = actual.decode("utf-8")
     original = baseline("db.py")
     find = lambda text: next(n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef) and n.name == "_safra_page_accounts")
@@ -73,6 +77,11 @@ def cleanup_check():
             env[failure].side_effect = ValueError("synthetic failure")
         env.update(progress_slot=slot, file_bytes=b"synthetic", uploaded_statement=SimpleNamespace(name="synthetic.pdf"),
                    selected_account={}, get_memory=lambda: pd.DataFrame())
+        env.update(parse_statement_balance=lambda *args: {}, accounts=pd.DataFrame(),
+                   account_options=lambda *args: (["Synthetic"], {"Synthetic": {}}),
+                   guess_account_index=lambda *args: 0, st=Mock(), re=__import__("re"),
+                   is_amex_cardholder_statement=lambda *args: False)
+        env["st"].selectbox.return_value = "Synthetic"
         try:
             exec(code, env)
         except ValueError:

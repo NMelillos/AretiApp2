@@ -1534,6 +1534,8 @@ def _parse_safra_pages(pages):
             identities.add(identity)
         section = dict(source_page=page_number, statement_currency=currency,
                        source_iban=iban, source_account_number=number)
+        from safra_history import section_balances
+        section_balances(section, frame, text)
         for key, value in section.items():
             frame[key] = value
         frame["statement_currency_source"] = "Safra page header"

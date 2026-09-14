@@ -1615,6 +1615,13 @@ def editable_pending_table(df, categories, subcategories, key, defer_changes=Fal
 
 
 def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
+    from db import _bool_from_value, _clean
+
+    def reviewed_value(value):
+        if value is None or pd.isna(value):
+            return False
+        return bool(value == 1 or _bool_from_value(value))
+
     if original_df.empty or edited_df.empty or "id" not in edited_df.columns:
         return edited_df.iloc[0:0].copy()
 
@@ -1652,21 +1659,19 @@ def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
             rel_tol=0.0,
             abs_tol=0.000001,
         )
-        reviewed = bool(row.get("reviewed", False))
+        reviewed = reviewed_value(row.get("reviewed", False))
         if not reviewed and not amount_changed:
             continue
 
-        before_category = str(before.get("category", "") or "").strip()
-        before_subcategory = str(before.get("subcategory", "") or "").strip()
+        before_category = _clean(before.get("category", ""))
+        before_subcategory = _clean(before.get("subcategory", ""))
         editor_default_category = before_category
         if editor_default_category not in valid_categories:
-            suggested_category = str(before.get("suggested_category", "") or "").strip()
+            suggested_category = _clean(before.get("suggested_category", ""))
             editor_default_category = suggested_category if suggested_category in valid_categories else ""
-        editor_default_subcategory = before_subcategory or str(
-            before.get("suggested_subcategory", "") or ""
-        ).strip()
-        category = str(row.get("category", "") or "").strip()
-        subcategory = str(row.get("subcategory", "") or "").strip()
+        editor_default_subcategory = before_subcategory or _clean(before.get("suggested_subcategory", ""))
+        category = _clean(row.get("category", ""))
+        subcategory = _clean(row.get("subcategory", ""))
         if (
             not reviewed
             and category == editor_default_category
@@ -1683,9 +1688,9 @@ def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
             "status": status,
             "report_group": str(row.get("report_group", "") or "").strip(),
             "amount": amount,
-            "_expected_category": str(before.get("category", "") or "").strip(),
-            "_expected_subcategory": str(before.get("subcategory", "") or "").strip(),
-            "_expected_reviewed": bool(before.get("reviewed", False)),
+            "_expected_category": before_category,
+            "_expected_subcategory": before_subcategory,
+            "_expected_reviewed": reviewed_value(before.get("reviewed", False)),
             "_expected_amount": before.get("amount"),
             "_expected_amount_usd": before.get("amount_usd"),
             "_expected_fx_rate": before.get("fx_rate"),

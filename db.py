@@ -2932,6 +2932,14 @@ def save_reviewed_rows(df):
                     reviewed_at = CASE WHEN ? = 1 THEN ? ELSE reviewed_at END,
                     amount = ?, amount_usd = ?
                 WHERE id = ?
+                  AND category IS NOT DISTINCT FROM ?
+                  AND subcategory IS NOT DISTINCT FROM ?
+                  AND reviewed IS NOT DISTINCT FROM ?
+                  AND status IS NOT DISTINCT FROM ?
+                  AND amount IS NOT DISTINCT FROM ?
+                  AND amount_usd IS NOT DISTINCT FROM ?
+                  AND currency IS NOT DISTINCT FROM ?
+                  AND fx_rate IS NOT DISTINCT FROM ?
             """, (
                 category,
                 subcategory,
@@ -2942,9 +2950,11 @@ def save_reviewed_rows(df):
                 amount,
                 amount_usd,
                 tx_id,
+                before[0], before[1], before[2], before[3],
+                before[8], before[9], before[10], before[11],
             ))
             if cur.rowcount != 1:
-                raise RuntimeError(f"Transaction {tx_id} was not updated.")
+                raise ConcurrentTransactionEditError(tx_id)
             saved += 1
             expected[tx_id] = (
                 category,

@@ -23,6 +23,9 @@ APPROVED = {
 
 
 def without_history(name, source):
+    if name == 'db.py':
+        from _qa_pending_save_normalization import without_save_normalization
+        source = without_save_normalization(name, source.encode()).decode()
     if name == 'app.py':
         from _qa_income_groups import compatible
         source = compatible(name, source.encode()).decode()

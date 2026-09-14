@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 
 def without_save_normalization(name, source):
+    from _qa_review_counters import without_counter_change
+    source = without_counter_change(name, source)
     source = source.replace(b"\r\n", b"\n")
     baseline = subprocess.check_output(["git", "show", "f735dfd04504d7bb54b99e890aab507a3eacdc29:" + name]).replace(b"\r\n", b"\n")
     function, digest = {

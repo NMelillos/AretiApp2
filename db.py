@@ -2382,6 +2382,8 @@ def save_pending_transactions(df, statement_name, statement_hash, *, _connection
 
 
 def get_pending_transactions():
+    from review_state import sql_predicates
+    pending_sql, _ = sql_predicates()
     conn = get_connection()
     try:
         hidden_sql, hidden_params = _hidden_filter_sql()
@@ -2390,8 +2392,7 @@ def get_pending_transactions():
             SELECT *
             FROM classified_transactions
             WHERE {active_sql}
-              AND COALESCE(status, 'pending') = 'pending'
-              AND COALESCE(reviewed, 0) = 0
+              AND {pending_sql}
             {hidden_sql}
             ORDER BY txn_date, id
         """, conn, params=hidden_params)
@@ -2401,6 +2402,8 @@ def get_pending_transactions():
 
 
 def get_saved_transactions():
+    from review_state import sql_predicates
+    _, reviewed_sql = sql_predicates()
     conn = get_connection()
     try:
         hidden_sql, hidden_params = _hidden_filter_sql()
@@ -2409,7 +2412,7 @@ def get_saved_transactions():
             SELECT *
             FROM classified_transactions
             WHERE {active_sql}
-              AND (COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1)
+              AND {reviewed_sql}
               {hidden_sql}
             ORDER BY txn_date DESC, id DESC
         """, conn, params=hidden_params)
@@ -2756,6 +2759,8 @@ def restore_transactions(transaction_ids):
 
 
 def get_dashboard_counts():
+    from review_state import sql_predicates
+    pending_sql, reviewed_sql = sql_predicates()
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -2770,15 +2775,14 @@ def get_dashboard_counts():
                 SELECT COUNT(*)
                 FROM classified_transactions
                 WHERE {active_sql}
-                  AND COALESCE(status, 'pending') = 'pending'
-                  AND COALESCE(reviewed, 0) = 0
+                  AND {pending_sql}
                   {hidden_sql}
             """, hidden_params),
             "reviewed": (f"""
                 SELECT COUNT(*)
                 FROM classified_transactions
                 WHERE {active_sql}
-                  AND (COALESCE(status, '') = 'reviewed' OR COALESCE(reviewed, 0) = 1)
+                  AND {reviewed_sql}
                   {hidden_sql}
             """, hidden_params),
             "memory": ("SELECT COUNT(*) FROM transaction_memory", []),
@@ -2825,7 +2829,7 @@ def save_reviewed_rows(df):
                 raise ValueError(f"Transaction {tx_id} no longer exists.")
             before_category = before[0] or ""
             before_subcategory = before[1] or ""
-            before_reviewed = int(before[2] or 0)
+            before_reviewed = int(_bool_from_value(before[2]))
             before_status = before[3] or ""
             before_amount = _float_or_none(before[8])
             before_amount_usd = _float_or_none(before[9])

@@ -5974,11 +5974,13 @@ elif page == "Database":
             db_view = db_view[database_search_mask(db_view, search)].copy()
 
         st.caption(f"Database path: {DB_PATH}")
+        from review_state import counts as review_state_counts
+        review_counts = review_state_counts(active_financial_transactions(db_view))
         render_summary_strip([
             ("Visible rows", len(db_view)),
             ("Accounts", db_view["account_name"].replace("", pd.NA).dropna().nunique()),
-            ("Pending", int((db_view["status"].fillna("pending") == "pending").sum()) if "status" in db_view else 0),
-            ("Reviewed", int((db_view["status"].fillna("") == "reviewed").sum()) if "status" in db_view else 0),
+            ("Pending", review_counts["pending"]),
+            ("Reviewed", review_counts["reviewed"]),
             ("Excluded", excluded_total),
         ])
         report_group_audit = report_group_consistency_audit(all_tx, categories_df)

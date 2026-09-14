@@ -25,7 +25,8 @@ def main():
         assert actual == subprocess.check_output(["git", "show", base + ":" + name]).replace(b"\r\n", b"\n")
     nodes = lambda source: {n.name: ast.dump(n) for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
     old = nodes(subprocess.check_output(["git", "show", base + ":db.py"]))
-    new = nodes(Path("db.py").read_text(encoding="utf-8"))
+    from _qa_pending_save_normalization import without_save_normalization
+    new = nodes(without_save_normalization("db.py", Path("db.py").read_bytes()))
     assert old.keys() == new.keys()
     assert {k for k in old if old[k] != new[k]} == {"_safra_page_accounts"}
     rows = parsing._parse_safra_pages(fixture())

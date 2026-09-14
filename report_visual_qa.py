@@ -19,6 +19,7 @@ for variable in ("TEMP", "ARETI_SHARED_FOLDER", "ARETI_DB_PATH"):
         raise RuntimeError(f"Visual QA requires {variable} on E:")
 import pandas as pd
 import streamlit as st
+from db import dataframe_to_excel_bytes
 from utils import format_currency
 
 st.set_page_config(layout="wide")

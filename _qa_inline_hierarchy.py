@@ -130,15 +130,15 @@ def main():
         'div[class*="st-key-executive_category_"]' in source
         and 'div[class*="st-key-executive_subcategory_"]' in source
         and "align-self: flex-end !important;" in source
-        and "width: 80% !important;" in source
+        and "width: 75% !important;" in source
         and "text-align: right;" in source,
         True,
     )
     assert_equal(
-        "Reporting Group and Category buttons preserve the 1.25 width hierarchy",
+        "Reporting Group and Category buttons preserve the 4/4 to 3/4 width hierarchy",
         'div[class*="st-key-executive_group_"] button' in source
         and "align-self: flex-end !important;" in source
-        and "width: 80% !important;" in source,
+        and "width: 75% !important;" in source,
         True,
     )
     assert_equal(
@@ -148,9 +148,9 @@ def main():
         True,
     )
     assert_equal(
-        "Category connector is scoped to descendants and excludes sibling Categories",
+        "Group and Category connectors are scoped to their descendant containers",
         'div[class*="st-key-executive_hierarchy_branch_category"]::before' in source
-        and 'div[class*="st-key-executive_hierarchy_branch_group"]::before' not in source,
+        and 'div[class*="st-key-executive_hierarchy_branch_group"]::before' in source,
         True,
     )
     assert_equal(

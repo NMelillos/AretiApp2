@@ -7,6 +7,8 @@ import subprocess
 
 
 def without_decimal_change(name, actual):
+    from _qa_report_formatting import without_formatting_change
+    actual = without_formatting_change(name, actual)
     actual = actual.replace(b"\r\n", b"\n")
     expected = {"app.py": "29281a1ddaace658e83df97d1ea17dc8cdb99b2847c974fa6ee3868b78152999",
                 "reporting.py": "47b27fa5246470722729f67f7546b3dc26540daea3e548b8082e54ba57484c97"}

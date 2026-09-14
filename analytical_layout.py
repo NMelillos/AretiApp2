@@ -34,8 +34,11 @@ def columns(st, widths, *, ai=False, full=True):
     expressions = column_expressions(widths)
     if not state["ready"]:
         first = expressions[0]
-        label = f"calc(0.8 * {first} - 8px)" if ai else first
+        original_label = f"calc(0.8 * {first} - 8px)" if ai else first
+        # Administration: 86.70px text + 12px padding/border + 1.30px tolerance.
+        label = f"max(100px, {original_label})"
         state["label"] = label
+        state["original_label"] = original_label
         state["ready"] = True
         st.markdown(f"""<style>
         /* Reserve the horizontal scrollbar's clearance, not inter-row spacing. */
@@ -55,13 +58,16 @@ def columns(st, widths, *, ai=False, full=True):
         {scope} [class*="st-key-executive_group_"] button p,
         {scope} [class*="st-key-executive_category_"] button p,
         {scope} [class*="st-key-executive_subcategory_"] button p,
-        {scope} [class*="st-key-executive_income_charity_"] button p {{ overflow-wrap: anywhere; }}
+        {scope} [class*="st-key-executive_income_charity_"] button p {{
+            overflow-wrap: normal; word-break: normal; hyphens: none; white-space: normal;
+        }}
         </style>""", unsafe_allow_html=True)
     label = state["label"]
+    original_label = state["original_label"]
     key = f'analytical_row_{state["scope"]}_{state["index"]}'
     state["index"] += 1
     selector = f'.st-key-{key}'
-    template = " ".join([f"calc({expressions[0]} + {label})"] + expressions[1:])
+    template = " ".join([f"calc({expressions[0]} + 2 * {label} - {original_label})"] + expressions[1:])
     st.markdown(f"""<style>
     {selector} > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {{
         display: grid !important; grid-template-columns: {template};
@@ -69,7 +75,7 @@ def columns(st, widths, *, ai=False, full=True):
     }}
     {selector} > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{ width: auto !important; min-width: 0 !important; }}
     {selector} > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child [data-testid="stHorizontalBlock"] {{
-        display: grid !important; grid-template-columns: calc(2 * {label}) calc({expressions[0]} - {label} - 16px);
+        display: grid !important; grid-template-columns: calc(2 * {label}) calc({expressions[0]} - {original_label} - 16px);
         column-gap: 16px !important;
     }}
     {selector} > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{

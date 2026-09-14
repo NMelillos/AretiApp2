@@ -55,6 +55,7 @@ categories = pd.DataFrame([dict(category="Tour Income", subcategory=sub, report_
                            for sub in ["Walt Disney", "Other", "Todd Regan"]] +
                           [dict(category="Projects", subcategory="MISSING", report_group="Income")])
 if st.checkbox("Long synthetic labels"):
+    categories.loc[categories.category.eq("Tour Income"), "category"] = "Synthetic International Development and Administration Income"
     categories.loc[0, "subcategory"] = "Synthetic International Development and Administration"
 get_categories = lambda **kwargs: categories.copy()
 def save_reviewed_rows(_rows):

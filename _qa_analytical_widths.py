@@ -56,6 +56,15 @@ def main():
                   "calc(2 *", "calc(1.5 *", "left:", "::before"):
         assert token in css
     assert "font-size" not in css and "line-height" not in css
+    assert "max(100px," in css
+    assert "overflow-wrap: normal; word-break: normal; hyphens: none; white-space: normal;" in css
+    assert "overflow-wrap: anywhere" not in css
+    # The floor can widen only the first track; monetary weights and AI allocation stay intact.
+    assert " + 2 * max(100px," in css
+    ai_surface = Surface()
+    layout.render(ai_surface, lambda level: layout.columns(ai_surface, weights, ai=True), {"level": "group"})
+    assert ai_surface.weights == [tuple(weights)]
+    assert " - 16px)" in "\n".join(ai_surface.styles)
     def failure(level):
         raise ValueError("synthetic rendering failure")
     try:

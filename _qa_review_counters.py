@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 
 def without_counter_change(name, source):
+    from _qa_analytical_widths import without_analytical_sizing
+    source = without_analytical_sizing(name, source)
     source = source.replace(b"\r\n", b"\n")
     expected = {"app.py": "04fb94a28ce7d248d4401819937a4ffcf62094e4a4ca8226039e0fdeacf04487",
                 "db.py": "c14c030bca9b4fcffad8b33aa7e49c99106dcdc5072e114a8cf4b8368f4f2d40"}

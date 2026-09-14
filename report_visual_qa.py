@@ -19,11 +19,19 @@ for variable in ("TEMP", "ARETI_SHARED_FOLDER", "ARETI_DB_PATH"):
         raise RuntimeError(f"Visual QA requires {variable} on E:")
 import pandas as pd
 import streamlit as st
+import importlib
+import analytical_layout
+importlib.reload(analytical_layout)
 from db import dataframe_to_excel_bytes
 from utils import format_currency
 
 st.set_page_config(layout="wide")
 source = Path(__file__).with_name("app.py").read_text(encoding="utf-8")
+if os.getenv("ARETI_VISUAL_BASELINE"):
+    import subprocess
+    if os.environ["ARETI_VISUAL_BASELINE"] != "becf943051d732741ef7b50335f642bbf444897d":
+        raise RuntimeError("Only the verified pre-sizing baseline is supported")
+    source = subprocess.check_output(["git", "show", os.environ["ARETI_VISUAL_BASELINE"] + ":app.py"]).decode("utf-8")
 tree = ast.parse(source)
 for node in tree.body:
     if isinstance(node, ast.Assign):
@@ -61,10 +69,15 @@ rows = pd.DataFrame([dict(id=i + 1, category=row.category, subcategory=row.subca
                      for i, row in enumerate(categories.itertuples())])
 st.caption("LOCAL SYNTHETIC QA ONLY - no production connection")
 view = st.radio("Report", ["Income / Charity", "Reporting groups"], horizontal=True)
+with_ai = st.checkbox("Synthetic AI controls")
+if st.checkbox("Long group label"):
+    rows.loc[rows.report_group.eq("Woking Way LLC"), "report_group"] = "Investing to group companies/projects"
+    categories.loc[categories.report_group.eq("Woking Way LLC"), "report_group"] = "Investing to group companies/projects"
 if view == "Income / Charity":
     _render_income_charity_section(rows, months, labels, show_all_months=True, editable=True)
 else:
     _render_executive_drilldown(rows, months, labels, categories_df=categories,
-                              visible_report_groups=["Woking Way LLC", "Income", "Synthetic empty group"],
+                              visible_report_groups=[rows.report_group.iloc[0], "Income", "Synthetic empty group"],
+                              ai_prompts={} if with_ai else None,
                               show_all_months=True, read_only=True, inline_hierarchy=True,
                               show_zero_explanations=False, show_group_total=True)

@@ -3273,6 +3273,10 @@ def _render_executive_click_rows(
     blank_share_pct=False,
     child_branch_key=None,
 ):
+    arguments = locals().copy()
+    import analytical_layout
+    if not analytical_layout.active():
+        return analytical_layout.render(st, _render_executive_click_rows, arguments)
     if show_title:
         st.markdown(
             f"<div class=\"executive-section-title\">{escape(title)}</div>",
@@ -3336,7 +3340,7 @@ def _render_executive_click_rows(
             unsafe_allow_html=True,
         )
     if show_header:
-        header_cols = st.columns(widths)
+        header_cols = analytical_layout.columns(st, widths, ai=ai_prompts is not None, full=show_all_months)
         col_idx = 0
         header_cols[col_idx].markdown("<div class=\"summary-label\">Open</div>", unsafe_allow_html=True)
         for _, label, _, _ in base_defs:
@@ -3356,7 +3360,7 @@ def _render_executive_click_rows(
     for idx, row in enumerate(rows):
         is_total = bool(row.get("is_total"))
         is_selected = st.session_state.get(selection_key) == row["value"]
-        cols = st.columns(widths)
+        cols = analytical_layout.columns(st, widths, ai=ai_prompts is not None, full=show_all_months)
         col_idx = 0
         with cols[col_idx]:
             if is_total:

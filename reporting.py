@@ -120,10 +120,10 @@ def _assign_report_groups(tx, categories):
     return tx
 
 
-def is_income(category, subcategory=""):
-    """Income membership is independent of reporting-group assignment."""
+def is_income(category, subcategory="", report_group=""):
+    """Match Income in classification fields without changing their assignments."""
     return any(re.search(r"\bincome\b", _clean_text(value), flags=re.IGNORECASE)
-               for value in (category, subcategory))
+               for value in (category, subcategory, report_group))
 
 
 def income_charity_scope(report_rows):
@@ -139,7 +139,8 @@ def income_charity_scope(report_rows):
 
     row_type = pd.Series("", index=scoped.index, dtype=str)
     row_type.loc[category_key.eq("charity")] = "Charity"
-    income_mask = pd.Series([is_income(cat, sub) for cat, sub in zip(category, subcategory)], index=scoped.index)
+    groups = scoped.get(REPORT_GROUP_COLUMN, pd.Series("", index=scoped.index))
+    income_mask = pd.Series([is_income(cat, sub, group) for cat, sub, group in zip(category, subcategory, groups)], index=scoped.index)
     row_type.loc[income_mask] = "Income"
 
     scoped["income_charity_type"] = row_type

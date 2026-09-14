@@ -4685,7 +4685,7 @@ def _save_income_charity_edits(baseline, edited, categories_df):
             raise ValueError("Choose a valid Category / Subcategory pair from Setup.")
         category, subcategory = _parse_category_pair_label(label)
         from reporting import _assign_report_groups, is_income
-        if is_income(before["category"], before["subcategory"]):
+        if is_income(before["category"], before["subcategory"], before.get("report_group", "")):
             original_group = _assign_report_groups(pd.DataFrame([before]), categories_df).iloc[0]["report_group"]
             expected_group = before.get("report_group", original_group)
             target_group = _assign_report_groups(pd.DataFrame([{

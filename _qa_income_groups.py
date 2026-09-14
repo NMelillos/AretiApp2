@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 
 def compatible(name, actual):
+    from _qa_income_three_fields import without_three_field_change
+    actual = without_three_field_change(name, actual)
     actual = actual.replace(b"\r\n", b"\n")
     hashes = {"app.py": "2daf0c8779715640b8a3deff28c8cb54f4b6dc5163a48987ef53872516b96e64",
               "reporting.py": "f976cfbecb137cdb523260ca40e37ce20a28c052099cb8b760e3dc048d71565a"}

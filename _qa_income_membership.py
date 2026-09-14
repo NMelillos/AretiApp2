@@ -46,7 +46,7 @@ def main():
     assert income_charity_percentage(50, -5) == 10
     assert not is_income("Incoming") and not is_income(None, None)
     assert is_income("pre-income") and is_income("", "INCOME")
-    assert income_charity_scope(rows.assign(report_group="Income")).id.tolist() == scoped.id.tolist()
+    assert income_charity_scope(rows.assign(report_group="Income")).id.tolist() == rows.id.tolist()
     exported = pd.read_csv(StringIO(scoped.to_csv(index=False)))
     assert exported.id.tolist() == scoped.id.tolist() and exported.report_amount.sum() == 45
     pd.testing.assert_frame_equal(rows, baseline)

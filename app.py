@@ -2723,10 +2723,11 @@ def _is_shared_executive_report_request():
 
 
 def _money(value):
+    from decimal import Decimal
     if value is None or pd.isna(value):
         return "-"
     try:
-        amount = round(float(value))
+        amount = round(Decimal(str(value)))
     except Exception:
         return "-"
     if amount < 0:
@@ -2773,7 +2774,8 @@ def _executive_row_html(group, metrics, months):
 
 
 def _executive_trend(change):
-    if abs(change) <= 0.005:
+    from report_money import decimal_amount
+    if abs(change) <= decimal_amount("0.005"):
         return "trend-flat", "No change"
     if change > 0:
         return "trend-up", "Increasing"
@@ -2797,29 +2799,34 @@ def _executive_change_pct(change, previous_amount):
 
 
 def _executive_status_delta(current_amount, previous_amount):
-    current = float(current_amount or 0.0)
-    previous = float(previous_amount or 0.0)
-    if abs(current) <= 0.005 and abs(previous) <= 0.005:
-        return 0.0
+    from report_money import decimal_amount
+    current = decimal_amount(current_amount)
+    previous = decimal_amount(previous_amount)
+    threshold = decimal_amount("0.005")
+    if abs(current) <= threshold and abs(previous) <= threshold:
+        return decimal_amount(0)
     # For expense/funding rows, negative values are outflows and positive
     # values can be returns/refunds. Compare the movement as cost exposure,
     # so a return after historical outflows is a decrease, not an increase.
-    if previous < -0.005 or (abs(previous) <= 0.005 and current < -0.005):
+    if previous < -threshold or (abs(previous) <= threshold and current < -threshold):
         return previous - current
     return current - previous
 
 
 def _executive_status_change_pct(current_amount, previous_amount):
-    if abs(previous_amount) <= 0.005:
+    from report_money import decimal_amount
+    previous_amount = decimal_amount(previous_amount)
+    if abs(previous_amount) <= decimal_amount("0.005"):
         return None
     return (_executive_status_delta(current_amount, previous_amount) / abs(previous_amount)) * 100
 
 
 def _executive_signed_amount_series(frame):
+    from report_money import decimal_amount
     if frame.empty:
         return pd.Series(dtype=float)
     source_column = "report_amount" if "report_amount" in frame.columns else "expense_usd"
-    return pd.to_numeric(frame.get(source_column, pd.Series(dtype=float)), errors="coerce").fillna(0)
+    return frame.get(source_column, pd.Series(dtype=object)).map(decimal_amount)
 
 
 def _executive_amount_series(frame, context_frame=None):
@@ -2827,12 +2834,15 @@ def _executive_amount_series(frame, context_frame=None):
 
 
 def _executive_metric_values_from_month_values(month_values, months, denominator=0.0):
-    total_amount = float(sum(month_values.values()))
+    from report_money import decimal_amount, decimal_sum
+    month_values = {month: decimal_amount(value) for month, value in month_values.items()}
+    denominator = decimal_amount(denominator)
+    total_amount = decimal_sum(month_values.values())
     current_month = months[-1] if months else None
     previous_month = months[-2] if len(months) > 1 else None
-    current_amount = month_values.get(current_month, 0.0)
-    previous_amount = month_values.get(previous_month, 0.0)
-    previous_trend_values = [month_values.get(month, 0.0) for month in months[:-1]]
+    current_amount = month_values.get(current_month, decimal_amount(0))
+    previous_amount = month_values.get(previous_month, decimal_amount(0))
+    previous_trend_values = [month_values.get(month, decimal_amount(0)) for month in months[:-1]]
     trend_baseline = (
         sum(previous_trend_values) / len(previous_trend_values)
         if previous_trend_values
@@ -2848,7 +2858,7 @@ def _executive_metric_values_from_month_values(month_values, months, denominator
         "previous": previous_amount,
         "period_start": trend_baseline,
         "total": total_amount,
-        "share_pct": (abs(total_amount) / denominator * 100) if denominator > 0.005 else None,
+        "share_pct": (abs(total_amount) / denominator * 100) if denominator > decimal_amount("0.005") else None,
         "average": (sum(month_values.values()) / len(month_values)) if month_values else 0.0,
         "change": change,
         "change_pct": _executive_status_change_pct(current_amount, previous_amount),
@@ -2866,9 +2876,10 @@ def _executive_metric_values_from_month_values(month_values, months, denominator
 
 
 def _executive_metric_values(frame, months, denominator=0.0, context_frame=None):
+    from report_money import decimal_sum
     amount_series = _executive_amount_series(frame, context_frame=context_frame)
     month_values = {
-        month: float(amount_series.loc[frame["month"] == month].sum())
+        month: decimal_sum(amount_series.loc[frame["month"] == month])
         for month in months
     }
     # "Sum since Jan" must use the same Jan-to-report-month window as the
@@ -2878,6 +2889,7 @@ def _executive_metric_values(frame, months, denominator=0.0, context_frame=None)
 
 
 def _executive_share_denominator(expenses, level_column, labels, months=None):
+    from report_money import decimal_amount, decimal_sum
     if expenses.empty or level_column not in expenses.columns:
         return 0.0
     amount_series = _executive_amount_series(expenses, context_frame=expenses)
@@ -2888,10 +2900,11 @@ def _executive_share_denominator(expenses, level_column, labels, months=None):
     else:
         label_series = expenses[level_column].fillna("").astype(str).str.strip()
     totals = amount_series.groupby(label_series).sum()
-    return float(sum(abs(float(totals.get(str(label or "").strip(), 0.0))) for label in labels))
+    return decimal_sum(abs(decimal_amount(totals.get(str(label or "").strip(), 0))) for label in labels)
 
 
 def _executive_level_rows(expenses, level_column, months, extra_labels=None):
+    from report_money import decimal_amount, decimal_sum
     rows = []
     extra_labels = _ordered_text_values(extra_labels or [])
     if (expenses.empty or level_column not in expenses.columns) and not extra_labels:
@@ -2951,14 +2964,14 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
         grouped_source
         .groupby(["_label", "_month"], dropna=False)["_amount"]
         .sum()
-        .unstack(fill_value=0.0)
+        .unstack(fill_value=decimal_amount(0))
     )
     period_columns = [month for month in months if month in grouped.columns]
     if period_columns:
         period_totals = grouped[period_columns].sum(axis=1)
     else:
         period_totals = pd.Series(0.0, index=grouped.index)
-    denominator = float(sum(abs(float(period_totals.get(str(label or "").strip(), 0.0))) for label in labels))
+    denominator = decimal_sum(abs(decimal_amount(period_totals.get(str(label or "").strip(), 0))) for label in labels)
 
     for label in labels:
         label_key = str(label or "").strip()
@@ -2966,7 +2979,7 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
             continue
         if label_key in grouped.index:
             month_row = grouped.loc[label_key]
-            month_values = {month: float(month_row.get(month, 0.0)) for month in months}
+            month_values = {month: decimal_amount(month_row.get(month, 0)) for month in months}
         else:
             month_values = {month: 0.0 for month in months}
         metrics = _executive_metric_values_from_month_values(month_values, months, denominator)
@@ -2978,14 +2991,15 @@ def _executive_level_rows(expenses, level_column, months, extra_labels=None):
 
 
 def _executive_total_row(rows, months):
+    from report_money import decimal_amount, decimal_sum
     source_rows = [row for row in rows if not row.get("is_total")]
     if not source_rows:
         return None
     month_values = {
-        month: float(sum(float(row.get("months", {}).get(month, 0.0) or 0.0) for row in source_rows))
+        month: decimal_sum(row.get("months", {}).get(month, 0) for row in source_rows)
         for month in months
     }
-    denominator = float(sum(abs(float(row.get("total") or 0.0)) for row in source_rows))
+    denominator = decimal_sum(abs(decimal_amount(row.get("total"))) for row in source_rows)
     total_row = _executive_metric_values_from_month_values(month_values, months, denominator)
     total_row["share_pct"] = 100.0 if denominator > 0.005 else None
     total_row.update({"label": "TOTAL", "value": "TOTAL", "is_total": True})
@@ -4640,10 +4654,11 @@ def _income_charity_target_message(percentage):
 
 
 def _income_charity_target_variance(income_total, charity_total):
-    income_total = float(income_total or 0)
-    if abs(income_total) <= 0.005:
+    from report_money import decimal_amount
+    income_total = decimal_amount(income_total)
+    if abs(income_total) <= decimal_amount("0.005"):
         return None
-    return abs(float(charity_total or 0)) - (abs(income_total) * 0.10)
+    return abs(decimal_amount(charity_total)) - (abs(income_total) * decimal_amount("0.10"))
 
 
 def _income_charity_target_variance_message(income_total, charity_total):
@@ -4820,10 +4835,11 @@ def _render_income_charity_transactions(transaction_rows, *, editable=False):
 
 def _render_income_charity_section(report_rows, months, month_labels, show_all_months=False, *, editable=False):
     from reporting import income_charity_month_values, income_charity_percentage
+    from report_money import decimal_sum
 
     scoped, monthly, _cumulative = income_charity_month_values(report_rows, months)
-    income_total = float(sum(monthly["Income"].values()))
-    charity_total = float(sum(monthly["Charity"].values()))
+    income_total = decimal_sum(monthly["Income"].values())
+    charity_total = decimal_sum(monthly["Charity"].values())
     charity_income_pct = income_charity_percentage(income_total, charity_total)
     period_rows = scoped[
         scoped.get("month", pd.Series(index=scoped.index, dtype=object)).isin(months)

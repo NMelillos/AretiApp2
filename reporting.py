@@ -159,6 +159,7 @@ def third_hierarchy_item19_exclusions(report_rows):
 
 def income_charity_month_values(report_rows, months):
     """Build signed monthly and cumulative Item 19 values for Income and Charity."""
+    from report_money import decimal_amount, decimal_sum
     scoped = income_charity_scope(report_rows)
     if "month" not in scoped.columns and "txn_date" in scoped.columns:
         scoped["month"] = pd.to_datetime(scoped["txn_date"], errors="coerce").dt.to_period("M")
@@ -166,10 +167,7 @@ def income_charity_month_values(report_rows, months):
         (column for column in ["report_amount", "amount_usd", "amount", "expense_usd"] if column in scoped.columns),
         None,
     )
-    amounts = pd.to_numeric(
-        scoped.get(amount_column, pd.Series(dtype=float)),
-        errors="coerce",
-    ).fillna(0)
+    amounts = scoped.get(amount_column, pd.Series(dtype=object)).map(decimal_amount)
     month_series = scoped.get("month", pd.Series(index=scoped.index, dtype=object))
 
     monthly = {}
@@ -177,11 +175,11 @@ def income_charity_month_values(report_rows, months):
     for row_type in ["Income", "Charity"]:
         type_mask = scoped.get("income_charity_type", pd.Series("", index=scoped.index)).eq(row_type)
         values = {
-            month: float(amounts.loc[type_mask & month_series.eq(month)].sum())
+            month: decimal_sum(amounts.loc[type_mask & month_series.eq(month)])
             for month in months
         }
         monthly[row_type] = values
-        running_total = 0.0
+        running_total = decimal_amount(0)
         cumulative[row_type] = {}
         for month in months:
             running_total += values[month]
@@ -190,10 +188,11 @@ def income_charity_month_values(report_rows, months):
 
 
 def income_charity_percentage(income_total, charity_total):
-    income_total = float(income_total or 0)
-    if abs(income_total) <= 0.005:
+    from report_money import decimal_amount
+    income_total = decimal_amount(income_total)
+    if abs(income_total) <= decimal_amount("0.005"):
         return None
-    return abs(float(charity_total or 0)) / abs(income_total) * 100
+    return abs(decimal_amount(charity_total)) / abs(income_total) * 100
 
 
 def _month_context(expenses):
@@ -204,6 +203,7 @@ def _month_context(expenses):
 
 
 def _prepare_report_data(transactions, categories, report_group=None, include_own_funds=False, include_all_valid=False):
+    from report_money import decimal_amount
     # Split parents remain available in the database for audit, but financial
     # reports must use only active transactions: normal rows plus split children.
     tx = filter_financially_active_transactions(transactions).copy()
@@ -225,15 +225,15 @@ def _prepare_report_data(transactions, categories, report_group=None, include_ow
         amount_usd_numeric.fillna(0).abs().le(0.005)
         & amount_numeric.fillna(0).abs().gt(0.005)
     )
-    tx["report_amount"] = amount_usd_numeric
+    tx["report_amount"] = tx["amount_usd"].map(decimal_amount)
     tx.loc[zero_usd_needs_attention & ~tx["currency"].eq("USD"), "report_amount"] = pd.NA
     usd_fallback = (
-        (tx["report_amount"].isna() | zero_usd_needs_attention)
+        (amount_usd_numeric.isna() | zero_usd_needs_attention)
         & tx["currency"].eq("USD")
         & amount_numeric.notna()
     )
-    tx.loc[usd_fallback, "report_amount"] = amount_numeric.loc[usd_fallback]
-    tx["report_amount"] = tx["report_amount"].fillna(0)
+    tx.loc[usd_fallback, "report_amount"] = tx.loc[usd_fallback, "amount"].map(decimal_amount)
+    tx["report_amount"] = tx["report_amount"].map(decimal_amount)
     tx = tx.dropna(subset=["txn_date"]).copy()
 
     tx = _assign_report_groups(tx, categories)

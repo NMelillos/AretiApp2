@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 
 def without_three_field_change(name, actual):
+    from _qa_income_decimal import without_decimal_change
+    actual = without_decimal_change(name, actual)
     actual = actual.replace(b"\r\n", b"\n")
     expected = {"app.py": "dafeb1c49bd293f3fb553d7a74e8aec6090045a402c0dbb8f364befd1d73140f",
                 "reporting.py": "b49b68ad307c78f6cdb696d6a6d36045c6ad7aed03f43968ee2b46d1a40e9982"}

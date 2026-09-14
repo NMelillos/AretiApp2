@@ -1,5 +1,6 @@
 """Synthetic report reconciliation; no application startup or database writes."""
 import ast
+from decimal import Decimal
 from _qa_revolut_business import _app_without_authorized_income_charity_edits
 import subprocess
 from pathlib import Path
@@ -80,15 +81,29 @@ def main():
         pd.testing.assert_frame_equal(transactions, original)
         _, baseline_executive, _, _ = old_reporting["_prepare_report_data"](
             original, categories, include_all_valid=True, include_own_funds=True)
+        for column in ("report_amount", "expense_usd"):
+            baseline_executive[column] = baseline_executive[column].map(lambda value: Decimal(str(value)))
         pd.testing.assert_frame_equal(executive, baseline_executive)
         assert third["id"].is_unique
         pd.testing.assert_frame_equal(income_charity_scope(executive), income_charity_scope(third))
         metric = new["_executive_metric_values"]
         parent = metric(third, months)
-        assert parent == old["_executive_metric_values"](executive, months)
+        # Binary-float identity is superseded by exact Decimal aggregation.
+        # Keep the historical displayed metrics and prove the monetary values independently.
+        def displayed(value):
+            if isinstance(value, dict):
+                return {k: displayed(v) for k, v in value.items()}
+            if isinstance(value, (float, Decimal)):
+                return f"{value:.6f}"
+            return value
+        assert displayed(parent) == displayed(old["_executive_metric_values"](executive, months))
+        expected_months = {m: Decimal(str(outflow)) + Decimal(str(inflow))
+                           for m, outflow, inflow in zip(months, outflows, inflows)}
+        assert parent["months"] == expected_months
+        assert parent["total"] == sum(expected_months.values())
         children = [metric(third[third.category.eq(c)], months) for c in categories.category]
-        running_parent = 0.0
-        running_children = 0.0
+        running_parent = Decimal(0)
+        running_children = Decimal(0)
         for month in months:
             assert abs(parent["months"][month] - sum(c["months"][month] for c in children)) < 1e-8
             running_parent += parent["months"][month]
@@ -101,7 +116,7 @@ def main():
             assert [c["total"] for c in children] == [-97885, 28500]
             print(f"PASS: synthetic Jan-Aug before={metric(before, months)['total']} after={parent['total']} average={parent['average']}")
             shares = new["_executive_level_rows"](third, "category", months)
-            assert sorted(round(r["share_pct"], 1) for r in shares) == [22.6, 77.4]
+            assert sorted(round(r["share_pct"], 1) for r in shares) == [Decimal("22.6"), Decimal("77.4")]
             group_rows = new["_executive_level_rows"](third, "report_group", months)
             assert new["_executive_total_row"](group_rows, months)["total"] == parent["total"]
             print("PASS: child shares 77.4/22.6 and selected-group TOTAL counts income once")

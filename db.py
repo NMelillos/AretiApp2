@@ -1658,7 +1658,10 @@ def get_import_history():
                    si.transaction_count,
                    COALESCE(ft.account_name, sb.account_name, '') AS account_name,
                    COALESCE(ft.bank, sb.bank, '') AS bank,
-                   COALESCE(ft.account_number, sb.account_number, '') AS account_number,
+                   CASE WHEN sb.source LIKE 'Safra document %'
+                        THEN sb.account_number
+                        ELSE COALESCE(ft.account_number, sb.account_number, '')
+                   END AS account_number,
                    COALESCE(ft.currency, sb.currency, '') AS currency,
                    sb.period_start,
                    sb.period_end,

@@ -9,6 +9,9 @@ BASELINE = "becf943051d732741ef7b50335f642bbf444897d"
 
 def without_analytical_sizing(name, source):
     source = source.replace(b"\r\n", b"\n")
+    if name == "db.py":
+        from _qa_safra_history_identity import without_history_identity
+        return without_history_identity(source)
     if name != "app.py":
         return source
     baseline = subprocess.check_output(["git", "show", BASELINE + ":app.py"]).replace(b"\r\n", b"\n")
@@ -30,7 +33,10 @@ def main():
     for name in ("db.py", "reporting.py", "parsers.py"):
         if Path(name).exists():
             prior = subprocess.check_output(["git", "show", BASELINE + ":" + name])
-            assert Path(name).read_bytes().replace(b"\r\n", b"\n") == prior.replace(b"\r\n", b"\n")
+            actual = Path(name).read_bytes().replace(b"\r\n", b"\n")
+            if name == "db.py":
+                actual = without_analytical_sizing(name, actual)
+            assert actual == prior.replace(b"\r\n", b"\n")
     class Surface:
         def __init__(self):
             self.styles = []

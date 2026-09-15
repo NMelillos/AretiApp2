@@ -44,6 +44,7 @@ def columns(st, widths, *, ai=False, full=True):
         /* Reserve the horizontal scrollbar's clearance, not inter-row spacing. */
         {scope} {{ container-type: inline-size; overflow-x: auto; max-width: {'none' if full else '1120px'}; padding-bottom: 18px; }}
         {scope} [data-testid="stElementContainer"]:has(style) {{ display: none; }}
+        {scope} [data-testid="stElementContainer"]:has(.drill-inline-context) {{ display: none; }}
         {scope} [class*="st-key-executive_group_"] {{ width: calc(2 * {label}) !important; }}
         {scope} [class*="st-key-executive_category_"],
         {scope} [class*="st-key-executive_income_charity_category_"] {{

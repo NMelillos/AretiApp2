@@ -5244,6 +5244,7 @@ def render_third_link_report():
             ai_prompts=ai_prompts,
             show_zero_explanations=True,
             show_group_total=True,
+            inline_hierarchy=True,
         )
         _perf_log("third_link.render_drilldown", step_started)
     else:

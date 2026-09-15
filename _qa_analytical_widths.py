@@ -14,6 +14,8 @@ def without_analytical_sizing(name, source):
         return without_history_identity(source)
     if name != "app.py":
         return source
+    from _qa_third_nested import without_third_nested
+    source = without_third_nested(source)
     baseline = subprocess.check_output(["git", "show", BASELINE + ":app.py"]).replace(b"\r\n", b"\n")
     wrapper = (b"    arguments = locals().copy()\n"
                b"    import analytical_layout\n"

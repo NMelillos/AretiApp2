@@ -200,9 +200,9 @@ def main():
         True,
     )
     assert_equal(
-        "THIRD report remains on the protected detached hierarchy",
+        "THIRD report uses the approved nested hierarchy",
         "inline_hierarchy=True" in third_report_source,
-        False,
+        True,
     )
     print("INLINE_HIERARCHY_QA_COMPLETE")
 

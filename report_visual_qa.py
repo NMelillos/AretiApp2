@@ -48,8 +48,11 @@ for node in tree.body:
             if isinstance(call.args[0], ast.Constant) and "<style>" in str(call.args[0].value):
                 st.markdown(call.args[0].value, unsafe_allow_html=True)
 functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+cached_readers = {"get_all_transactions", "get_dashboard_counts", "get_memory",
+                  "get_pending_transactions", "get_saved_transactions", "get_transaction_change_log"}
 for node in functions:
-    node.decorator_list = []
+    if node.name not in cached_readers:
+        node.decorator_list = []
 exec(compile(ast.Module(body=functions, type_ignores=[]), "app.py", "exec"), globals())
 categories = pd.DataFrame([dict(category="Tour Income", subcategory=sub, report_group="Woking Way LLC")
                            for sub in ["Walt Disney", "Other", "Todd Regan"]] +
@@ -69,7 +72,52 @@ rows = pd.DataFrame([dict(id=i + 1, category=row.category, subcategory=row.subca
                           account_name="Synthetic account", status="reviewed", reviewed=1)
                      for i, row in enumerate(categories.itertuples())])
 st.caption("LOCAL SYNTHETIC QA ONLY - no production connection")
-view = st.radio("Report", ["Income / Charity", "Reporting groups"], horizontal=True)
+view = st.radio("Report", ["Income / Charity", "Reporting groups", "THIRD"], horizontal=True)
+if st.checkbox("Enable isolated save QA", value=bool(st.query_params.get("fixture"))):
+    import db
+    import reporting
+    import tempfile
+    from contextlib import closing
+    fixture_name = st.query_params.get("fixture", "")
+    if fixture_name and "synthetic_save_database" not in st.session_state:
+        if not re.fullmatch(r"visual-save-[a-z0-9_]+", fixture_name):
+            raise RuntimeError("Invalid synthetic fixture identity")
+        fixture_path = Path(os.environ["TEMP"]) / fixture_name / "synthetic.sqlite"
+        if not fixture_path.is_file():
+            raise RuntimeError("Synthetic fixture is unavailable")
+        st.session_state.synthetic_save_database = str(fixture_path)
+    if "synthetic_save_database" not in st.session_state:
+        folder = tempfile.mkdtemp(prefix="visual-save-", dir=os.environ["TEMP"])
+        st.session_state.synthetic_save_database = str(Path(folder) / "synthetic.sqlite")
+        db.DB_PATH = st.session_state.synthetic_save_database
+        assert not db.USING_POSTGRES
+        db.init_db()
+        for item in categories.itertuples():
+            db.add_category(item.category, item.subcategory, item.report_group)
+        db.add_category("Income", "Original", "Income")
+        initial = rows.copy()
+        initial.loc[initial.report_group.eq("Income"), ["category", "subcategory"]] = ["Income", "Original"]
+        with closing(db.get_connection()) as connection, connection:
+            for item in initial.itertuples():
+                connection.execute("""INSERT INTO classified_transactions
+                    (row_hash,txn_date,amount,amount_usd,currency,category,subcategory,
+                     original_description,account_name,status,reviewed)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (f"visual-synthetic-{item.id}",item.txn_date,item.amount,item.amount_usd,
+                     item.currency,item.category,item.subcategory,item.original_description,
+                     item.account_name,item.status,item.reviewed))
+        st.query_params["fixture"] = Path(folder).name
+    db.DB_PATH = st.session_state.synthetic_save_database
+    assert not db.USING_POSTGRES and Path(db.DB_PATH).drive.upper() == "E:"
+    categories = db.get_categories(include_subcategories=True)
+    get_categories = lambda **kwargs: categories.copy()
+    save_reviewed_rows = db.save_reviewed_rows
+    with closing(db.get_connection()) as connection:
+        stored = pd.read_sql_query("SELECT * FROM classified_transactions", connection)
+    _, rows, _, _ = reporting._prepare_report_data(stored, categories, include_all_valid=True)
+    from review_state import counts
+    counters = counts(stored)
+    st.caption(f"Synthetic visible rows: {len(stored)} | Pending: {counters['pending']} | Reviewed: {counters['reviewed']}")
 with_ai = st.checkbox("Synthetic AI controls")
 if st.checkbox("Long group label"):
     rows.loc[rows.report_group.eq("Woking Way LLC"), "report_group"] = "Investing to group companies/projects"
@@ -77,8 +125,14 @@ if st.checkbox("Long group label"):
 if view == "Income / Charity":
     _render_income_charity_section(rows, months, labels, show_all_months=True, editable=True)
 else:
+    third = next(node for node in functions if node.name == "render_third_link_report")
+    call = next(node for node in ast.walk(third) if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name) and node.func.id == "_render_executive_drilldown")
+    third_inline = next((ast.literal_eval(item.value) for item in call.keywords
+                         if item.arg == "inline_hierarchy"), False)
     _render_executive_drilldown(rows, months, labels, categories_df=categories,
                               visible_report_groups=[rows.report_group.iloc[0], "Income", "Synthetic empty group"],
                               ai_prompts={} if with_ai else None,
-                              show_all_months=True, read_only=True, inline_hierarchy=True,
+                              show_all_months=True, read_only=True,
+                              inline_hierarchy=third_inline if view == "THIRD" else True,
                               show_zero_explanations=False, show_group_total=True)

@@ -31,7 +31,7 @@ def columns(st, widths, *, ai=False, full=True):
     if state is None:
         return st.columns(widths)
     scope = f'.st-key-{state["scope"]}'
-    expressions = column_expressions(widths)
+    expressions = state.setdefault("expressions", column_expressions(widths))
     if not state["ready"]:
         first = expressions[0]
         original_label = f"calc(0.8 * {first} - 8px)" if ai else first

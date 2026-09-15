@@ -73,6 +73,14 @@ def main():
     layout.render(ai_surface, lambda level: layout.columns(ai_surface, weights, ai=True), {"level": "group"})
     assert ai_surface.weights == [tuple(weights)]
     assert " - 16px)" in "\n".join(ai_surface.styles)
+    nested_surface = Surface()
+    child_weights = [1.5, *weights[1:]]
+    def nested(level):
+        layout.columns(nested_surface, weights, ai=True)
+        layout.columns(nested_surface, child_weights)
+    layout.render(nested_surface, nested, {"level": "group"})
+    monetary_tracks = " ".join(layout.column_expressions(weights)[1:])
+    assert all(monetary_tracks in css for css in nested_surface.styles if "grid-template-columns:" in css), "Nested monetary columns must use the parent header tracks, including with AI"
     def failure(level):
         raise ValueError("synthetic rendering failure")
     try:

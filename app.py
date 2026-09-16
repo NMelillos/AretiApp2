@@ -4740,7 +4740,7 @@ def _save_income_charity_edits(baseline, edited, categories_df):
     # This existing workflow verifies the batch before commit and rolls back
     # invalid, missing or stale rows. Never supply editable financial fields.
     save_df = pd.DataFrame(changes)
-    count = save_reviewed_rows(save_df)
+    count = save_reviewed_rows(save_df, diagnose_income_charity_conflicts=True)
     if count != len(save_df):
         raise RuntimeError("The database did not confirm every transaction edit.")
     return count

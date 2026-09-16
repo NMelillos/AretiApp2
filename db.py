@@ -2799,7 +2799,7 @@ def get_dashboard_counts():
     return counts
 
 
-def save_reviewed_rows(df):
+def save_reviewed_rows(df, *, diagnose_income_charity_conflicts=False):
     if df.empty:
         return 0
     conn = get_connection()
@@ -2961,6 +2961,9 @@ def save_reviewed_rows(df):
                 before[8], before[9], before[10], before[11],
             ))
             if cur.rowcount != 1:
+                if cur.rowcount == 0 and diagnose_income_charity_conflicts:
+                    from income_save_diagnostic import raise_conflict
+                    raise_conflict(cur, tx_id, before)
                 raise ConcurrentTransactionEditError(tx_id)
             saved += 1
             expected[tx_id] = (

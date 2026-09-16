@@ -10,6 +10,8 @@ BASELINE = "becf943051d732741ef7b50335f642bbf444897d"
 def without_analytical_sizing(name, source):
     source = source.replace(b"\r\n", b"\n")
     if name == "db.py":
+        from _qa_income_save_backend import without_real_guard_casts
+        source = without_real_guard_casts(source)
         from _qa_safra_history_identity import without_history_identity
         return without_history_identity(source)
     if name != "app.py":

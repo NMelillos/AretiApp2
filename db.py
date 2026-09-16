@@ -2943,10 +2943,10 @@ def save_reviewed_rows(df):
                   AND subcategory IS NOT DISTINCT FROM ?
                   AND reviewed IS NOT DISTINCT FROM ?
                   AND status IS NOT DISTINCT FROM ?
-                  AND amount IS NOT DISTINCT FROM ?
-                  AND amount_usd IS NOT DISTINCT FROM ?
+                  AND amount IS NOT DISTINCT FROM CAST(? AS REAL)
+                  AND amount_usd IS NOT DISTINCT FROM CAST(? AS REAL)
                   AND currency IS NOT DISTINCT FROM ?
-                  AND fx_rate IS NOT DISTINCT FROM ?
+                  AND fx_rate IS NOT DISTINCT FROM CAST(? AS REAL)
             """, (
                 category,
                 subcategory,

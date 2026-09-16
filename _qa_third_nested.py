@@ -25,8 +25,8 @@ def main():
     options = {k.arg: ast.literal_eval(k.value) for k in call.keywords if isinstance(k.value, ast.Constant)}
     assert options.get("inline_hierarchy") is True, "THIRD must nest children under their own reporting group"
     assert options["read_only"] is True and options["show_group_total"] is True
-    from _qa_income_save_diagnostic import without_income_save_diagnostic
-    source = without_income_save_diagnostic("app.py", source)
+    from _qa_income_save_usd import without_income_save_usd
+    source = without_income_save_usd("app.py", source)
     without_third_nested(source)
     print("PASS: THIRD inline hierarchy, read-only controls and exact unchanged financial/scope code")
 

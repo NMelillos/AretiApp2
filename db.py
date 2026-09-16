@@ -2799,7 +2799,7 @@ def get_dashboard_counts():
     return counts
 
 
-def save_reviewed_rows(df, *, diagnose_income_charity_conflicts=False):
+def save_reviewed_rows(df):
     if df.empty:
         return 0
     conn = get_connection()
@@ -2807,6 +2807,12 @@ def save_reviewed_rows(df, *, diagnose_income_charity_conflicts=False):
     now = _now()
     saved = 0
     subcategory_parent_lookup = _subcategory_parent_lookup(cur)
+    # Convert the snapshot to the actual column type, without a tolerance.
+    usd_snapshot = (
+        "(json_populate_record(NULL::classified_transactions, "
+        "json_build_object('amount_usd', CAST(? AS TEXT)))).amount_usd"
+        if USING_POSTGRES else "?"
+    )
 
     expected = {}
     try:
@@ -2933,7 +2939,7 @@ def save_reviewed_rows(df, *, diagnose_income_charity_conflicts=False):
             next_status = "reviewed" if reviewed else before_status or "pending"
             reviewed_value = int(reviewed)
 
-            cur.execute("""
+            cur.execute(f"""
                 UPDATE classified_transactions
                 SET category = ?, subcategory = ?, reviewed = ?, status = ?,
                     reviewed_at = CASE WHEN ? = 1 THEN ? ELSE reviewed_at END,
@@ -2944,7 +2950,7 @@ def save_reviewed_rows(df, *, diagnose_income_charity_conflicts=False):
                   AND reviewed IS NOT DISTINCT FROM ?
                   AND status IS NOT DISTINCT FROM ?
                   AND amount IS NOT DISTINCT FROM CAST(? AS REAL)
-                  AND amount_usd IS NOT DISTINCT FROM CAST(? AS REAL)
+                  AND amount_usd IS NOT DISTINCT FROM {usd_snapshot}
                   AND currency IS NOT DISTINCT FROM ?
                   AND fx_rate IS NOT DISTINCT FROM CAST(? AS REAL)
             """, (
@@ -2955,15 +2961,12 @@ def save_reviewed_rows(df, *, diagnose_income_charity_conflicts=False):
                 reviewed_value,
                 now,
                 amount,
-                amount_usd,
+                before[9] if not amount_changed else amount_usd,
                 tx_id,
                 before[0], before[1], before[2], before[3],
                 before[8], before[9], before[10], before[11],
             ))
             if cur.rowcount != 1:
-                if cur.rowcount == 0 and diagnose_income_charity_conflicts:
-                    from income_save_diagnostic import raise_conflict
-                    raise_conflict(cur, tx_id, before)
                 raise ConcurrentTransactionEditError(tx_id)
             saved += 1
             expected[tx_id] = (

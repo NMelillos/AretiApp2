@@ -9,8 +9,8 @@ BASELINE = "becf943051d732741ef7b50335f642bbf444897d"
 
 def without_analytical_sizing(name, source):
     source = source.replace(b"\r\n", b"\n")
-    from _qa_income_save_diagnostic import without_income_save_diagnostic
-    source = without_income_save_diagnostic(name, source)
+    from _qa_income_save_usd import without_income_save_usd
+    source = without_income_save_usd(name, source)
     if name == "db.py":
         from _qa_income_save_backend import without_real_guard_casts
         source = without_real_guard_casts(source)

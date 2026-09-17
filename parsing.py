@@ -1453,8 +1453,9 @@ def _parse_safra_pdf_text(text):
                 fail("booking outside an open transaction section")
             if not section["start"] <= when <= section["end"]:
                 fail("booking date outside statement period")
-            if re.search(r"\b(?:EUR|USD|CHF|GBP)\b", description):
-                fail("explicit booking currency requires manual validation")
+            booking_currencies = set(re.findall(r"\b(?:EUR|USD|CHF|GBP)\b", description))
+            if booking_currencies - {section["currency"]}:
+                fail("booking currency conflicts with page account currency; verify the statement account before importing")
             magnitude, running = amount(magnitude), amount(running)
             delta = running - section["previous"]
             # Blank debit/credit columns collapse in extracted text. A single

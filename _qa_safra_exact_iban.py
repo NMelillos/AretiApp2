@@ -19,6 +19,9 @@ def main():
     base = "efd2bddfe12eb3eb88faa04d25751e3fe437efa0"
     for name in ("app.py", "reporting.py", "cnb_import.py", "safra_history.py", "parsing.py"):
         actual = Path(name).read_bytes().replace(b"\r\n", b"\n")
+        if name == 'parsing.py':
+            from _qa_safra_lifecycle import without_booking_currency
+            actual = without_booking_currency(actual)
         if name in ('app.py', 'reporting.py'):
             from _qa_income_groups import compatible
             actual = compatible(name, actual)

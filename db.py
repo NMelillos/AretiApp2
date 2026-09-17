@@ -819,7 +819,7 @@ def _bool_from_value(value):
     if isinstance(value, bool):
         return value
     text = str(value).strip().casefold()
-    return text in {"1", "true", "yes", "y", "reviewed", "checked"}
+    return text in {"1", "1.0", "true", "yes", "y", "reviewed", "checked"}
 
 
 def _norm_col(name):
@@ -2808,16 +2808,18 @@ def save_reviewed_rows(df):
     saved = 0
     subcategory_parent_lookup = _subcategory_parent_lookup(cur)
     # Convert the snapshot to the actual column type, without a tolerance.
-    usd_snapshot = (
-        "(json_populate_record(NULL::classified_transactions, "
-        "json_build_object('amount_usd', CAST(? AS TEXT)))).amount_usd"
-        if USING_POSTGRES else "?"
-    )
+    numeric_snapshots = {
+        field: (
+            "(json_populate_record(NULL::classified_transactions, "
+            f"json_build_object('{field}', CAST(? AS TEXT)))).{field}"
+            if USING_POSTGRES else "?"
+        ) for field in ("amount", "amount_usd", "fx_rate")
+    }
 
     expected = {}
     try:
         for _, row in df.iterrows():
-            reviewed = bool(row.get("reviewed", False))
+            reviewed = _bool_from_value(row.get("reviewed", False))
             tx_id = int(row["id"])
             category = _clean(row.get("category"))
             subcategory = _clean(row.get("subcategory"))
@@ -2949,10 +2951,10 @@ def save_reviewed_rows(df):
                   AND subcategory IS NOT DISTINCT FROM ?
                   AND reviewed IS NOT DISTINCT FROM ?
                   AND status IS NOT DISTINCT FROM ?
-                  AND amount IS NOT DISTINCT FROM CAST(? AS REAL)
-                  AND amount_usd IS NOT DISTINCT FROM {usd_snapshot}
+                  AND amount IS NOT DISTINCT FROM {numeric_snapshots["amount"]}
+                  AND amount_usd IS NOT DISTINCT FROM {numeric_snapshots["amount_usd"]}
                   AND currency IS NOT DISTINCT FROM ?
-                  AND fx_rate IS NOT DISTINCT FROM CAST(? AS REAL)
+                  AND fx_rate IS NOT DISTINCT FROM {numeric_snapshots["fx_rate"]}
             """, (
                 category,
                 subcategory,
@@ -2960,7 +2962,7 @@ def save_reviewed_rows(df):
                 next_status,
                 reviewed_value,
                 now,
-                amount,
+                before[8] if not amount_changed else amount,
                 before[9] if not amount_changed else amount_usd,
                 tx_id,
                 before[0], before[1], before[2], before[3],

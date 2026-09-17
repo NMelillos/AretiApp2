@@ -4700,6 +4700,8 @@ def _income_charity_target_summary_message(percentage, income_total, charity_tot
 
 
 def _save_income_charity_edits(baseline, edited, categories_df):
+    from db import _bool_from_value, _clean
+
     if baseline["id"].duplicated().any() or edited["id"].duplicated().any():
         raise ValueError("Duplicate transaction IDs are not allowed.")
     if set(baseline["id"]) != set(edited["id"]):
@@ -4724,8 +4726,8 @@ def _save_income_charity_edits(baseline, edited, categories_df):
             }]), categories_df).iloc[0]["report_group"]
             if target_group != expected_group or original_group != expected_group:
                 raise ValueError("Income edits must preserve Reporting Group. Choose a Category / Subcategory in the same group.")
-        reviewed = bool(before["reviewed"])
-        status = str(before["status"] or "").strip().casefold()
+        reviewed = _bool_from_value(before["reviewed"])
+        status = _clean(before["status"]).casefold()
         if status != ("reviewed" if reviewed else "pending"):
             raise ValueError("The transaction review state changed. Cancel and reopen the table.")
         changes.append({

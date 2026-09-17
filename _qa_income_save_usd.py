@@ -26,6 +26,8 @@ USD_EXPRESSION = b'''    # Convert the snapshot to the actual column type, witho
 
 
 def without_income_save_usd(name, source):
+    from _qa_income_save_types import without_remaining_save
+    source = without_remaining_save(name, source)
     source = source.replace(b'\r\n', b'\n')
     if name not in ('app.py', 'db.py'):
         return source

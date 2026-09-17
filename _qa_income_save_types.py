@@ -22,6 +22,8 @@ def without_remaining_save(name, source):
     source = source.replace(b'\r\n', b'\n')
     if name not in ('app.py', 'db.py'):
         return source
+    from _qa_review_status import without_review_status
+    source = without_review_status(name, source)
     prior = subprocess.check_output(['git', 'show', BASE + ':' + name]).replace(b'\r\n', b'\n')
     if source == prior:
         return source

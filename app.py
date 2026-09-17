@@ -5946,6 +5946,7 @@ elif page == "Pending Review":
 
 
 elif page == "Database":
+    from review_state import display_rows, edited_rows
     st.subheader("Database")
     saved_message = st.session_state.pop("database_edit_save_message", "")
     if saved_message:
@@ -5961,7 +5962,7 @@ elif page == "Database":
     if all_tx_raw.empty:
         st.info("No transactions imported yet.")
     else:
-        all_tx = all_tx_raw.copy()
+        all_tx = display_rows(all_tx_raw)
         all_tx["_status_key"] = all_tx["status"].fillna("pending").astype(str).str.strip().str.casefold()
         active_tx = active_financial_transactions(all_tx)
         excluded_total = len(all_tx) - len(active_tx)
@@ -6110,6 +6111,7 @@ elif page == "Database":
             submit_database_edits = st.form_submit_button("Apply database edits", type="primary")
         if submit_database_edits:
             db_save = _refresh_category_pair_derived_columns(db_edit, categories_df)
+            db_save = edited_rows(db_save, db_editor_baseline)
             changed_rows = _changed_transaction_editor_rows(
                 db_editor_baseline,
                 db_save,
@@ -6130,8 +6132,12 @@ elif page == "Database":
             else:
                 with st.status("Saving database changes...", expanded=True) as save_status:
                     save_df = _add_transaction_edit_expectations(
-                        _apply_category_pair_values(changed_rows),
-                        db_editor_baseline,
+                        _apply_category_pair_values(changed_rows)[["id", "category", "subcategory", "reviewed", "status"]],
+                        all_tx_raw,
+                    )
+                    save_df = save_df.merge(
+                        all_tx_raw[["id", "status"]].rename(columns={"status": "_expected_status"}),
+                        on="id", how="left", validate="one_to_one",
                     )
                     try:
                         count = update_database_rows(save_df)

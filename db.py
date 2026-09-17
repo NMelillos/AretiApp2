@@ -3094,9 +3094,16 @@ def update_database_rows(df):
             "category": existing[8],
             "subcategory": existing[9],
             "status": existing[10],
-            "reviewed": int(existing[11] or 0),
+            "reviewed": int(_bool_from_value(existing[11])),
         }
         row_values = row.to_dict()
+        from review_state import edit_values
+        try:
+            row_values = edit_values(row_values, existing_row)
+        except ValueError:
+            conn.rollback()
+            conn.close()
+            raise
         if "subcategory" in row_values:
             selected_category = _clean(row_values.get("category")) if "category" in row_values else ""
             selected_subcategory = _clean(row_values.get("subcategory"))
@@ -3151,7 +3158,7 @@ def update_database_rows(df):
             assignments.append(f"{column} = ?")
             params.append(value)
 
-        if "status" not in df.columns and reviewed_value is not None:
+        if "status" not in row_values and reviewed_value is not None:
             assignments.append("status = ?")
             params.append("reviewed" if reviewed_value else "pending")
 
@@ -3222,7 +3229,14 @@ def update_database_rows(df):
             )
         if expected_reviewed is not None:
             where_parts.append("COALESCE(reviewed, 0) = ?")
-            params.append(expected_reviewed)
+            params.append(
+                (existing[11] if existing[11] is not None else 0)
+                if int(_bool_from_value(existing[11])) == expected_reviewed
+                else expected_reviewed
+            )
+        if "_expected_status" in row_values:
+            where_parts.append("COALESCE(status, '') = ?")
+            params.append("" if pd.isna(row_values["_expected_status"]) else row_values["_expected_status"])
         cur.execute(
             f"""
             UPDATE classified_transactions
@@ -3235,6 +3249,7 @@ def update_database_rows(df):
             expected_category is not None
             or expected_subcategory is not None
             or expected_reviewed is not None
+            or "_expected_status" in row_values
         ) and cur.rowcount == 0:
             conn.rollback()
             conn.close()
@@ -3267,7 +3282,7 @@ def update_database_rows(df):
                     int(_bool_from_value(row_values.get(column))),
                     "database_edit",
                 )
-        if "status" not in df.columns and reviewed_value is not None:
+        if "status" not in row_values and reviewed_value is not None:
             _audit_transaction_change(
                 cur,
                 row_id,

@@ -2829,7 +2829,73 @@ def _income_conflict_predicates(cur, transaction_id, before, numeric_snapshots):
         return ["UNKNOWN"]
 
 
-def save_reviewed_rows(df, *, conflict_diagnostics=False):
+def get_income_row_versions(transaction_ids):
+    if not USING_POSTGRES:
+        return {}
+    ids = sorted({int(value) for value in transaction_ids})
+    if not ids:
+        return {}
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        placeholders = ", ".join("?" for _ in ids)
+        cur.execute(f"SELECT id, xmin::text FROM classified_transactions WHERE id IN ({placeholders})", ids)
+        return {int(row[0]): row[1] for row in cur.fetchall()}
+    except Exception:
+        return {}
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _income_amount_representation(cur, transaction_id, amount, original_version):
+    from decimal import Decimal
+    driver_type = "FLOAT" if isinstance(amount, float) else "DECIMAL" if isinstance(amount, Decimal) else "OTHER"
+    try:
+        cur.execute("""
+            SELECT xmin::text, pg_typeof(amount)::text,
+                   current_setting('extra_float_digits')::integer,
+                   amount IS NOT DISTINCT FROM
+                       (json_populate_record(NULL::classified_transactions,
+                           json_build_object('amount', amount::text))).amount,
+                   amount IS NOT DISTINCT FROM
+                       (json_populate_record(NULL::classified_transactions,
+                           json_build_object('amount', CAST(? AS TEXT)))).amount
+            FROM classified_transactions WHERE id = ?
+        """, (amount, transaction_id))
+        result = cur.fetchone()
+        if result is None:
+            return "AMOUNT_CAUSE=UNRESOLVED"
+        version, database_type, digits, server_match, driver_match = result
+        types = {"real": "REAL", "double precision": "DOUBLE_PRECISION", "numeric": "NUMERIC"}
+        if not isinstance(digits, int) or not -15 <= digits <= 3:
+            return "AMOUNT_CAUSE=UNRESOLVED"
+        changed = "UNKNOWN" if original_version is None else "NO" if version == original_version else "YES"
+        labels = [
+            "ROW_VERSION_CHANGED=" + changed,
+            "AMOUNT_DB_TYPE=" + types.get(database_type, "OTHER"),
+            "DRIVER_TYPE=" + driver_type,
+            "EXTRA_FLOAT_DIGITS=" + str(digits),
+            "SERVER_TEXT_ROUNDTRIP=" + ("PASS" if server_match else "FAIL"),
+            "DRIVER_ROUNDTRIP=" + ("PASS" if driver_match else "FAIL"),
+        ]
+        if changed == "UNKNOWN" or (server_match and driver_match):
+            labels.append("AMOUNT_CAUSE=UNRESOLVED")
+        return "; ".join(labels)
+    except Exception:
+        return "AMOUNT_CAUSE=UNRESOLVED"
+
+
+def _income_conflict_details(cur, transaction_id, before, failed, row_versions):
+    error = _income_conflict_error(transaction_id, failed)
+    if USING_POSTGRES and row_versions is not None and "AMOUNT" in failed:
+        detail = _income_amount_representation(cur, transaction_id, before[8], row_versions.get(transaction_id))
+        error.args = (str(error) + " " + detail,)
+    return error
+
+
+def save_reviewed_rows(df, *, conflict_diagnostics=False, row_versions=None):
     if df.empty:
         return 0
     conn = get_connection()
@@ -2921,7 +2987,7 @@ def save_reviewed_rows(df, *, conflict_diagnostics=False):
                         expected_amount, before_amount, rel_tol=0.0, abs_tol=0.000001
                     )):
                         failed.append("AMOUNT")
-                    raise _income_conflict_error(tx_id, failed)
+                    raise _income_conflict_details(cur, tx_id, before, failed, row_versions)
                 raise ConcurrentTransactionEditError(tx_id)
 
             amount_supplied = "amount" in row.index
@@ -3015,9 +3081,9 @@ def save_reviewed_rows(df, *, conflict_diagnostics=False):
             ))
             if cur.rowcount != 1:
                 if conflict_diagnostics:
-                    raise _income_conflict_error(tx_id, _income_conflict_predicates(
+                    raise _income_conflict_details(cur, tx_id, before, _income_conflict_predicates(
                         cur, tx_id, before, numeric_snapshots
-                    ))
+                    ), row_versions)
                 raise ConcurrentTransactionEditError(tx_id)
             saved += 1
             expected[tx_id] = (

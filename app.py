@@ -4699,7 +4699,7 @@ def _income_charity_target_summary_message(percentage, income_total, charity_tot
     return f"{lead} Charity is {direction} the Family’s target of 10% by {_money(abs(variance))}."
 
 
-def _save_income_charity_edits(baseline, edited, categories_df):
+def _save_income_charity_edits(baseline, edited, categories_df, *, row_versions=None):
     from db import _bool_from_value, _clean
 
     if baseline["id"].duplicated().any() or edited["id"].duplicated().any():
@@ -4742,7 +4742,7 @@ def _save_income_charity_edits(baseline, edited, categories_df):
     # This existing workflow verifies the batch before commit and rolls back
     # invalid, missing or stale rows. Never supply editable financial fields.
     save_df = pd.DataFrame(changes)
-    count = save_reviewed_rows(save_df, conflict_diagnostics=True)
+    count = save_reviewed_rows(save_df, conflict_diagnostics=True, row_versions=row_versions)
     if count != len(save_df):
         raise RuntimeError("The database did not confirm every transaction edit.")
     return count
@@ -4756,8 +4756,11 @@ def _render_income_charity_editor(transaction_rows):
     revision = st.session_state.get(revision_key, 0)
     editor_key = f"{scope}_{revision}"
     baseline_key = f"{editor_key}_baseline"
+    versions_key = f"{editor_key}_row_versions"
     # Keep the displayed snapshot across form reruns for optimistic concurrency.
     if baseline_key not in st.session_state:
+        from db import get_income_row_versions
+        st.session_state[versions_key] = get_income_row_versions(transaction_rows["id"])
         st.session_state[baseline_key] = transaction_rows.copy(deep=True)
     baseline = st.session_state[baseline_key]
     categories_df = get_categories(include_subcategories=True)
@@ -4793,15 +4796,20 @@ def _render_income_charity_editor(transaction_rows):
         cancel = st.form_submit_button("Cancel")
     if cancel:
         st.session_state.pop(baseline_key, None)
+        st.session_state.pop(versions_key, None)
         st.session_state[revision_key] = revision + 1
         st.rerun()
     if save:
         try:
-            count = _save_income_charity_edits(baseline, edited, categories_df)
+            count = _save_income_charity_edits(
+                baseline, edited, categories_df,
+                row_versions=st.session_state.get(versions_key, {}),
+            )
         except Exception as exc:
             st.error(f"Could not save transaction edits: {exc}")
         else:
             st.session_state.pop(baseline_key, None)
+            st.session_state.pop(versions_key, None)
             st.session_state[revision_key] = revision + 1
             st.session_state["income_charity_save_message"] = (
                 f"Transaction edits saved successfully ({count})." if count

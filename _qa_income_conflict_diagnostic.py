@@ -17,6 +17,8 @@ APPROVED = {'app.py': '81ea3ffcda16ac1fdf9a9d4bbeb5f53cd9c0c127e72be619ec21efcf5
 
 
 def without_conflict_diagnostic(name, source):
+    from _qa_income_amount_representation import without_amount_representation
+    source = without_amount_representation(name, source)
     source = source.replace(b'\r\n', b'\n')
     prior = subprocess.check_output(['git', 'show', BASE + ':' + name]).replace(b'\r\n', b'\n')
     if source == prior:

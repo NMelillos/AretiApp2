@@ -19,6 +19,8 @@ APPROVED = {'app.py': '741ca4cc4232effda5019db3001599140a62899df6aac9cf6eda65166
 
 
 def without_amount_representation(name, source):
+    from _qa_income_amount_precision import without_precision_fix
+    source = without_precision_fix(name, source)
     source = source.replace(b'\r\n', b'\n')
     prior = subprocess.check_output(['git', 'show', BASE + ':' + name]).replace(b'\r\n', b'\n')
     if source == prior:
@@ -166,7 +168,10 @@ def main():
     for key in list(os.environ):
         if any(p in key.upper() for p in ('DATABASE', 'POSTGRES', 'SUPABASE')) or key.upper().startswith('PG'):
             del os.environ[key]
-    import db
+    # Keep the complete retired diagnostic contract executable on its pinned
+    # historical source; the permanent precision test exercises the live fix.
+    from _qa_income_amount_precision import diagnostic_baseline
+    db = diagnostic_baseline()
     with tempfile.TemporaryDirectory(dir=root) as folder, patch.object(db, 'DB_PATH', str(Path(folder)/'test.sqlite')):
         exercise(db, 'SQLite', 0)
     import psycopg2

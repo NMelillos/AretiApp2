@@ -12,6 +12,8 @@ import pandas as pd
 
 
 def without_review_status(name, source):
+    from _qa_income_conflict_diagnostic import without_conflict_diagnostic
+    source = without_conflict_diagnostic(name, source)
     source=source.replace(b'\r\n',b'\n')
     prior=subprocess.check_output(['git','show','0a169dc28663ea5a66c47a8641d5f9260bc15f3a:'+name]).replace(b'\r\n',b'\n')
     if source==prior:

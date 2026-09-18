@@ -2799,7 +2799,37 @@ def get_dashboard_counts():
     return counts
 
 
-def save_reviewed_rows(df):
+def _income_conflict_error(transaction_id, predicates):
+    allowed = ("ROW_NOT_FOUND", "CATEGORY", "SUBCATEGORY", "REVIEWED", "STATUS",
+               "AMOUNT", "AMOUNT_USD", "CURRENCY", "FX_RATE", "UNKNOWN")
+    safe = {name for name in predicates if isinstance(name, str)}
+    names = [name for name in allowed if name in safe]
+    error = ConcurrentTransactionEditError(transaction_id)
+    error.args = (str(error) + " Conflict predicates: " + ", ".join(names or ["UNKNOWN"]) + ".",)
+    return error
+
+
+def _income_conflict_predicates(cur, transaction_id, before, numeric_snapshots):
+    # Reuse the failed UPDATE's raw values, native types and null-safe operators.
+    fields = ("category", "subcategory", "reviewed", "status", "amount",
+              "amount_usd", "currency", "fx_rate")
+    expressions = [f"{field} IS NOT DISTINCT FROM {numeric_snapshots.get(field, '?')}"
+                   for field in fields]
+    try:
+        cur.execute("SELECT " + ", ".join(expressions) +
+                    " FROM classified_transactions WHERE id = ?",
+                    (*before[:4], *before[8:12], transaction_id))
+        matches = cur.fetchone()
+        if matches is None:
+            return ["ROW_NOT_FOUND"]
+        return [field.upper() for field, matches_field in zip(fields, matches)
+                if matches_field is not True and matches_field != 1] or ["UNKNOWN"]
+    except Exception:
+        # Never expose a driver exception: it may contain SQL or parameter values.
+        return ["UNKNOWN"]
+
+
+def save_reviewed_rows(df, *, conflict_diagnostics=False):
     if df.empty:
         return 0
     conn = get_connection()
@@ -2837,6 +2867,8 @@ def save_reviewed_rows(df):
             """, (tx_id,))
             before = cur.fetchone()
             if not before:
+                if conflict_diagnostics:
+                    raise _income_conflict_error(tx_id, ["ROW_NOT_FOUND"])
                 raise ValueError(f"Transaction {tx_id} no longer exists.")
             before_category = before[0] or ""
             before_subcategory = before[1] or ""
@@ -2877,6 +2909,19 @@ def save_reviewed_rows(df):
                 )
             )
             if stale:
+                if conflict_diagnostics:
+                    failed = []
+                    if expected_category is not None and _clean(expected_category) != _clean(before_category):
+                        failed.append("CATEGORY")
+                    if expected_subcategory is not None and _clean(expected_subcategory) != _clean(before_subcategory):
+                        failed.append("SUBCATEGORY")
+                    if expected_reviewed is not None and int(_bool_from_value(expected_reviewed)) != before_reviewed:
+                        failed.append("REVIEWED")
+                    if expected_amount is not None and (before_amount is None or not math.isclose(
+                        expected_amount, before_amount, rel_tol=0.0, abs_tol=0.000001
+                    )):
+                        failed.append("AMOUNT")
+                    raise _income_conflict_error(tx_id, failed)
                 raise ConcurrentTransactionEditError(tx_id)
 
             amount_supplied = "amount" in row.index
@@ -2969,6 +3014,10 @@ def save_reviewed_rows(df):
                 before[8], before[9], before[10], before[11],
             ))
             if cur.rowcount != 1:
+                if conflict_diagnostics:
+                    raise _income_conflict_error(tx_id, _income_conflict_predicates(
+                        cur, tx_id, before, numeric_snapshots
+                    ))
                 raise ConcurrentTransactionEditError(tx_id)
             saved += 1
             expected[tx_id] = (

@@ -70,6 +70,12 @@ def fake_iban(index):
 
 def main():
     rows = parse(TEXT)
+    # Historical case 22 incorrectly treated a description token as a currency
+    # field. Authorized Safra evidence establishes that field provenance matters.
+    descriptive = parse(TEXT.replace("Example fee", "Example fee EUR"))
+    assert descriptive.Amount.tolist() == rows.Amount.tolist()
+    assert descriptive.statement_currency.tolist() == rows.statement_currency.tolist()
+    assert descriptive.Description.iloc[0] == "900001 Example fee EUR | Value date: 31.03.2026"
     assert rows.Amount.tolist() == [-100, 200]
     assert rows.Date.tolist() == ["2026-03-12", "2026-06-11"]
     assert rows.statement_currency.tolist() == ["USD", "USD"]
@@ -132,7 +138,8 @@ No bookings were carried out during the period stated.
         TEXT.replace("12.03.2026", "32.03.2026"),
         TEXT.replace("31.03.2026", "31.02.2026"),
         TEXT.replace("12.03.2026", "12.03.2027"),
-        TEXT.replace("Example fee", "Example fee EUR"),
+        TEXT.replace("Balance in USD", "Balance in CHF"),
+        TEXT.replace("Balance in USD", "Balance in"),
         TEXT.replace("Account statement in USD", "Account statement in ???"),
         TEXT.replace("100,00 900,00", "-100,00 900,00"),
     ]

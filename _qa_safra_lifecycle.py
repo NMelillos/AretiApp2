@@ -17,6 +17,8 @@ from _qa_safra_uat import labelled_accounts
 
 
 def without_booking_currency(source):
+    from _qa_safra_completion import without_completion
+    source=without_completion('parsing.py',source)
     source=source.replace(b'\r\n',b'\n')
     old=b'''            if re.search(r"\\b(?:EUR|USD|CHF|GBP)\\b", description):
                 fail("explicit booking currency requires manual validation")'''
@@ -111,7 +113,7 @@ def main():
     assert rows.Description.iloc[0].startswith('800000 Synthetic fee A USD ')
     for currency in ('EUR','CHF','GBP','USD EUR'):
         try:
-            parsing._parse_safra_pages(pages_for(currency=currency))
+            parsing._parse_safra_pages([p.replace('Balance in USD','Balance in '+currency) for p in pages_for()])
         except parsing.SafraParseError:
             pass
         else:

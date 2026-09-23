@@ -5333,6 +5333,10 @@ if page == "Import":
         file_bytes = uploaded_statement.getvalue()
         statement_hash = build_statement_hash(file_bytes)
         if statement_already_imported(statement_hash):
+            from safra_duplicate_preview import is_existing_safra, render_preview
+            if is_existing_safra(statement_hash):
+                render_preview(st, file_bytes, uploaded_statement.name, accounts, parse_statement)
+                st.stop()
             record_duplicate_statement_attempt(statement_hash)
             st.warning("This statement already exists. It was not imported again.")
             st.info(

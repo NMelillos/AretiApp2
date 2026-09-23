@@ -2252,6 +2252,9 @@ def build_statement_hash(file_bytes):
 
 
 def save_pending_transactions(df, statement_name, statement_hash, *, _connection=None):
+    from safra_duplicate_preview import is_existing_safra
+    if is_existing_safra(statement_hash):
+        return 0, True, 0
     if _connection is None and df.attrs.get("safra_sections"):
         from safra_history import save_sections
         return save_sections(__import__(__name__), df, statement_name, statement_hash)

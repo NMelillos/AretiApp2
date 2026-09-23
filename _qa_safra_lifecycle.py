@@ -58,6 +58,8 @@ class UI:
         self.cache_data=SimpleNamespace(clear=lambda:None)
     def file_uploader(self,*args,**kwargs): return self.file
     def button(self,label,**kwargs):
+        if label in ('Validate existing statement in read-only preview', 'Cancel'):
+            return False
         assert label=='Import to pending review'
         return self.action
     def empty(self):

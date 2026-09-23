@@ -17,6 +17,8 @@ BASE = '300a07eaeb8e1fdfa29aab48cc640f0c8663344c'
 
 
 def without_completion(name, source):
+    from _qa_safra_duplicate_preview import without_duplicate_preview
+    source = without_duplicate_preview(name, source)
     source=source.replace(b'\r\n',b'\n')
     prior=subprocess.check_output(['git','show',BASE+':'+name]).replace(b'\r\n',b'\n')
     if source==prior:

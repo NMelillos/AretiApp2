@@ -18,6 +18,8 @@ from _qa_safra_uat import labelled_accounts
 
 
 def without_duplicate_preview(name, source):
+    from _qa_split_editing import without_split_editing
+    source = without_split_editing(name, source)
     source = source.replace(b'\r\n', b'\n')
     additions = {
         'app.py': ('            from safra_duplicate_preview import is_existing_safra, render_preview\n'

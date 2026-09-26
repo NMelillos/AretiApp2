@@ -2380,6 +2380,8 @@ def _parse_split_amount_input(value):
 
 
 def render_transaction_split_panel(df, categories_df, categories, key_prefix):
+    from split_editing import render_editor
+    render_editor(st, df, categories_df, key_prefix, _clear_transaction_read_caches)
     if df.empty or "id" not in df.columns or not categories:
         return
     working = df.dropna(subset=["id"]).copy()
@@ -5876,6 +5878,8 @@ elif page == "Pending Review":
             st.warning("No pending transactions match the current filters.")
             st.stop()
 
+        from split_editing import render_editor
+        render_editor(st, pending_view, get_categories(include_subcategories=True), "pending", _clear_transaction_read_caches)
         render_wrapped_descriptions(pending_view)
         render_category_correction_panel(
             pending_view,
@@ -6088,6 +6092,7 @@ elif page == "Database":
                 column_config={
                     "id": st.column_config.NumberColumn("ID", disabled=True),
                     "status": st.column_config.SelectboxColumn("Status", options=["pending", "reviewed", "excluded"]),
+                    "amount": st.column_config.NumberColumn("Amount", disabled=True),
                     "reviewed": st.column_config.CheckboxColumn("Reviewed"),
                     "original_description": st.column_config.TextColumn(
                         "Full statement description",

@@ -60,7 +60,7 @@ class UI:
     def button(self,label,**kwargs):
         if label in ('Validate existing statement in read-only preview', 'Cancel'):
             return False
-        assert label=='Import to pending review'
+        assert label=='Import statement'
         return self.action
     def empty(self):
         self.cleared+=1

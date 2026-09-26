@@ -5337,7 +5337,7 @@ if page == "Import":
         st.stop()
 
     uploaded_statement = st.file_uploader(
-        "Statement file",
+        "Upload statement",
         type=["csv", "xlsx", "xls", "pdf"],
         key="statement_upload",
     )
@@ -5350,25 +5350,12 @@ if page == "Import":
             if is_existing_safra(statement_hash):
                 render_preview(st, file_bytes, uploaded_statement.name, accounts, parse_statement)
                 st.stop()
-            record_duplicate_statement_attempt(statement_hash)
             st.warning("This statement already exists. It was not imported again.")
             st.info(
                 "This exact file is already in the import history, so the app blocks it to prevent duplicate "
                 "transactions. If you corrected those transactions manually in the Database, you do not need to "
                 "import the same file again; the next new statement can be imported normally."
             )
-            if not statement_balance_exists(statement_hash):
-                existing_account = get_statement_account(statement_hash)
-                duplicate_balance = parse_statement_balance(file_bytes, uploaded_statement.name)
-                if balance_has_values(duplicate_balance):
-                    save_statement_balance(
-                        statement_hash,
-                        uploaded_statement.name,
-                        duplicate_balance,
-                        existing_account,
-                    )
-                    st.info("The missing balance summary was added to the Balances page.")
-                    st.cache_data.clear()
             st.stop()
 
         try:
@@ -5429,7 +5416,7 @@ if page == "Import":
             finally:
                 progress_slot.empty()
 
-            st.success(f"Prepared {len(classified)} transactions for review.")
+            st.success(f"Prepared {len(classified)} transactions for review. Preview only; nothing has been imported.")
 
             duplicate_lines = int(classified["dup_flag"].fillna(False).astype(bool).sum()) if "dup_flag" in classified else 0
             new_import_lines = max(len(classified) - duplicate_lines, 0)
@@ -5563,38 +5550,40 @@ if page == "Import":
             )
 
             st.warning(
-                "Please verify that transaction signs and amounts have been imported correctly "
-                "before transferring transactions to Pending Review or the Database."
+                "Please verify the preview signs, amounts and accounts before confirming Import statement."
             )
 
-            if st.button("Import to pending review", type="primary"):
-                inserted, duplicate_statement, skipped_duplicates = save_pending_transactions(
+            if st.button("Import statement", type="primary"):
+                import db as import_db
+                from import_history import commit_statement
+                inserted, duplicate_statement, skipped_duplicates = commit_statement(
+                    import_db,
                     classified,
                     uploaded_statement.name,
                     statement_hash,
+                    balance_info,
+                    selected_account,
                 )
                 if duplicate_statement:
                     st.warning("This statement already exists. It was not imported again.")
                 else:
-                    if "safra_sections" not in classified.attrs:
-                        save_statement_balance(
-                            statement_hash,
-                            uploaded_statement.name,
-                            balance_info,
-                            selected_account,
-                        )
                     st.success(f"Imported {inserted} transactions to pending review.")
                     if skipped_duplicates:
                         st.info(f"Skipped {skipped_duplicates} duplicate transaction line(s).")
-                    backfilled = backfill_missing_usd_amounts()
-                    if backfilled:
-                        st.info(f"Filled missing USD equivalents for {backfilled} imported transaction(s).")
-                    st.cache_data.clear()
+                    for reader in (get_import_history, get_import_transaction_audit,
+                                   get_statement_balances, get_all_transactions,
+                                   get_pending_transactions, get_saved_transactions,
+                                   get_dashboard_counts, get_cross_statement_duplicate_audit,
+                                   get_exact_duplicate_audit):
+                        clear = getattr(reader, "clear", None)
+                        if clear is not None:
+                            clear()
         except Exception as exc:
             st.error(str(exc))
 
 
 elif page == "Import History":
+    from import_history import cyprus_time
     st.subheader("Import History")
     history = get_import_history()
 
@@ -5612,8 +5601,10 @@ elif page == "Import History":
         ])
 
         h1, h2, h3 = st.columns(3)
+        history["Import time (Cyprus)"] = history["imported_at"].map(cyprus_time)
+        history["import_month"] = history["Import time (Cyprus)"].str.slice(0, 7)
         month_values = sorted(
-            pd.to_datetime(history["imported_at"], errors="coerce").dt.to_period("M").dropna().astype(str).unique(),
+            history["import_month"].dropna().unique(),
             reverse=True,
         )
         account_values = sorted(value for value in history["account_name"].fillna("").astype(str).unique() if value)
@@ -5624,7 +5615,7 @@ elif page == "Import History":
 
         history_view = history.copy()
         if selected_month != "All months":
-            imported_month = pd.to_datetime(history_view["imported_at"], errors="coerce").dt.to_period("M").astype(str)
+            imported_month = history_view["import_month"]
             history_view = history_view[imported_month == selected_month].copy()
         if selected_account != "All accounts":
             history_view = history_view[history_view["account_name"].fillna("").astype(str) == selected_account].copy()
@@ -5640,7 +5631,7 @@ elif page == "Import History":
 
         history_cols = [
             "statement_name",
-            "imported_at",
+            "Import time (Cyprus)",
             "transaction_count",
             "account_name",
             "bank",
@@ -5672,6 +5663,9 @@ elif page == "Import History":
 
         st.markdown("#### All Imported Rows by Statement")
         import_audit = get_import_transaction_audit()
+        if not import_audit.empty:
+            import_audit = import_audit[import_audit.import_batch_id.isin(history.id)].copy()
+            import_audit["imported_at"] = import_audit["imported_at"].map(cyprus_time)
         if import_audit.empty:
             st.info("No imported transaction rows found.")
         else:

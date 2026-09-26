@@ -1492,6 +1492,7 @@ def get_statement_account(statement_hash):
 
 
 def save_statement_balance(statement_hash, statement_name, balance, account=None, *, _connection=None):
+    from datetime import timezone
     balance = balance or {}
     account = account or {}
 
@@ -1525,7 +1526,7 @@ def save_statement_balance(statement_hash, statement_name, balance, account=None
     if not any(value not in ("", None) for value in useful_values):
         return 0
 
-    now = _now()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     conn = _connection if _connection is not None else get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -1656,13 +1657,13 @@ def get_import_history():
                    si.statement_name,
                    si.imported_at,
                    si.transaction_count,
-                   COALESCE(ft.account_name, sb.account_name, '') AS account_name,
-                   COALESCE(ft.bank, sb.bank, '') AS bank,
+                   COALESCE(NULLIF(ft.account_name, ''), sb.account_name, '') AS account_name,
+                   COALESCE(NULLIF(ft.bank, ''), sb.bank, '') AS bank,
                    CASE WHEN sb.source LIKE 'Safra document %'
                         THEN sb.account_number
-                        ELSE COALESCE(ft.account_number, sb.account_number, '')
+                        ELSE COALESCE(NULLIF(ft.account_number, ''), sb.account_number, '')
                    END AS account_number,
-                   COALESCE(ft.currency, sb.currency, '') AS currency,
+                   COALESCE(NULLIF(ft.currency, ''), sb.currency, '') AS currency,
                    sb.period_start,
                    sb.period_end,
                    sb.opening_balance,
@@ -1687,7 +1688,8 @@ def get_import_history():
     df = _apply_balance_reconciliation(df)
     if not df.empty:
         df["balance_status"] = df["reconciliation_status"].fillna("Missing data")
-    return df
+    from import_history import completed_history
+    return completed_history(__import__(__name__), df)
 
 
 def get_import_transaction_audit():
@@ -2252,6 +2254,7 @@ def build_statement_hash(file_bytes):
 
 
 def save_pending_transactions(df, statement_name, statement_hash, *, _connection=None):
+    from datetime import timezone
     from safra_duplicate_preview import is_existing_safra
     if is_existing_safra(statement_hash):
         return 0, True, 0
@@ -2260,7 +2263,7 @@ def save_pending_transactions(df, statement_name, statement_hash, *, _connection
         return save_sections(__import__(__name__), df, statement_name, statement_hash)
     conn = _connection if _connection is not None else get_connection()
     cur = conn.cursor()
-    now = _now()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cur.execute("""
         INSERT OR IGNORE INTO statement_imports
         (statement_hash, statement_name, imported_at, transaction_count)
@@ -2269,7 +2272,6 @@ def save_pending_transactions(df, statement_name, statement_hash, *, _connection
     if cur.rowcount == 0:
         if _connection is None:
             conn.close()
-            record_duplicate_statement_attempt(statement_hash)
         return 0, True, 0
 
     inserted = 0

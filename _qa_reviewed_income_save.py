@@ -15,6 +15,8 @@ from _qa_pending_save_normalization import prepare_function
 
 
 def without_reviewed_income_save(name, source):
+    from _qa_import_history_reliability import without_import_history_reliability
+    source = without_import_history_reliability(name, source)
     if name not in ('app.py', 'db.py'):
         return source
     baseline = subprocess.check_output(['git', 'show', '48bb7b098a3977041ba15852c0bd1b54f67e6f71:'+name]).replace(b'\r\n', b'\n')

@@ -14,6 +14,8 @@ NEW = """                   CASE WHEN sb.source LIKE 'Safra document %'
 
 
 def without_history_identity(source):
+    from _qa_import_history_reliability import without_import_history_reliability
+    source = without_import_history_reliability('db.py', source)
     source = source.replace(b"\r\n", b"\n")
     text = source.decode()
     start = text.index("def get_import_history():")

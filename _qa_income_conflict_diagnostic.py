@@ -81,7 +81,7 @@ def exercise(db, backend):
                 seen.append('diagnostic')
                 if diagnostic_error:
                     raise RuntimeError('SYNTHETIC_PRIVATE_DRIVER_VALUE')
-            if 'UPDATE classified_transactions' in sql and 'IS NOT DISTINCT FROM' in sql and params[8] == 902 and not raced[0]:
+            if 'UPDATE classified_transactions' in sql and 'IS NOT DISTINCT FROM' in sql and params[sql.split('WHERE', 1)[0].count('?')] == 902 and not raced[0]:
                 raced[0] = True
                 def change(cur):
                     if remove:

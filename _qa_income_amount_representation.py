@@ -130,7 +130,7 @@ def exercise(db, kind, precision):
         def __init__(self, cur): self.cur = cur
         def __getattr__(self, name): return getattr(self.cur, name)
         def execute(self, sql, params=None):
-            if 'UPDATE classified_transactions' in sql and 'IS NOT DISTINCT FROM' in sql and params[8] == 802 and not raced[0]:
+            if 'UPDATE classified_transactions' in sql and 'IS NOT DISTINCT FROM' in sql and params[sql.split('WHERE', 1)[0].count('?')] == 802 and not raced[0]:
                 raced[0] = True
                 with closing(connect()) as other:
                     other.cursor().execute('UPDATE classified_transactions SET amount=? WHERE id=?', (126.5, 802))

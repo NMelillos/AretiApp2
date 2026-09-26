@@ -93,7 +93,7 @@ def exercise(db, kind):
             def __init__(self,c): self.c=c
             def __getattr__(self,name): return getattr(self.c,name)
             def execute(self,sql,params=None):
-                if 'UPDATE classified_transactions' in sql and 'IS NOT DISTINCT FROM' in sql and params[8]==702 and not raced[0]:
+                if 'UPDATE classified_transactions' in sql and 'IS NOT DISTINCT FROM' in sql and params[sql.split('WHERE', 1)[0].count('?')]==702 and not raced[0]:
                     raced[0]=True
                     if kind=='SQLite':
                         self.c.execute(f'UPDATE classified_transactions SET {field}=? WHERE id=?',(value,702))

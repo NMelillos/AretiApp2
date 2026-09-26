@@ -14,6 +14,8 @@ BASE = 'ec58e2ed09b5b956665bfe3ae7259220778b5ea9'
 
 
 def without_split_editing(name, source):
+    from _qa_reviewed_income_save import without_reviewed_income_save
+    source = without_reviewed_income_save(name, source)
     source = source.replace(b'\r\n', b'\n')
     if name != 'app.py' or b'from split_editing import render_editor' not in source:
         return source

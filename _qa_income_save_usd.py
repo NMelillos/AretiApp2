@@ -144,7 +144,7 @@ def exercise(db, kind, baseline_only=False):
             def __getattr__(self, name):
                 return getattr(self.cursor, name)
             def execute(self, sql, params=None):
-                if 'UPDATE classified_transactions' in sql and 'IS NOT DISTINCT FROM' in sql and params[8] == identities[-1] and not raced[0]:
+                if 'UPDATE classified_transactions' in sql and 'IS NOT DISTINCT FROM' in sql and params[sql.split('WHERE', 1)[0].count('?')] == identities[-1] and not raced[0]:
                     raced[0] = True
                     mutation = 'DELETE FROM classified_transactions WHERE id=?' if field == 'delete' else f'UPDATE classified_transactions SET {field}=? WHERE id=?'
                     values = (identities[-1],) if field == 'delete' else (value, identities[-1])

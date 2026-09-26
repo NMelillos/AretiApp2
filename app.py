@@ -1515,6 +1515,12 @@ def is_amex_cardholder_statement(file_bytes, file_name):
 
 
 def editable_pending_table(df, categories, subcategories, key, defer_changes=False):
+    if defer_changes:
+        df = df.sort_values("id", kind="stable").reset_index(drop=True)
+        snapshot_key = _scoped_editor_key(key, df) + "__pending_baseline"
+        if snapshot_key not in st.session_state:
+            st.session_state[snapshot_key] = df.copy(deep=True)
+        df = st.session_state[snapshot_key]
     table = df.copy()
     table["reviewed"] = False
     valid_categories = set(categories)
@@ -1569,7 +1575,7 @@ def editable_pending_table(df, categories, subcategories, key, defer_changes=Fal
             "args": (editor_key,),
         })
 
-    return st.data_editor(
+    result = st.data_editor(
         table,
         **editor_kwargs,
         column_config={
@@ -1612,10 +1618,17 @@ def editable_pending_table(df, categories, subcategories, key, defer_changes=Fal
             ),
         },
     )
+    if defer_changes:
+        result.attrs["pending_baseline"] = df.to_dict("records")
+    return result
 
 
 def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
     from db import _bool_from_value, _clean
+    from decimal import Decimal, InvalidOperation
+
+    if "pending_baseline" in edited_df.attrs:
+        original_df = pd.DataFrame(edited_df.attrs["pending_baseline"])
 
     def reviewed_value(value):
         if value is None or pd.isna(value):
@@ -1646,22 +1659,14 @@ def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
         before = original_by_id.loc[row_id]
         raw_amount = row.get("amount")
         try:
-            amount = float(raw_amount)
-        except (TypeError, ValueError):
+            amount = Decimal(str(raw_amount))
+            before_amount = Decimal(str(before.get("amount")))
+        except (TypeError, ValueError, InvalidOperation):
             raise ValueError(f"Transaction {row_id} has an invalid Amount.") from None
-        if not math.isfinite(amount) or abs(amount) > MAX_SAFE_FINANCIAL_AMOUNT:
+        if not amount.is_finite() or abs(amount) > Decimal(str(MAX_SAFE_FINANCIAL_AMOUNT)):
             raise ValueError(f"Transaction {row_id} has an invalid Amount.")
-        amount = round(amount, 2)
-        before_amount = float(before.get("amount"))
-        amount_changed = not math.isclose(
-            amount,
-            before_amount,
-            rel_tol=0.0,
-            abs_tol=0.000001,
-        )
+        amount_changed = amount != before_amount
         reviewed = reviewed_value(row.get("reviewed", False))
-        if not reviewed and not amount_changed:
-            continue
 
         before_category = _clean(before.get("category", ""))
         before_subcategory = _clean(before.get("subcategory", ""))
@@ -1679,6 +1684,9 @@ def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
         ):
             category = before_category
             subcategory = before_subcategory
+        classification_changed = category != before_category or subcategory != before_subcategory
+        if not reviewed and not amount_changed and not classification_changed:
+            continue
         status = "reviewed" if reviewed else str(before.get("status", "pending") or "pending").strip()
         rows.append({
             "id": row_id,
@@ -1688,6 +1696,8 @@ def _prepare_pending_review_save_rows(original_df, edited_df, categories_df):
             "status": status,
             "report_group": str(row.get("report_group", "") or "").strip(),
             "amount": amount,
+            "_amount_changed": amount_changed,
+            "_expected_status": before.get("status", "pending"),
             "_expected_category": before_category,
             "_expected_subcategory": before_subcategory,
             "_expected_reviewed": reviewed_value(before.get("reviewed", False)),
@@ -1940,6 +1950,7 @@ def _edited_data_editor_rows(df, editor_key):
 def _clear_data_editor_state(editor_key):
     st.session_state.pop(editor_key, None)
     st.session_state.pop(f"{editor_key}__captured_state", None)
+    st.session_state.pop(f"{editor_key}__pending_baseline", None)
 
 
 def _clear_transaction_read_caches():
@@ -5917,7 +5928,7 @@ elif page == "Pending Review":
                 )
                 if save_df.empty:
                     st.warning(
-                        "No rows were ticked as Reviewed and no Amount corrections were detected. "
+                        "No rows were ticked as Reviewed and no classification or Amount changes were detected. "
                         "Nothing was saved."
                     )
                 else:

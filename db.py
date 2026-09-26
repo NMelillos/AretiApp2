@@ -2821,6 +2821,8 @@ def save_reviewed_rows(df, *, income_edit=False):
 
     expected = {}
     try:
+        if USING_POSTGRES:
+            cur.execute("SET LOCAL extra_float_digits = 3")
         if income_edit:
             if "amount" in df.columns:
                 raise ValueError("Income edits cannot change financial fields.")
@@ -2863,14 +2865,20 @@ def save_reviewed_rows(df, *, income_edit=False):
             if (
                 reviewed or classification_changed
             ) and (not category or not _category_pair_exists(cur, category, subcategory)):
-                label = category if not subcategory else f"{category} / {subcategory}"
-                raise ValueError(f"Invalid Category / Subcategory for transaction {tx_id}: {label or 'blank'}.")
+                raise ValueError(f"Invalid Category / Subcategory for transaction {tx_id}.")
 
             expected_category = row.get("_expected_category")
             expected_subcategory = row.get("_expected_subcategory")
             expected_reviewed = row.get("_expected_reviewed")
-            expected_amount = _float_or_none(row.get("_expected_amount"))
+            expected_status = row.get("_expected_status", row.get("status") if income_edit else None)
+            amount_supplied = "amount" in row.index and _bool_from_value(row.get("_amount_changed", True))
+            # Display precision is not a financial edit. The exact SQL guards
+            # below still protect the freshly read financial values from races.
+            expected_amount = _float_or_none(row.get("_expected_amount")) if amount_supplied else None
             stale = (
+                expected_status is not None
+                and _clean(expected_status) != _clean(before_status)
+            ) or (
                 expected_category is not None
                 and _clean(expected_category) != _clean(before_category)
             ) or (
@@ -2889,7 +2897,6 @@ def save_reviewed_rows(df, *, income_edit=False):
             if stale:
                 raise ConcurrentTransactionEditError(tx_id)
 
-            amount_supplied = "amount" in row.index
             amount = before_amount
             amount_usd = before_amount_usd
             amount_changed = False
@@ -2946,13 +2953,16 @@ def save_reviewed_rows(df, *, income_edit=False):
                             "Its Amount was not changed."
                         )
 
-            if not reviewed and not amount_changed and not classification_changed:
-                continue
             next_status = "reviewed" if reviewed else before_status or "pending"
+            if (not amount_changed and not classification_changed
+                    and int(reviewed) == before_reviewed and next_status == before_status):
+                if reviewed:
+                    saved += 1
+                continue
             reviewed_value = int(reviewed)
 
-            financial_assignments = "" if income_edit else ", amount = ?, amount_usd = ?"
-            financial_parameters = () if income_edit else (
+            financial_assignments = ", amount = ?, amount_usd = ?" if amount_changed else ""
+            financial_parameters = () if not amount_changed else (
                 before[8] if not amount_changed else amount,
                 before[9] if not amount_changed else amount_usd,
             )
@@ -3044,9 +3054,12 @@ def save_reviewed_rows(df, *, income_edit=False):
                     raise RuntimeError(f"Transaction {tx_id} could not be verified after saving.")
         conn.commit()
         return saved
-    except Exception:
+    except (ValueError, ConcurrentTransactionEditError):
         conn.rollback()
         raise
+    except Exception:
+        conn.rollback()
+        raise RuntimeError("The transaction edits could not be saved safely. Nothing was saved.") from None
     finally:
         conn.close()
 

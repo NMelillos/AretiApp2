@@ -15,6 +15,8 @@ def is_existing_safra(statement_hash):
 
 
 def render_preview(st, file_bytes, file_name, accounts, parse_statement):
+    from existing_import_compare import render_compare
+    render_compare(st, file_bytes)
     from db import _safra_page_accounts
     from safra_history import preview_sections, preview_transactions
     st.warning('This statement already exists. The preview below is for validation only and cannot be imported again.')

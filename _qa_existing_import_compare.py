@@ -62,6 +62,22 @@ def main():
             assert result['fingerprint'] == hashlib.sha256(content).hexdigest()
             assert all(r['Status'] in {'MATCH', 'MISMATCH'} for r in result['transactions'])
             assert all(isinstance(r['PDF amount'], str) for r in result['transactions'])
+            readiness = result['readiness']
+            assert len(readiness['schema']) == 9
+            assert {r['Table'] for r in readiness['schema']} == {'classified_transactions', 'statement_balances', 'rates'}
+            for tx in result['transactions']:
+                displayed = {r['Field']: r for r in readiness['fields']
+                             if r['Table'] == 'classified_transactions' and r['Record ID'] == tx['Record ID']}
+                assert displayed['amount']['Current database value'] == tx['Stored amount']
+                assert displayed['amount']['Proposed PDF/parser value'] == tx['PDF amount']
+                for field in ('amount_usd', 'fx_rate', 'split_original_amount', 'category', 'subcategory',
+                              'reviewed', 'split_parent_id', 'split_group_id', 'statement_hash', 'row_hash',
+                              'reporting_group (derived from category_list)'):
+                    assert displayed[field]['Disposition'] == 'UNCHANGED / PRESERVE'
+            assert len([r for r in readiness['hashes'] if r['Scope'] == 'classified_transactions']) == 9
+            assert len([r for r in readiness['hashes'] if r['Scope'] == 'statement_imports']) == 6
+            assert all(len(r['Precondition SHA-256']) == 64 for r in readiness['hashes'])
+            assert not any(r['Field'] == '_read_version' for r in readiness['fields'])
             assert compare.compare_existing(content) == result
             with ExitStack() as stack:
                 spies = []
@@ -79,7 +95,10 @@ def main():
                     assert 'Compare with Existing Import' in ui.buttons
                     assert 'Repair Existing Import' not in ui.buttons and 'Import statement' not in ui.buttons
                     if action == 'Compare with Existing Import':
-                        assert len(ui.tables) == 2 and len(ui.tables[0]) == 6 and len(ui.tables[1]) == 9
+                        assert len(ui.tables) == 5 and len(ui.tables[0]) == 6 and len(ui.tables[1]) == 9
+                        assert ui.tables[2] == result['readiness']['schema']
+                        assert ui.tables[3] == result['readiness']['fields']
+                        assert ui.tables[4] == result['readiness']['hashes']
                     else:
                         assert not ui.tables
                 assert all(not spy.called for spy in spies)
@@ -111,7 +130,7 @@ render_preview(st, b'%PDF-synthetic comparison only', 'synthetic.pdf', None, Non
             app.session_state['login_user'] = 'Areti'
             app.run()
             next(b for b in app.button if b.label == 'Compare with Existing Import').click().run()
-            assert not app.exception and not app.error and len(app.dataframe) == 2
+            assert not app.exception and not app.error and len(app.dataframe) == 5
             assert len(app.dataframe[0].value) == 6 and len(app.dataframe[1].value) == 9
             app.run()
             assert not app.dataframe
@@ -232,6 +251,13 @@ def postgres_checks(db, compare, pages, accounts, content):
                     elif kind == 'REAL': assert stored == Decimal('148351.296875')
                     else: assert stored == Decimal.from_float(148351.30)
                     assert first['Status'] == 'MISMATCH'
+                    types = [r for r in result['readiness']['schema'] if r['Table'] == 'classified_transactions']
+                    assert len(types) == 4 and all(r['data_type'].upper() == kind for r in types)
+                    assert all(r['numeric_precision'] == {'REAL': 24, 'DOUBLE PRECISION': 53, 'NUMERIC': None}[kind] for r in types)
+                    diagnostic = next(r for r in result['readiness']['fields']
+                                      if r['Table'] == 'classified_transactions' and r['Record ID'] == first['Record ID'] and r['Field'] == 'amount')
+                    assert Decimal(diagnostic['Current database value']) == stored
+                    assert compare.compare_existing(content)['readiness']['hashes'] == result['readiness']['hashes']
                 assert snapshot() == before
             print('PASS PostgreSQL REAL/DOUBLE/NUMERIC exact binary evidence at reduced output precision; all-table snapshots unchanged')
     finally:

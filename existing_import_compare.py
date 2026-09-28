@@ -98,7 +98,7 @@ def _schema(cur, postgres):
 def _money_select(table, types, postgres):
     if not postgres:
         return '*'
-    expressions = ['*']
+    expressions = ['*', 'xmin::text AS _read_version']
     for field, kind in types[table].items():
         if kind in ('real', 'double precision'):
             send = 'float4send' if kind == 'real' else 'float8send'
@@ -228,13 +228,16 @@ def compare_existing(content):
             imports, transactions = [], []
             for balance in balances:
                 key = balance['statement_hash']
-                imports.extend(_dicts(cur, 'SELECT * FROM statement_imports WHERE statement_hash = ?', (key,)))
+                import_select = '*, xmin::text AS _read_version' if db.USING_POSTGRES else '*'
+                imports.extend(_dicts(cur, 'SELECT ' + import_select + ' FROM statement_imports WHERE statement_hash = ?', (key,)))
                 transactions.extend(_decode(_dicts(cur, 'SELECT ' + _money_select('classified_transactions', types, db.USING_POSTGRES)
                     + ' FROM classified_transactions WHERE statement_hash = ? ORDER BY id', (key,)),
                     'classified_transactions', types, db.USING_POSTGRES))
             result = _reconcile(sections, balances, imports, transactions)
             result['fingerprint'] = fingerprint
             result['schema'] = types
+            from repair_readiness import collect
+            result['readiness'] = collect(cur, db.USING_POSTGRES, fingerprint, result, balances, imports, transactions)
             return result
         finally:
             conn.rollback()
@@ -255,6 +258,8 @@ def render_compare(ui, content):
                 f"Transaction differences: {mismatches}; account sections with balance differences: {section_mismatches}.")
         ui.dataframe(result['sections'], use_container_width=True, hide_index=True)
         ui.dataframe(result['transactions'], use_container_width=True, hide_index=True)
+        from repair_readiness import render
+        render(ui, result['readiness'])
     except CompareBlocked as exc:
         ui.error(str(exc))
     except Exception:

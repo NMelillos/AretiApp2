@@ -17,6 +17,8 @@ BASE = '300a07eaeb8e1fdfa29aab48cc640f0c8663344c'
 
 
 def without_completion(name, source):
+    from financial_storage_qa import protected_source
+    source = protected_source(name, source)
     from _qa_safra_duplicate_preview import without_duplicate_preview
     source = without_duplicate_preview(name, source)
     source=source.replace(b'\r\n',b'\n')

@@ -167,7 +167,8 @@ No bookings were carried out during the period stated.
                 spy.assert_not_called()
     baseline = subprocess.check_output(["git", "show", "f7a0f9f13faed18734eb726a35a7069b41b46156:parsing.py"], text=True)
     functions = lambda source: {n.name: ast.dump(n) for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)}
-    old, new = functions(baseline), functions(Path("parsing.py").read_text(encoding="utf-8"))
+    from financial_storage_qa import protected_source
+    old, new = functions(baseline), functions(protected_source('parsing.py', Path('parsing.py').read_bytes()).decode())
     assert {name for name in old if old[name] != new[name]} == {"parse_pdf"}
     for name in ("app.py", "db.py", "auth.py", "reporting.py"):
         actual = Path(name).read_bytes().replace(b"\r\n", b"\n")

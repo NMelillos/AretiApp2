@@ -7,6 +7,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from db import filter_financially_active_transactions
+from report_money import decimal_sum
+from financial_decimal import cents, optional_decimal, excel_value, exact_frame
 
 
 REPORT_GROUP_COLUMN = "report_group"
@@ -219,11 +221,11 @@ def _prepare_report_data(transactions, categories, report_group=None, include_ow
     tx["category"] = tx["category"].fillna("").astype(str).str.strip()
     tx["subcategory"] = tx["subcategory"].fillna("").astype(str).str.strip()
     tx["currency"] = tx["currency"].fillna("").astype(str).str.upper().str.strip()
-    amount_numeric = pd.to_numeric(tx["amount"], errors="coerce")
-    amount_usd_numeric = pd.to_numeric(tx["amount_usd"], errors="coerce")
+    amount_numeric = tx["amount"].map(optional_decimal)
+    amount_usd_numeric = tx["amount_usd"].map(optional_decimal)
     zero_usd_needs_attention = (
-        amount_usd_numeric.fillna(0).abs().le(0.005)
-        & amount_numeric.fillna(0).abs().gt(0.005)
+        amount_usd_numeric.fillna(0).abs().le(optional_decimal('0.005'))
+        & amount_numeric.fillna(0).abs().gt(optional_decimal('0.005'))
     )
     tx["report_amount"] = tx["amount_usd"].map(decimal_amount)
     tx.loc[zero_usd_needs_attention & ~tx["currency"].eq("USD"), "report_amount"] = pd.NA
@@ -270,9 +272,9 @@ def _prepare_report_data(transactions, categories, report_group=None, include_ow
 
 def _month_totals(frame, months):
     if frame.empty:
-        return {month: 0.0 for month in months}
-    monthly = frame.groupby("month")["expense_usd"].sum()
-    return {month: round(float(monthly.get(month, 0.0)), 2) for month in months}
+        return {month: cents(0) for month in months}
+    monthly = frame.groupby("month")["expense_usd"].agg(decimal_sum)
+    return {month: cents(monthly.get(month, 0)) for month in months}
 
 
 def _group_order(categories, expenses, report_group=None):
@@ -286,7 +288,7 @@ def _group_order(categories, expenses, report_group=None):
 def _build_sections(transactions, categories, report_group=None):
     prepared_tx, expenses, months, month_labels = _prepare_report_data(transactions, categories, report_group)
     groups = _group_order(categories, expenses, report_group)
-    all_total = float(expenses["expense_usd"].sum()) if not expenses.empty else 0.0
+    all_total = decimal_sum(expenses["expense_usd"])
     active_months = int((expenses.groupby("month")["expense_usd"].sum() > 0).sum()) if not expenses.empty else 0
     average_denominator = max(active_months, 1)
 
@@ -298,10 +300,10 @@ def _build_sections(transactions, categories, report_group=None):
         if group_expenses.empty:
             continue
 
-        group_total = float(group_expenses["expense_usd"].sum())
+        group_total = decimal_sum(group_expenses["expense_usd"])
         category_totals = (
             group_expenses.groupby("category")["expense_usd"]
-            .sum()
+            .agg(decimal_sum)
             .sort_values(ascending=False)
         )
         rows = []
@@ -309,7 +311,7 @@ def _build_sections(transactions, categories, report_group=None):
             category_expenses = group_expenses[group_expenses["category"] == category].copy()
             subcategory_totals = (
                 category_expenses.groupby("subcategory", dropna=False)["expense_usd"]
-                .sum()
+                .agg(decimal_sum)
                 .sort_values(ascending=False)
             )
             if subcategory_totals.empty:
@@ -321,9 +323,9 @@ def _build_sections(transactions, categories, report_group=None):
                 rows.append({
                     "report_group": group,
                     "category": category if first else "",
-                    "category_total": round(float(category_total), 2) if first else None,
-                    "category_percent": float(category_total / all_total) if first and all_total else None,
-                    "category_average": round(float(category_total) / average_denominator, 2) if first else None,
+                    "category_total": cents(category_total) if first else None,
+                    "category_percent": category_total / all_total if first and all_total else None,
+                    "category_average": cents(category_total / average_denominator) if first else None,
                     "subcategory": subcategory,
                     "months": _month_totals(sub_expenses, months),
                 })
@@ -333,14 +335,14 @@ def _build_sections(transactions, categories, report_group=None):
             "group": group,
             "rows": rows,
             "total": round(group_total, 2),
-            "percent": float(group_total / all_total) if all_total else 0.0,
+            "percent": group_total / all_total if all_total else 0,
             "average": round(group_total / average_denominator, 2),
             "months": _month_totals(group_expenses, months),
         })
         summary_rows.append({
             "report_group": group,
             "total": round(group_total, 2),
-            "percent": float(group_total / all_total) if all_total else 0.0,
+            "percent": group_total / all_total if all_total else 0,
             "average": round(group_total / average_denominator, 2),
         })
 
@@ -357,13 +359,13 @@ def _build_report_frame(transactions, categories, report_group=None):
             out = {
                 "Report group": section["group"],
                 "Category": row["category"],
-                "Total expenses for all months ever": row["category_total"] or 0.0,
-                "% of category from total": row["category_percent"] or 0.0,
-                "Average monthly": row["category_average"] or 0.0,
+                "Total expenses for all months ever": row["category_total"] or 0,
+                "% of category from total": row["category_percent"] or 0,
+                "Average monthly": row["category_average"] or 0,
                 "Subcategory": row["subcategory"],
             }
             for month in months:
-                out[month_labels[month]] = row["months"].get(month, 0.0)
+                out[month_labels[month]] = row["months"].get(month, 0)
             rows.append(out)
         total_row = {
             "Report group": section["group"],
@@ -374,7 +376,7 @@ def _build_report_frame(transactions, categories, report_group=None):
             "Subcategory": "",
         }
         for month in months:
-            total_row[month_labels[month]] = section["months"].get(month, 0.0)
+            total_row[month_labels[month]] = section["months"].get(month, 0)
         rows.append(total_row)
     return pd.DataFrame(rows), prepared_tx
 
@@ -476,10 +478,10 @@ def _write_report_sheet(ws, title, sections, summary_rows, months, month_labels)
                 item["category_average"],
                 "",
                 item["subcategory"],
-                *[item["months"].get(month, 0.0) for month in months],
+                *[item["months"].get(month, 0) for month in months],
             ]
             for col_num, value in enumerate(values, 1):
-                ws.cell(row_num, col_num, value)
+                ws.cell(row_num, col_num, excel_value(value))
             row_num += 1
 
         total_values = [
@@ -490,10 +492,10 @@ def _write_report_sheet(ws, title, sections, summary_rows, months, month_labels)
             section["average"],
             "",
             "total",
-            *[section["months"].get(month, 0.0) for month in months],
+            *[section["months"].get(month, 0) for month in months],
         ]
         for col_num, value in enumerate(total_values, 1):
-            ws.cell(row_num, col_num, value)
+            ws.cell(row_num, col_num, excel_value(value))
         total_rows.add(row_num)
         row_num += 3
 
@@ -509,14 +511,14 @@ def _write_report_sheet(ws, title, sections, summary_rows, months, month_labels)
     for item in summary_rows:
         values = [item["report_group"], item["total"], item["percent"], item["average"]]
         for col_num, value in enumerate(values, 1):
-            ws.cell(row_num, col_num, value)
+            ws.cell(row_num, col_num, excel_value(value))
         row_num += 1
     if summary_rows:
-        grand_total = round(sum(float(item.get("total") or 0) for item in summary_rows), 2)
-        grand_average = round(sum(float(item.get("average") or 0) for item in summary_rows), 2)
-        total_values = ["TOTAL", grand_total, 1.0, grand_average]
+        grand_total = cents(decimal_sum(item.get("total") for item in summary_rows))
+        grand_average = cents(decimal_sum(item.get("average") for item in summary_rows))
+        total_values = ["TOTAL", grand_total, 1, grand_average]
         for col_num, value in enumerate(total_values, 1):
-            ws.cell(row_num, col_num, value)
+            ws.cell(row_num, col_num, excel_value(value))
         total_rows.add(row_num)
 
     _style_report_sheet(ws, max_col, header_rows, section_rows, total_rows, summary_marker_rows)
@@ -543,12 +545,12 @@ def _prepare_verification_data(transactions, categories, report_group=None):
 
     tx["database_row"] = range(1, original_count + 1)
     tx["parsed_date"] = pd.to_datetime(tx["txn_date"], errors="coerce")
-    tx["statement_amount_numeric"] = pd.to_numeric(tx["amount"], errors="coerce")
-    tx["amount_usd_numeric"] = pd.to_numeric(tx["amount_usd"], errors="coerce")
+    tx["statement_amount_numeric"] = tx["amount"].map(optional_decimal)
+    tx["amount_usd_numeric"] = tx["amount_usd"].map(optional_decimal)
     tx["currency_normalized"] = tx["currency"].fillna("").astype(str).str.upper().str.strip()
     tx["zero_usd_needs_attention"] = (
-        tx["amount_usd_numeric"].fillna(0).abs().le(0.005)
-        & tx["statement_amount_numeric"].fillna(0).abs().gt(0.005)
+        tx["amount_usd_numeric"].fillna(0).abs().le(optional_decimal('0.005'))
+        & tx["statement_amount_numeric"].fillna(0).abs().gt(optional_decimal('0.005'))
     )
     tx["report_amount"] = tx["amount_usd_numeric"]
     tx.loc[tx["zero_usd_needs_attention"] & ~tx["currency_normalized"].eq("USD"), "report_amount"] = pd.NA
@@ -679,10 +681,10 @@ def build_report_verification(transactions, categories, report_group=None):
         "deposit_rows": int(deposit_mask.sum()) if not tx.empty else 0,
         "own_funds_rows": int(own_funds_mask.sum()) if not tx.empty else 0,
         "rows_needing_attention": int(attention_mask.sum()) if not tx.empty else 0,
-        "total_expenses": round(float(tx.loc[expense_mask, "report_amount"].abs().sum()), 2) if not tx.empty else 0.0,
-        "total_deposits": round(float(tx.loc[deposit_mask, "report_amount"].sum()), 2) if not tx.empty else 0.0,
-        "total_own_funds": round(float(tx.loc[own_funds_mask, "report_amount"].sum()), 2) if not tx.empty else 0.0,
-        "net_movement": round(float(tx.loc[valid_in_scope, "report_amount"].sum()), 2) if not tx.empty else 0.0,
+        "total_expenses": decimal_sum(tx.loc[expense_mask, "report_amount"].abs()) if not tx.empty else 0,
+        "total_deposits": decimal_sum(tx.loc[deposit_mask, "report_amount"]) if not tx.empty else 0,
+        "total_own_funds": decimal_sum(tx.loc[own_funds_mask, "report_amount"]) if not tx.empty else 0,
+        "net_movement": decimal_sum(tx.loc[valid_in_scope, "report_amount"]) if not tx.empty else 0,
     }
 
     detail_columns = [
@@ -734,7 +736,7 @@ def _build_income_deposits_frame(verification_detail):
             "Bank": "",
             "Category": "No income/deposit rows in the selected report data",
             "Subcategory": "",
-            "USD equivalent": 0.0,
+            "USD equivalent": 0,
             "Full statement description": "",
         }])
 
@@ -747,7 +749,7 @@ def _build_income_deposits_frame(verification_detail):
         "USD amount used in report",
         "Full statement description",
     ]].rename(columns={"USD amount used in report": "USD equivalent"})
-    total = round(float(pd.to_numeric(income["USD equivalent"], errors="coerce").fillna(0).sum()), 2)
+    total = cents(decimal_sum(income["USD equivalent"]))
     total_row = {
         "Date": "",
         "Account": "",
@@ -782,7 +784,7 @@ def _build_own_funds_frame(verification_detail):
             "Bank": "",
             "Category": "No own funds rows in the selected report data",
             "Subcategory": "",
-            "USD equivalent": 0.0,
+            "USD equivalent": 0,
             "Full statement description": "",
         }])
 
@@ -795,7 +797,7 @@ def _build_own_funds_frame(verification_detail):
         "USD amount used in report",
         "Full statement description",
     ]].rename(columns={"USD amount used in report": "USD equivalent"})
-    total = round(float(pd.to_numeric(own_funds["USD equivalent"], errors="coerce").fillna(0).sum()), 2)
+    total = cents(decimal_sum(own_funds["USD equivalent"]))
     total_row = {
         "Date": "",
         "Account": "",
@@ -859,11 +861,11 @@ def build_sample_expenses_report(transactions, categories, report_group=None):
     title = "Sample expenses report" if not report_group else f"Sample expenses report - {report_group}"
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        prepared_tx.to_excel(writer, index=False, sheet_name="Reviewed transactions")
-        income_deposits.to_excel(writer, index=False, sheet_name="Income deposits")
-        own_funds.to_excel(writer, index=False, sheet_name="Own funds")
-        _verification_summary_frame(verification_summary).to_excel(writer, index=False, sheet_name="Report check")
-        verification_detail.to_excel(writer, index=False, sheet_name="Report verification")
+        exact_frame(prepared_tx).to_excel(writer, index=False, sheet_name="Reviewed transactions")
+        exact_frame(income_deposits).to_excel(writer, index=False, sheet_name="Income deposits")
+        exact_frame(own_funds).to_excel(writer, index=False, sheet_name="Own funds")
+        exact_frame(_verification_summary_frame(verification_summary)).to_excel(writer, index=False, sheet_name="Report check")
+        exact_frame(verification_detail).to_excel(writer, index=False, sheet_name="Report verification")
         ws = writer.book.create_sheet("Sample expenses report", 0)
         _write_report_sheet(ws, title, sections, summary_rows, months, month_labels)
         for sheet_name in ["Reviewed transactions", "Income deposits", "Own funds", "Report check", "Report verification"]:
@@ -878,7 +880,7 @@ def build_sample_expenses_report(transactions, categories, report_group=None):
 def build_excel_report(context):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        context.get("transactions", pd.DataFrame()).to_excel(writer, index=False, sheet_name="Transactions")
+        exact_frame(context.get("transactions", pd.DataFrame())).to_excel(writer, index=False, sheet_name="Transactions")
     return output.getvalue()
 
 
@@ -891,26 +893,28 @@ def _pdf_safe(text):
 
 
 def _format_money(value):
+    from financial_decimal import decimal_value
     if value in (None, ""):
         return ""
     try:
-        return f"{float(value):,.2f}"
+        return f"{decimal_value(value):,.2f}"
     except Exception:
         return str(value)
 
 
 def _format_percent(value):
+    from financial_decimal import decimal_value
     if value in (None, ""):
         return ""
     try:
-        return f"{float(value) * 100:.2f}%"
+        return f"{decimal_value(value) * 100:.2f}%"
     except Exception:
         return str(value)
 
 
 def _pdf_lines_for_sections(sections, summary_rows, title, months, month_labels):
-    grand_total = round(sum(float(item.get("total") or 0) for item in summary_rows), 2)
-    grand_average = round(sum(float(item.get("average") or 0) for item in summary_rows), 2)
+    grand_total = cents(decimal_sum(item.get("total") for item in summary_rows))
+    grand_average = cents(decimal_sum(item.get("average") for item in summary_rows))
     lines = [
         title,
         "Reports exclude Own funds and use USD equivalent where available.",
@@ -935,9 +939,9 @@ def _pdf_lines_for_sections(sections, summary_rows, title, months, month_labels)
                 line = f" |  |  |  | {item['subcategory']}"
             lines.extend(textwrap.wrap(line, width=150) or [""])
             month_values = [
-                f"{month_labels[month]}: {_format_money(item['months'].get(month, 0.0))}"
+                f"{month_labels[month]}: {_format_money(item['months'].get(month, 0))}"
                 for month in months
-                if item["months"].get(month, 0.0)
+                if item["months"].get(month, 0)
             ]
             if month_values:
                 lines.extend(textwrap.wrap("Months: " + ", ".join(month_values), width=150))

@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 
 def compatible(name, actual):
+    from financial_storage_qa import protected_source
+    actual = protected_source(name, actual)
     from _qa_income_three_fields import without_three_field_change
     actual = without_three_field_change(name, actual)
     actual = actual.replace(b"\r\n", b"\n")

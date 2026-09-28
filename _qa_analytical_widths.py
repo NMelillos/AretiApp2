@@ -40,6 +40,8 @@ def main():
         if Path(name).exists():
             prior = subprocess.check_output(["git", "show", BASELINE + ":" + name])
             actual = Path(name).read_bytes().replace(b"\r\n", b"\n")
+            from financial_storage_qa import protected_source
+            actual = protected_source(name, actual)
             if name == "db.py":
                 actual = without_analytical_sizing(name, actual)
             assert actual == prior.replace(b"\r\n", b"\n")

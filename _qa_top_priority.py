@@ -1102,8 +1102,9 @@ def test_report_group_audit_flags_missing_setup_pairs():
 
 
 def test_csv_amounts():
-    assert_true("European amount with thousands", abs(_parse_amount("2.000,00") - 2000.0) < 0.001)
-    assert_true("US amount with thousands", abs(_parse_amount("1,234.56") - 1234.56) < 0.001)
+    from decimal import Decimal
+    assert_true("European amount with thousands", _parse_amount("2.000,00") == Decimal('2000.00'))
+    assert_true("US amount with thousands", _parse_amount("1,234.56") == Decimal('1234.56'))
     text = StringIO(newline="")
     writer = csv.writer(text)
     writer.writerow(["Date", "Description", "Amount"])

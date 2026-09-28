@@ -150,7 +150,8 @@ def conservative_rule_category(normalized_description, categories, amount=0, tra
         or any(token in text for token in ["OWN FUNDS", "OWN ACCOUNT", "INTERNAL TRANSFER"])
     ):
         return own_funds, "rule", 0.98
-    if own_funds and float(amount or 0) > 0 and any(
+    from financial_decimal import decimal_value
+    if own_funds and decimal_value(amount or 0) > 0 and any(
         token in text
         for token in ["TRANSFER FROM", "TOP-UP", "BANK CREDIT ADVICE", "FROM ", "CREDIT ADVICE"]
     ):

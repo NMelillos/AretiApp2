@@ -229,7 +229,11 @@ def exercise(db, kind):
         assert selected.report_group == 'Woking Way LLC'
         assert reporting.is_income(selected.category, selected.subcategory, selected.report_group)
         totals, _ = reporting.build_report_verification(all_rows, db.get_categories(True))
-        assert Decimal(str(totals['net_movement'])) == sum((Decimal(str(r)) for r in active.amount), Decimal(0))
+        # Independent exact oracle: default Decimal precision rounds the ultra
+        # fixtures during cancellation and can invent a residual of -1E-28.
+        from fractions import Fraction
+        assert Fraction(Decimal(str(totals['net_movement']))) == sum(
+            (Fraction(Decimal(str(r))) for r in active.amount), Fraction(0))
     residue_regression(db)
     print('PASS', kind, 'signed/finer totals, persistence, taxonomy, stale rejection, no-op, rollback, storage safety, USD residue')
 

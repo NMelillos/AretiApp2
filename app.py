@@ -1045,11 +1045,12 @@ def classify_statement_rows(parsed, memory):
 
 
 def display_money(value, currency=""):
+    from financial_decimal import decimal_value
     if value is None or pd.isna(value):
         return "-"
     prefix = f"{currency} " if currency else ""
     try:
-        return f"{prefix}{float(value):,.2f}"
+        return f"{prefix}{decimal_value(value):,.2f}"
     except Exception:
         return "-"
 
@@ -1388,12 +1389,14 @@ def _parse_amount_search(search):
     if not re.fullmatch(r"[-+]?\d+(?:\.\d+)?", cleaned):
         return None
     try:
-        return round(abs(float(cleaned)), 2)
+        from financial_decimal import decimal_value, cents
+        return cents(abs(decimal_value(cleaned)))
     except Exception:
         return None
 
 
 def database_search_mask(df, search):
+    from financial_decimal import optional_decimal, cents
     mask = _search_text_mask(df, search)
     amount_search = _parse_amount_search(search)
     if amount_search is None or df.empty:
@@ -1401,8 +1404,8 @@ def database_search_mask(df, search):
     for column in ["amount", "amount_usd"]:
         if column not in df.columns:
             continue
-        numeric = pd.to_numeric(df[column], errors="coerce")
-        mask = mask | numeric.abs().round(2).eq(amount_search)
+        numeric = df[column].map(optional_decimal)
+        mask = mask | numeric.map(lambda v: cents(abs(v)) if v is not None else None).eq(amount_search)
     return mask
 
 
@@ -1522,6 +1525,7 @@ def editable_pending_table(df, categories, subcategories, key, defer_changes=Fal
             st.session_state[snapshot_key] = df.copy(deep=True)
         df = st.session_state[snapshot_key]
     table = df.copy()
+    table["amount"] = table["amount"].map(lambda value: "" if pd.isna(value) else str(value))
     table["reviewed"] = False
     valid_categories = set(categories)
 
@@ -1587,10 +1591,8 @@ def editable_pending_table(df, categories, subcategories, key, defer_changes=Fal
             "account_number": st.column_config.TextColumn("Account number", disabled=True),
             "statement_name": st.column_config.TextColumn("Statement", disabled=True, width="large"),
             "currency": st.column_config.TextColumn("Currency", disabled=True, width="small"),
-            "amount": st.column_config.NumberColumn(
+            "amount": st.column_config.TextColumn(
                 "Amount",
-                format="%.2f",
-                step=0.01,
                 help=(
                     "Correct the operational statement-currency amount or sign before review. "
                     "The USD amount is recalculated when the reviewed row is saved. "
@@ -1966,17 +1968,13 @@ def _clear_transaction_read_caches():
 
 
 def _verify_transaction_edit_save(save_df):
+    from financial_decimal import decimal_value
     def numeric_values_match(actual_value, expected_value):
         if actual_value is None or pd.isna(actual_value):
             return expected_value is None or pd.isna(expected_value)
         if expected_value is None or pd.isna(expected_value):
             return False
-        return math.isclose(
-            float(actual_value),
-            float(expected_value),
-            rel_tol=0.0,
-            abs_tol=0.000001,
-        )
+        return decimal_value(actual_value) == decimal_value(expected_value)
 
     persisted = get_transaction_edit_states(save_df["id"].tolist())
     persisted_by_id = {
@@ -2363,10 +2361,11 @@ def render_bulk_categorise_panel(df, categories, key_prefix, expanded=False, inl
 
 
 def _parse_split_amount_input(value):
+    from financial_decimal import optional_decimal
     if value is None or pd.isna(value):
         return None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
+        return optional_decimal(value)
     text = str(value).strip()
     if not text:
         return None
@@ -2384,13 +2383,12 @@ def _parse_split_amount_input(value):
             text = f"{parts[0]}.{parts[1]}"
         else:
             text = "".join(parts)
-    amount = pd.to_numeric(text, errors="coerce")
-    if pd.isna(amount):
-        return None
-    return float(amount)
+    return optional_decimal(text)
 
 
 def render_transaction_split_panel(df, categories_df, categories, key_prefix):
+    from financial_decimal import optional_decimal
+    from report_money import decimal_amount, decimal_sum
     from split_editing import render_editor
     render_editor(st, df, categories_df, key_prefix, _clear_transaction_read_caches)
     if df.empty or "id" not in df.columns or not categories:
@@ -2422,8 +2420,8 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
         )
         selected_id = labels[selected_label]
         selected_row = working[working["id"] == selected_id].iloc[0]
-        original_amount_value = pd.to_numeric(selected_row.get("amount", 0), errors="coerce")
-        original_amount = 0.0 if pd.isna(original_amount_value) else float(original_amount_value)
+        original_amount_value = optional_decimal(selected_row.get("amount", 0))
+        original_amount = decimal_amount(original_amount_value)
         target_amount = abs(original_amount)
         st.info(
             f"Original transaction ID {selected_id}: {format_currency(original_amount)}. "
@@ -2470,7 +2468,7 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
         split_edit = _apply_data_editor_state(split_edit, split_editor_key)
         split_preview = _refresh_category_pair_derived_columns(split_edit, categories_df)
         parsed_amounts = split_preview[amount_column].apply(_parse_split_amount_input)
-        entered_total = float(parsed_amounts.fillna(0).sum())
+        entered_total = decimal_sum(parsed_amounts)
         difference = round(target_amount - entered_total, 2)
         c1, c2, c3 = st.columns(3)
         c1.metric("Original amount", format_currency(target_amount))
@@ -2493,7 +2491,7 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
         for position, (_, row) in enumerate(split_preview.iterrows()):
             amount = parsed_amounts.iloc[position]
             category, _ = parsed_pairs[position]
-            if amount is None or pd.isna(amount) or float(amount) <= 0 or not category:
+            if amount is None or pd.isna(amount) or amount <= 0 or not category:
                 invalid_rows.append(position + 1)
         if invalid_rows:
             st.warning(
@@ -2541,6 +2539,7 @@ def render_transaction_split_panel(df, categories_df, categories, key_prefix):
 
 
 def render_manual_transaction_form(categories, subcategories):
+    from financial_decimal import decimal_value
     with st.expander("Add manual transaction"):
         if not categories:
             st.info("Load expense categories in Setup before adding manual transactions.")
@@ -2552,7 +2551,7 @@ def render_manual_transaction_form(categories, subcategories):
         mc1, mc2, mc3 = st.columns(3)
         manual_date = mc1.date_input("Date", key="manual_date")
         manual_account_label = mc2.selectbox("Account", manual_labels, key="manual_account")
-        manual_amount = mc3.number_input("Amount", value=0.0, step=1.0, format="%.2f", key="manual_amount")
+        manual_amount_text = mc3.text_input("Amount", value="0.00", key="manual_amount_decimal")
         manual_description = st.text_input("Full statement description", key="manual_description")
         manual_category = st.selectbox("Category", categories, key="manual_category")
         manual_subcategory_options = _subcategory_options_for(manual_category)
@@ -2565,6 +2564,11 @@ def render_manual_transaction_form(categories, subcategories):
         )
         _render_report_group_preview(manual_category, manual_subcategory, "manual")
         if st.button("Save manual transaction", type="primary", key="manual_save"):
+            try:
+                manual_amount = decimal_value(manual_amount_text)
+            except ValueError:
+                st.error("Enter a valid finite amount.")
+                return
             inserted = insert_manual_transaction(
                 manual_date,
                 manual_description,
@@ -2757,9 +2761,10 @@ def _money(value):
 
 
 def _percent(value):
+    from financial_decimal import decimal_value
     if value is None or pd.isna(value):
         return "-"
-    return f"{float(value):.1f}%"
+    return f"{decimal_value(value):.1f}%"
 
 
 def _executive_month_window(cutoff_month):
@@ -2845,7 +2850,7 @@ def _executive_status_change_pct(current_amount, previous_amount):
 def _executive_signed_amount_series(frame):
     from report_money import decimal_amount
     if frame.empty:
-        return pd.Series(dtype=float)
+        return pd.Series(dtype=object)
     source_column = "report_amount" if "report_amount" in frame.columns else "expense_usd"
     return frame.get(source_column, pd.Series(dtype=object)).map(decimal_amount)
 
@@ -3460,9 +3465,10 @@ def _render_executive_click_rows(
     for row in rows:
         if row.get("is_total"):
             continue
-        total = float(row.get("total") or 0.0)
-        month_total = sum(float(value or 0.0) for value in row.get("months", {}).values())
-        if abs(total) <= 0.005 and abs(month_total) <= 0.005:
+        from report_money import decimal_amount, decimal_sum
+        total = decimal_amount(row.get("total"))
+        month_total = decimal_sum(row.get("months", {}).values())
+        if abs(total) <= decimal_amount('0.005') and abs(month_total) <= decimal_amount('0.005'):
             label = str(row.get("label") or "").strip()
             if label:
                 reason = (
@@ -3485,11 +3491,9 @@ def _render_executive_click_rows(
 
 
 def _executive_selected_transactions_export_sheets(visible):
+    from report_money import decimal_sum
     export_visible = visible.copy()
-    export_total_usd = float(pd.to_numeric(
-        export_visible.get("_display_amount_usd", pd.Series(dtype=float)),
-        errors="coerce",
-    ).fillna(0).sum())
+    export_total_usd = decimal_sum(export_visible.get("_display_amount_usd", pd.Series(dtype=object)))
     export_visible = export_visible.rename(columns={
         "txn_date": "Date",
         "currency": "Currency",
@@ -3796,11 +3800,13 @@ def _render_executive_transactions(
 
 
 def _largest_change_rows(frame, group_column, current_month, previous_month, ascending=False, limit=5):
+    from decimal import Decimal
+    from financial_decimal import decimal_value, exact_sum
     if frame.empty or group_column not in frame.columns:
         return []
     pivot = (
         frame.groupby([group_column, "month"])["expense_usd"]
-        .sum()
+        .agg(exact_sum)
         .unstack(fill_value=0)
     )
     current = pivot[current_month] if current_month in pivot.columns else 0
@@ -3810,8 +3816,9 @@ def _largest_change_rows(frame, group_column, current_month, previous_month, asc
         "current": current,
         "previous": previous,
     })
-    out["change"] = out["current"] - out["previous"]
-    out = out[out["change"].abs() > 0.005].copy()
+    out["change"] = [exact_sum([a, decimal_value(b).copy_negate()])
+                     for a, b in zip(out["current"], out["previous"])]
+    out = out[out["change"].abs() > Decimal('0.005')].copy()
     if out.empty:
         return []
     out = out.sort_values("change", ascending=ascending).head(limit)
@@ -3848,6 +3855,7 @@ def _default_reporting_group_prompt():
 
 
 def _analysis_rows_as_text(frame, columns, max_rows=60):
+    from financial_decimal import decimal_value
     if frame is None or frame.empty:
         return "- No rows."
     output = []
@@ -3859,7 +3867,7 @@ def _analysis_rows_as_text(frame, columns, max_rows=60):
             if pd.isna(value):
                 value = ""
             if isinstance(value, float):
-                value = round(value, 2)
+                value = decimal_value(value)
             parts.append(f"{column}: {value}")
         output.append("- " + " | ".join(parts))
     remaining = len(frame) - len(output)
@@ -3878,6 +3886,7 @@ def _build_ai_report_data_context(
     previous_total,
     status_delta,
 ):
+    from financial_decimal import exact_sum
     category_context = category_totals.copy()
     if not category_context.empty:
         category_context["_abs_sort"] = category_context["_signed_report_amount"].abs()
@@ -3885,7 +3894,7 @@ def _build_ai_report_data_context(
 
     subcategory_context = (
         group_expenses.groupby(["category", "subcategory"], dropna=False)["_signed_report_amount"]
-        .sum()
+        .agg(exact_sum)
         .reset_index()
     )
     if not subcategory_context.empty:
@@ -3895,7 +3904,7 @@ def _build_ai_report_data_context(
 
     monthly_context = (
         group_expenses.groupby(["month", "category"], dropna=False)["_signed_report_amount"]
-        .sum()
+        .agg(exact_sum)
         .reset_index()
         .sort_values(["month", "_signed_report_amount"], ascending=[True, True])
     )
@@ -4068,6 +4077,8 @@ def _run_custom_ai_prompt(prompt_text, data_context):
 
 
 def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
+    from decimal import Decimal
+    from financial_decimal import decimal_value, exact_sum, product, quotient
     family = expenses[
         expenses["report_group"].fillna("").astype(str).str.strip().str.casefold().eq("1-family")
     ].copy()
@@ -4076,30 +4087,30 @@ def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
 
     current_month = months[-1] if months else family["month"].max()
     previous_month = months[-2] if len(months) > 1 else None
-    total = float(family["expense_usd"].sum())
-    current_total = float(family.loc[family["month"] == current_month, "expense_usd"].sum())
+    total = exact_sum(family["expense_usd"])
+    current_total = exact_sum(family.loc[family["month"] == current_month, "expense_usd"])
     previous_total = (
-        float(family.loc[family["month"] == previous_month, "expense_usd"].sum())
+        exact_sum(family.loc[family["month"] == previous_month, "expense_usd"])
         if previous_month is not None
-        else 0.0
+        else Decimal(0)
     )
-    change = current_total - previous_total
-    trend_text = "increased" if change > 0.005 else "decreased" if change < -0.005 else "stayed broadly stable"
+    change = exact_sum([current_total, previous_total.copy_negate()])
+    trend_text = "increased" if change > Decimal('0.005') else "decreased" if change < Decimal('-0.005') else "stayed broadly stable"
 
     category_totals = (
         family.groupby("category")["expense_usd"]
-        .sum()
+        .agg(exact_sum)
         .sort_values(ascending=False)
         .reset_index()
     )
     category_totals["share"] = category_totals["expense_usd"].apply(
-        lambda value: (float(value) / total * 100) if total else 0.0
+        lambda value: product(quotient(value, total), 100) if total else Decimal(0)
     )
     top_categories = category_totals.head(5).copy()
 
     subcategory_totals = (
         family.groupby(["category", "subcategory"], dropna=False)["expense_usd"]
-        .sum()
+        .agg(exact_sum)
         .sort_values(ascending=False)
         .reset_index()
         .head(8)
@@ -4155,8 +4166,8 @@ def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
             "Section": "Cost driver",
             "Category": row["category"],
             "Subcategory": "",
-            "Amount": float(row["expense_usd"]),
-            "Share": float(row["share"]),
+            "Amount": decimal_value(row["expense_usd"]),
+            "Share": decimal_value(row["share"]),
             "Comment": f"{row['category']} represents {_percent(row['share'])} of 1-family.",
         })
     for row in increase_rows:
@@ -4164,7 +4175,7 @@ def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
             "Section": "Going up",
             "Category": row.get("category", ""),
             "Subcategory": "",
-            "Amount": float(row.get("change", 0)),
+            "Amount": decimal_value(row.get("change", 0)),
             "Share": "",
             "Comment": f"Increased from {_money(row.get('previous', 0))} to {_money(row.get('current', 0))}.",
         })
@@ -4173,7 +4184,7 @@ def _build_family_analysis(expenses, months, month_labels, custom_prompt=""):
             "Section": "Going down",
             "Category": row.get("category", ""),
             "Subcategory": "",
-            "Amount": float(row.get("change", 0)),
+            "Amount": decimal_value(row.get("change", 0)),
             "Share": "",
             "Comment": f"Decreased from {_money(row.get('previous', 0))} to {_money(row.get('current', 0))}.",
         })
@@ -4220,6 +4231,8 @@ def _render_family_analysis_button(expenses, months, month_labels):
 
 
 def _build_reporting_group_analysis(expenses, months, month_labels, report_group, custom_prompt=""):
+    from decimal import Decimal
+    from financial_decimal import exact_sum
     group_expenses = expenses[
         expenses["report_group"].fillna("").astype(str).str.strip().eq(str(report_group or "").strip())
     ].copy()
@@ -4235,20 +4248,20 @@ def _build_reporting_group_analysis(expenses, months, month_labels, report_group
     group_expenses["_signed_report_amount"] = _executive_signed_amount_series(group_expenses).values
     current_month = months[-1] if months else group_expenses["month"].max()
     previous_month = months[-2] if len(months) > 1 else None
-    total = float(group_expenses["_signed_report_amount"].sum())
-    current_total = float(group_expenses.loc[group_expenses["month"] == current_month, "_signed_report_amount"].sum())
+    total = exact_sum(group_expenses["_signed_report_amount"])
+    current_total = exact_sum(group_expenses.loc[group_expenses["month"] == current_month, "_signed_report_amount"])
     previous_total = (
-        float(group_expenses.loc[group_expenses["month"] == previous_month, "_signed_report_amount"].sum())
+        exact_sum(group_expenses.loc[group_expenses["month"] == previous_month, "_signed_report_amount"])
         if previous_month is not None
-        else 0.0
+        else Decimal(0)
     )
-    change = current_total - previous_total
+    change = exact_sum([current_total, previous_total.copy_negate()])
     status_delta = _executive_status_delta(current_total, previous_total)
-    trend_text = "increased" if status_delta > 0.005 else "decreased" if status_delta < -0.005 else "stayed broadly stable"
+    trend_text = "increased" if status_delta > Decimal('0.005') else "decreased" if status_delta < Decimal('-0.005') else "stayed broadly stable"
 
     category_totals = (
         group_expenses.groupby("category")["_signed_report_amount"]
-        .sum()
+        .agg(exact_sum)
         .reset_index()
     )
     category_totals["_abs_sort"] = category_totals["_signed_report_amount"].abs()
@@ -4672,12 +4685,13 @@ def _render_executive_completeness_check(
 
 
 def _income_charity_target_message(percentage):
+    from financial_decimal import decimal_value
     if percentage is None:
         return None
-    percentage = float(percentage)
-    if abs(percentage - 10.0) <= 1e-9:
+    percentage = decimal_value(percentage)
+    if abs(percentage - 10) <= decimal_value('1e-9'):
         return "Charity is meeting the Family’s target of 10%."
-    if percentage > 10.0:
+    if percentage > 10:
         return "Charity is exceeding the Family’s target of 10%."
     return "Charity falls below the Family’s target of 10%."
 
@@ -4699,11 +4713,12 @@ def _income_charity_target_variance_message(income_total, charity_total):
 
 
 def _income_charity_target_summary_message(percentage, income_total, charity_total):
+    from financial_decimal import decimal_value
     if percentage is None:
         return None
-    percentage = float(percentage)
+    percentage = decimal_value(percentage)
     lead = f"Charity is at {_percent(percentage)} of income."
-    if abs(percentage - 10.0) <= 1e-9:
+    if abs(percentage - 10) <= decimal_value('1e-9'):
         return f"{lead} Charity is meeting the Family’s target of 10%."
     variance = _income_charity_target_variance(income_total, charity_total)
     if variance is None:
@@ -6019,11 +6034,12 @@ elif page == "Database":
                 st.dataframe(report_group_audit, use_container_width=True, hide_index=True)
 
         def visible_missing_usd_details(frame):
+            from financial_decimal import optional_decimal, decimal_value
             if "amount_usd" not in frame.columns or "amount" not in frame.columns:
                 return pd.Series(False, index=frame.index), []
             mask = (
-                pd.to_numeric(frame["amount"], errors="coerce").fillna(0).abs().gt(0.005)
-                & pd.to_numeric(frame["amount_usd"], errors="coerce").isna()
+                frame["amount"].map(optional_decimal).fillna(0).abs().gt(decimal_value('0.005'))
+                & frame["amount_usd"].map(optional_decimal).isna()
             )
             missing_rate_types = set()
             if mask.any():
@@ -6253,7 +6269,8 @@ elif page == "Balances":
     if balances.empty:
         st.info("No statement balance summaries have been imported yet.")
     else:
-        numeric_closing = pd.to_numeric(balances["closing_balance"], errors="coerce")
+        from financial_decimal import optional_decimal
+        numeric_closing = balances["closing_balance"].map(optional_decimal)
         needs_review_count = int((balances["reconciliation_status"] == "Needs review").sum())
         render_summary_strip([
             ("Statements", len(balances)),
@@ -6393,8 +6410,9 @@ elif page == "Reports":
             st.stop()
 
         filtered_reviewed = filtered_reviewed.copy()
-        filtered_reviewed["amount"] = pd.to_numeric(filtered_reviewed["amount"], errors="coerce").fillna(0)
-        filtered_reviewed["amount_usd"] = pd.to_numeric(filtered_reviewed["amount_usd"], errors="coerce")
+        from financial_decimal import optional_decimal
+        filtered_reviewed["amount"] = filtered_reviewed["amount"].map(optional_decimal).fillna(0)
+        filtered_reviewed["amount_usd"] = filtered_reviewed["amount_usd"].map(optional_decimal)
         verification_summary, verification_detail = build_report_verification(filtered_reviewed, categories_df)
 
         render_summary_strip([

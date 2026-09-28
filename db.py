@@ -3,11 +3,17 @@ import math
 import os
 import re
 import sqlite3
+from decimal import Decimal
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
+from financial_decimal import decimal_value, product, cents, reciprocal
+
+# SQLite's existing REAL schema remains a compatibility path, not exact storage.
+# Binding decimal text avoids an additional application-side float conversion.
+sqlite3.register_adapter(Decimal, str)
 
 from utils import extract_beneficiary, infer_transaction_type, normalize_description, simplify_merchant
 
@@ -26,7 +32,7 @@ DEFAULT_DB_PATH = (
 DB_PATH = "PostgreSQL database" if USING_POSTGRES else os.getenv("ARETI_DB_PATH") or str(DEFAULT_DB_PATH)
 _POSTGRES_POOL = None
 DEFAULT_HIDDEN_TRANSACTION_IDS = "3421,3422,3423"
-MAX_SAFE_FINANCIAL_AMOUNT = ((2 ** 53) - 1) / 100
+MAX_SAFE_FINANCIAL_AMOUNT = Decimal((2 ** 53) - 1) / 100
 
 
 class ConcurrentTransactionEditError(RuntimeError):
@@ -557,10 +563,10 @@ def _float_or_none(value):
     if not text:
         return None
     text = text.replace(",", "")
-    number = pd.to_numeric(text, errors="coerce")
-    if pd.isna(number):
+    try:
+        return decimal_value(text)
+    except ValueError:
         return None
-    return float(number)
 
 
 def _optional_float_equal(left, right, tolerance=0.000001):
@@ -568,14 +574,14 @@ def _optional_float_equal(left, right, tolerance=0.000001):
     right_value = _float_or_none(right)
     if left_value is None or right_value is None:
         return left_value is None and right_value is None
-    return math.isclose(left_value, right_value, rel_tol=0.0, abs_tol=tolerance)
+    return left_value == right_value
 
 
 def _split_amount_or_none(value):
     if value is None or pd.isna(value):
         return None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
+        return _float_or_none(value)
     text = str(value).strip()
     if not text:
         return None
@@ -593,10 +599,7 @@ def _split_amount_or_none(value):
             text = f"{parts[0]}.{parts[1]}"
         else:
             text = "".join(parts)
-    number = pd.to_numeric(text, errors="coerce")
-    if pd.isna(number):
-        return None
-    return float(number)
+    return _float_or_none(text)
 
 
 def _canonical_date(value):
@@ -663,11 +666,11 @@ def _transaction_line_key(row, include_account=True, amount_sign="signed"):
     if not date_value or amount is None or not normalized:
         return None
     if amount_sign == "absolute":
-        amount = abs(float(amount))
+        amount = abs(amount)
 
     key = (
         date_value,
-        f"{round(float(amount), 2):.2f}",
+        f"{cents(amount):.2f}",
         normalized,
         _canonical_text(row.get("currency", "")),
         _canonical_text(row.get("bank", "")),
@@ -916,7 +919,7 @@ def _rate_type_from_label(label):
 
 def _rate_from_label_value(label, value):
     rate_type = _rate_type_from_label(label)
-    rate_value = float(value)
+    rate_value = decimal_value(value)
     if not rate_type or rate_type == "USD/USD":
         return rate_type, rate_value
 
@@ -931,7 +934,7 @@ def _rate_from_label_value(label, value):
     usd_pos = positions.get("USD")
     source_pos = positions.get(source_currency)
     if usd_pos is not None and source_pos is not None and usd_pos < source_pos and rate_value:
-        rate_value = 1 / rate_value
+        rate_value = reciprocal(rate_value)
     return rate_type, rate_value
 
 
@@ -941,7 +944,7 @@ def _parse_rate_month_cell(value):
     if isinstance(value, datetime):
         return pd.to_datetime(value, errors="coerce")
 
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
         # Plain rate values such as 1.17 must not be interpreted as 1970 dates.
         number = float(value)
         if 20000 <= number <= 80000:
@@ -955,8 +958,8 @@ def _parse_rate_month_cell(value):
 
 
 def replace_rates_from_excel(uploaded_file):
-    uploaded_file.seek(0)
-    raw = pd.read_excel(uploaded_file, header=None)
+    from financial_tabular import read_excel_exact
+    raw = read_excel_exact(uploaded_file, header=None)
     rows = []
 
     for col in range(1, raw.shape[1]):
@@ -977,8 +980,8 @@ def replace_rates_from_excel(uploaded_file):
             start_row = (date_row or 0) + 1
         for row in range(start_row, raw.shape[0]):
             label = raw.iat[row, 0]
-            value = pd.to_numeric(raw.iat[row, col], errors="coerce")
-            if pd.isna(label) or pd.isna(value) or float(value) == 0:
+            value = _float_or_none(raw.iat[row, col])
+            if pd.isna(label) or value is None or value == 0:
                 continue
             rate_type, rate_value = _rate_from_label_value(label, value)
             if not rate_type:
@@ -1183,7 +1186,7 @@ def get_transaction_change_log(limit=300):
             LEFT JOIN classified_transactions t ON t.id = l.transaction_id
             ORDER BY l.id DESC
             LIMIT ?
-        """, conn, params=(int(limit),))
+        """, conn, params=(int(limit),), coerce_float=False)
     finally:
         conn.close()
 
@@ -1256,7 +1259,7 @@ def get_rates():
             SELECT rate_month, rate_type, rate_value
             FROM rates
             ORDER BY rate_month DESC, rate_type
-        """, conn)
+        """, conn, coerce_float=False)
     finally:
         conn.close()
     if not df.empty:
@@ -1612,7 +1615,7 @@ def _apply_balance_reconciliation(df):
         else:
             calculated = opening + money_in + (money_out if money_out < 0 else -money_out)
         difference = round(closing - calculated, 2)
-        status = "OK" if abs(difference) <= 0.05 else "Needs review"
+        status = "OK" if abs(difference) <= Decimal('0.05') else "Needs review"
         return pd.Series({
             "calculated_closing": round(calculated, 2),
             "reconciliation_difference": difference,
@@ -1634,7 +1637,7 @@ def get_statement_balances():
                    closing_balance, source, notes, imported_at, updated_at, statement_hash
             FROM statement_balances
             ORDER BY COALESCE(period_end, '') DESC, imported_at DESC, id DESC
-        """, conn)
+        """, conn, coerce_float=False)
     finally:
         conn.close()
     return _apply_balance_reconciliation(df)
@@ -1682,7 +1685,7 @@ def get_import_history():
             LEFT JOIN first_tx ft ON ft.statement_hash = si.statement_hash
             LEFT JOIN statement_balances sb ON sb.statement_hash = si.statement_hash
             ORDER BY si.imported_at DESC, si.id DESC
-        """, conn)
+        """, conn, coerce_float=False)
     finally:
         conn.close()
     df = _apply_balance_reconciliation(df)
@@ -1755,7 +1758,7 @@ def get_import_transaction_audit():
             LEFT JOIN tx ON tx.statement_hash = si.statement_hash
             LEFT JOIN statement_balances sb ON sb.statement_hash = si.statement_hash
             ORDER BY si.imported_at DESC, si.id DESC
-        """, conn)
+        """, conn, coerce_float=False)
     finally:
         conn.close()
     return df
@@ -1864,7 +1867,7 @@ def get_exact_duplicate_audit():
                 HAVING COUNT(*) > 1
                 ORDER BY duplicate_count DESC, txn_date DESC
             """
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, conn, coerce_float=False)
     finally:
         conn.close()
     return df
@@ -1975,7 +1978,7 @@ def get_cross_statement_duplicate_audit():
                 HAVING COUNT(*) > 1 AND COUNT(DISTINCT statement_hash) > 1
                 ORDER BY duplicate_count DESC, txn_date DESC
             """
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, conn, coerce_float=False)
     finally:
         conn.close()
     return df
@@ -2083,7 +2086,7 @@ def _load_rate_lookup():
             SELECT rate_month, rate_type, rate_value
             FROM rates
             ORDER BY rate_type, rate_month DESC
-        """, conn)
+        """, conn, coerce_float=False)
     finally:
         conn.close()
     if rates.empty:
@@ -2102,18 +2105,18 @@ def _lookup_rate(rate_lookup, rate_type, txn_date=None):
     if not rate_type:
         return None
     if rate_type == "USD/USD":
-        return 1.0
+        return Decimal(1)
     frame = rate_lookup.get(rate_type)
     if frame is None or frame.empty:
         return None
     month = pd.to_datetime(txn_date, errors="coerce")
     if pd.isna(month):
-        return float(frame["rate_value"].iloc[0])
+        return decimal_value(frame["rate_value"].iloc[0])
     month = month.to_period("M").to_timestamp()
     candidates = frame[frame["rate_month"] <= month]
     if candidates.empty:
-        return float(frame["rate_value"].iloc[-1])
-    return float(candidates["rate_value"].iloc[0])
+        return decimal_value(frame["rate_value"].iloc[-1])
+    return decimal_value(candidates["rate_value"].iloc[0])
 
 
 def _resolve_rate_for_values(rate_lookup, rate_type="", currency="", txn_date=None):
@@ -2138,7 +2141,7 @@ def _usd_from_amount(amount, rate):
     parsed_rate = _float_or_none(rate)
     if parsed_amount is None or parsed_rate is None or parsed_rate == 0:
         return None
-    return round(parsed_amount * parsed_rate, 2)
+    return cents(product(parsed_amount, parsed_rate))
 
 
 def _rate_type_from_account(account):
@@ -2222,7 +2225,7 @@ def apply_account_and_rates(df, account):
             currency_source = ""
         preferred_rate_type = _rate_type_for_currency(row_currency) if row_currency else _rate_type_from_account(row_account)
         rate_type, rate = _resolve_rate_for_values(rate_lookup, preferred_rate_type, row_currency, row.get("Date"))
-        amount = float(row.get("Amount", 0) or 0)
+        amount = decimal_value(row.get("Amount", 0) or 0)
 
         account_names.append(row_account.get("account_name", ""))
         banks.append(row_account.get("bank", ""))
@@ -2356,7 +2359,7 @@ def save_pending_transactions(df, statement_name, statement_hash, *, _connection
             str(row.get("Date", "")),
             str(row.get("Description", "")),
             str(row.get("normalized_description", "")),
-            float(row.get("Amount", 0) or 0),
+            decimal_value(row.get("Amount", 0) or 0),
             str(row.get("currency", "")),
             str(row.get("rate_type", "")),
             None if pd.isna(row.get("fx_rate", None)) else row.get("fx_rate", None),
@@ -2403,7 +2406,7 @@ def get_pending_transactions():
               AND {pending_sql}
             {hidden_sql}
             ORDER BY txn_date, id
-        """, conn, params=hidden_params)
+        """, conn, params=hidden_params, coerce_float=False)
     finally:
         conn.close()
     return df
@@ -2423,7 +2426,7 @@ def get_saved_transactions():
               AND {reviewed_sql}
               {hidden_sql}
             ORDER BY txn_date DESC, id DESC
-        """, conn, params=hidden_params)
+        """, conn, params=hidden_params, coerce_float=False)
     finally:
         conn.close()
     return df
@@ -2438,7 +2441,7 @@ def get_all_transactions():
             FROM classified_transactions
             {hidden_sql}
             ORDER BY id DESC
-        """, conn, params=hidden_params)
+        """, conn, params=hidden_params, coerce_float=False)
     finally:
         conn.close()
     return df
@@ -2462,6 +2465,7 @@ def get_transaction_edit_states(transaction_ids):
             """,
             conn,
             params=ids,
+            coerce_float=False,
         )
     finally:
         conn.close()
@@ -2504,7 +2508,7 @@ def split_transaction(transaction_id, allocations):
             raise ValueError("Duplicate category/subcategory allocations are not allowed in one split.")
         seen_pairs.add(pair_key)
         cleaned_allocations.append({
-            "amount": float(amount),
+            "amount": amount,
             "category": category,
             "subcategory": subcategory,
             "index": index,
@@ -2531,14 +2535,14 @@ def split_transaction(transaction_id, allocations):
         if _clean(parent.get("status")).casefold() == "excluded":
             raise ValueError("Excluded transactions cannot be split.")
 
-        original_amount = _float_or_none(parent.get("amount")) or 0.0
-        if abs(original_amount) <= 0.005:
+        original_amount = _float_or_none(parent.get("amount")) or Decimal(0)
+        if abs(original_amount) <= Decimal('0.005'):
             raise ValueError("Zero-amount transactions cannot be split.")
         target_cents = int(round(abs(original_amount) * 100))
         allocated_cents = [int(round(item["amount"] * 100)) for item in cleaned_allocations]
         total_cents = sum(allocated_cents)
         if total_cents != target_cents:
-            difference = (target_cents - total_cents) / 100
+            difference = Decimal(target_cents - total_cents) / 100
             raise ValueError(
                 "Split amounts must equal the original transaction amount. "
                 f"Current difference: {difference:.2f}."
@@ -2606,8 +2610,8 @@ def split_transaction(transaction_id, allocations):
         placeholders = ", ".join(["?"] * len(insert_columns))
         inserted = 0
         for item, cents in zip(cleaned_allocations, allocated_cents):
-            child_amount = sign * (cents / 100)
-            if parent_amount_usd is not None and abs(original_amount) > 0.005:
+            child_amount = Decimal(sign * cents) / Decimal(100)
+            if parent_amount_usd is not None and abs(original_amount) > Decimal('0.005'):
                 child_amount_usd = round(parent_amount_usd * (child_amount / original_amount), 2)
             else:
                 child_amount_usd = _usd_from_amount(child_amount, parent_fx_rate)
@@ -2893,7 +2897,7 @@ def save_reviewed_rows(df, *, income_edit=False):
                 expected_amount is not None
                 and (
                     before_amount is None
-                    or not math.isclose(expected_amount, before_amount, rel_tol=0.0, abs_tol=0.000001)
+                    or expected_amount != before_amount
                 )
             )
             if stale:
@@ -2906,14 +2910,14 @@ def save_reviewed_rows(df, *, income_edit=False):
                 amount = _float_or_none(row.get("amount"))
                 if (
                     amount is None
-                    or not math.isfinite(amount)
+                    or not amount.is_finite()
                     or abs(amount) > MAX_SAFE_FINANCIAL_AMOUNT
                 ):
                     raise ValueError(f"Transaction {tx_id} has an invalid Amount.")
                 amount = round(amount, 2)
                 amount_changed = (
                     before_amount is None
-                    or not math.isclose(amount, before_amount, rel_tol=0.0, abs_tol=0.000001)
+                    or amount != before_amount
                 )
                 if amount_changed:
                     if before[12] is not None or _clean(before[13]) or before[14] is not None:
@@ -2927,29 +2931,19 @@ def save_reviewed_rows(df, *, income_edit=False):
                         expected_amount_usd is not None
                         and (
                             before_amount_usd is None
-                            or not math.isclose(
-                                expected_amount_usd,
-                                before_amount_usd,
-                                rel_tol=0.0,
-                                abs_tol=0.000001,
-                            )
+                            or expected_amount_usd != before_amount_usd
                         )
                     ) or (
                         expected_fx_rate is not None
                         and (
                             before_fx_rate is None
-                            or not math.isclose(
-                                expected_fx_rate,
-                                before_fx_rate,
-                                rel_tol=0.0,
-                                abs_tol=0.000001,
-                            )
+                            or expected_fx_rate != before_fx_rate
                         )
                     ):
                         raise ConcurrentTransactionEditError(tx_id)
-                    effective_rate = 1.0 if currency == "USD" else before_fx_rate
+                    effective_rate = Decimal(1) if currency == "USD" else before_fx_rate
                     amount_usd = _usd_from_amount(amount, effective_rate)
-                    if amount_usd is None or not math.isfinite(amount_usd):
+                    if amount_usd is None or not amount_usd.is_finite():
                         raise ValueError(
                             f"Transaction {tx_id} has no valid stored FX rate. "
                             "Its Amount was not changed."
@@ -3381,7 +3375,7 @@ def backfill_missing_usd_amounts():
                   OR UPPER(TRIM(CAST(amount_usd AS TEXT))) IN ('NONE', 'NULL', 'NAN', 'N/A')
                   OR (ABS(COALESCE(amount_usd, 0)) <= 0.005 AND ABS(COALESCE(amount, 0)) > 0.005)
               )
-        """, conn)
+        """, conn, coerce_float=False)
         if tx.empty:
             return 0
 
@@ -3414,7 +3408,8 @@ def backfill_missing_usd_amounts():
 
 
 def import_database_updates_from_excel(uploaded_file):
-    df = _read_excel(uploaded_file)
+    from financial_tabular import read_excel_exact
+    df = read_excel_exact(uploaded_file)
     if df.empty:
         return 0
 
@@ -3506,7 +3501,7 @@ def insert_manual_transaction(txn_date, description, amount, category, subcatego
 
     parsed_date = pd.to_datetime(txn_date, errors="coerce")
     date_text = parsed_date.strftime("%Y-%m-%d") if not pd.isna(parsed_date) else _clean(txn_date)
-    amount = float(amount or 0)
+    amount = decimal_value(amount or 0)
     normalized = simplify_merchant(normalize_description(description))
     beneficiary = extract_beneficiary(description)
     transaction_type = infer_transaction_type(description, amount)
@@ -3577,6 +3572,7 @@ def dataframe_to_excel_bytes(sheets):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for name, frame in sheets.items():
+            frame = frame.map(lambda value: str(value) if isinstance(value, Decimal) else value)
             frame.to_excel(writer, index=False, sheet_name=name[:31])
     return output.getvalue()
 

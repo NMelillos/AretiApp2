@@ -1,4 +1,5 @@
 import os
+from decimal import Decimal
 from pathlib import Path
 
 os.environ.pop("DATABASE_URL", None)
@@ -84,7 +85,7 @@ def split_and_assert(parent_id, allocations, expected_total, expected_child_tota
     assert_equal("report prep excludes split parent", report_signed_total(all_rows, categories), expected_total)
 
     verification, _ = reporting.build_report_verification(all_rows, categories)
-    assert_equal("verification net movement excludes split parent", verification["net_movement"], expected_total)
+    assert_equal("verification net movement excludes split parent", verification["net_movement"], Decimal(str(expected_total)))
 
     parent = all_rows.loc[all_rows["id"].eq(parent_id)].iloc[0]
     assert_equal("parent remains traceable as excluded", str(parent["status"]).strip().casefold(), "excluded")

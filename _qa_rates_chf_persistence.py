@@ -74,8 +74,9 @@ def main():
         assert len(db.get_rates()) == 7
         dated = [["Currency", pd.Timestamp("2026-07-01"), pd.Timestamp("2026-08-01")], ["CHF/USD", 1.2, 1.3]]
         assert db.replace_rates_from_excel(workbook(dated)) == 2
-        assert db.get_latest_rate("CHF/USD", "2026-07-31") == 1.2
-        assert db.get_latest_rate("CHF/USD", "2026-08-01") == 1.3
+        from decimal import Decimal
+        assert db.get_latest_rate("CHF/USD", "2026-07-31") == Decimal('1.2')
+        assert db.get_latest_rate("CHF/USD", "2026-08-01") == Decimal('1.3')
         # Restore seven currencies before the single downstream account check.
         db.replace_rates_from_excel(workbook(rows))
         result = db.apply_account_and_rates(pd.DataFrame([{"Amount": 10, "Date": "2026-08-18"}]),

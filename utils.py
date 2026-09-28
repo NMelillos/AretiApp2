@@ -4,8 +4,9 @@ import pandas as pd
 
 
 def format_currency(value):
+    from financial_decimal import decimal_value
     try:
-        return f"{float(value):,.2f}"
+        return f"{decimal_value(value):,.2f}"
     except Exception:
         return "0.00"
 

@@ -13,4 +13,5 @@ def decimal_amount(value):
 
 
 def decimal_sum(values):
-    return sum((decimal_amount(value) for value in values), Decimal(0))
+    from financial_decimal import exact_sum
+    return exact_sum(decimal_amount(value) for value in values)

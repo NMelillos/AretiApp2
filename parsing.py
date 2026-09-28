@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from io import BytesIO
 
@@ -159,12 +160,16 @@ def _norm_col(name):
 
 def _parse_amount(value):
     if pd.isna(value):
-        return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
+        return Decimal(0)
+    if isinstance(value, (int, float, Decimal)):
+        from financial_decimal import decimal_value
+        return decimal_value(value)
     text = MINUS_CHARS_RE.sub("-", str(value).strip())
     if not text:
-        return 0.0
+        return Decimal(0)
+    if re.fullmatch(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)[eE][-+]?\d+", text):
+        from financial_decimal import decimal_value
+        return decimal_value(text)
     negative = text.startswith("(") and text.endswith(")")
     compact_sign_text = text.replace(" ", "")
     if "-" in compact_sign_text:
@@ -187,11 +192,11 @@ def _parse_amount(value):
         parts = text.split(".")
         if len(parts) > 1 and all(len(part) == 3 for part in parts[1:]):
             text = text.replace(".", "")
-    amount = pd.to_numeric(text, errors="coerce")
-    if pd.isna(amount):
-        return 0.0
-    amount = float(amount)
-    return -abs(amount) if negative else amount
+    try:
+        amount = Decimal(text)
+    except InvalidOperation:
+        return Decimal(0)
+    return amount.copy_abs().copy_negate() if negative else amount
 
 
 def _parse_pdf_date(value):
@@ -420,7 +425,7 @@ def _parse_revolut_business_pdf_text(text):
         if len(solutions) != 1:
             raise RevolutBusinessParseError("Revolut business transactions do not reconcile unambiguously")
         for index, (parsed_date, description, _, _) in enumerate(pending):
-            rows.append([parsed_date, description, float(solutions[0][index]), currency, "statement row symbol"])
+            rows.append([parsed_date, description, solutions[0][index], currency, "statement row symbol"])
 
     for raw in text.splitlines():
         line = re.sub(r"\s+", " ", raw).strip()
@@ -495,8 +500,8 @@ def _parse_revolut_pdf_text(text):
         token_text, amount = current["amounts"][0]
         balance = current.get("balance")
         if balance is not None and previous_balance is not None:
-            delta = float(balance) - float(previous_balance)
-            if abs(delta) > 0.005:
+            delta = balance - previous_balance
+            if abs(delta) > Decimal('0.005'):
                 amount = abs(amount) if delta > 0 else -abs(amount)
         currency = _currency_from_money_text(token_text) or current.get("currency", "")
         currency_source = _currency_source(token_text) or "statement account section"
@@ -1276,7 +1281,7 @@ def parse_csv(uploaded_file):
     for header_row in range(0, 16):
         for encoding in encodings:
             for separator in separators:
-                kwargs = {"encoding": encoding, "header": header_row}
+                kwargs = {"encoding": encoding, "header": header_row, "dtype": str}
                 if separator is None:
                     kwargs.update({"sep": None, "engine": "python"})
                 else:
@@ -1299,8 +1304,8 @@ def parse_csv(uploaded_file):
 
 
 def parse_excel(uploaded_file):
-    uploaded_file.seek(0)
-    df = pd.read_excel(uploaded_file)
+    from financial_tabular import read_excel_exact
+    df = read_excel_exact(uploaded_file)
     return prepare_dataframe_from_tabular(df)
 
 

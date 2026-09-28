@@ -2,19 +2,20 @@
 # FILE: analytics.py
 # =========================
 import pandas as pd
+from financial_decimal import optional_decimal, exact_sum, decimal_mean, decimal_std, cents
 
 
 def _with_analysis_amount(df: pd.DataFrame):
     work = df.copy()
-    fallback_amount = pd.to_numeric(work.get("amount"), errors="coerce")
+    fallback_amount = work.get("amount", pd.Series(index=work.index, dtype=object)).map(optional_decimal)
 
     if "usd_amount" in work.columns:
-        usd_amount = pd.to_numeric(work["usd_amount"], errors="coerce")
+        usd_amount = work["usd_amount"].map(optional_decimal)
         work["analysis_amount"] = usd_amount.fillna(fallback_amount)
     else:
         work["analysis_amount"] = fallback_amount
 
-    work["analysis_amount"] = work["analysis_amount"].fillna(0.0)
+    work["analysis_amount"] = work["analysis_amount"].fillna(0)
     return work
 
 
@@ -56,8 +57,8 @@ def detect_anomalies(df: pd.DataFrame):
     if expense_df.empty:
         return df
 
-    mean_abs = expense_df["analysis_amount"].abs().mean()
-    std_abs = expense_df["analysis_amount"].abs().std()
+    mean_abs = decimal_mean(expense_df["analysis_amount"].abs())
+    std_abs = decimal_std(expense_df["analysis_amount"].abs())
 
     if pd.isna(std_abs) or std_abs == 0:
         return df
@@ -81,14 +82,14 @@ def detect_recurring_expenses(df: pd.DataFrame):
         return pd.DataFrame()
 
     work["month"] = work["txn_date"].dt.to_period("M").astype(str)
-    work["abs_amount"] = work["analysis_amount"].abs().round(2)
+    work["abs_amount"] = work["analysis_amount"].abs().map(cents)
 
     recurring = (
         work.groupby(["normalized_description", "category"], dropna=False)
         .agg(
             occurrences=("id", "count"),
             months_active=("month", "nunique"),
-            avg_amount=("abs_amount", "mean"),
+            avg_amount=("abs_amount", decimal_mean),
             min_amount=("abs_amount", "min"),
             max_amount=("abs_amount", "max"),
             sample_description=("original_description", "first"),
@@ -107,13 +108,13 @@ def detect_recurring_expenses(df: pd.DataFrame):
         recurring["avg_amount"].replace(0, pd.NA)
     ) * 100
 
-    recurring["variation_pct"] = recurring["variation_pct"].fillna(0).round(1)
+    recurring["variation_pct"] = recurring["variation_pct"].fillna(0).map(lambda v: round(v, 1))
 
     recurring = recurring[recurring["variation_pct"] <= 25].copy()
 
-    recurring["avg_amount"] = recurring["avg_amount"].round(2)
-    recurring["min_amount"] = recurring["min_amount"].round(2)
-    recurring["max_amount"] = recurring["max_amount"].round(2)
+    recurring["avg_amount"] = recurring["avg_amount"].map(cents)
+    recurring["min_amount"] = recurring["min_amount"].map(cents)
+    recurring["max_amount"] = recurring["max_amount"].map(cents)
 
     return recurring.sort_values(
         by=["months_active", "occurrences", "avg_amount"],
@@ -137,7 +138,7 @@ def predict_next_month_expense(df: pd.DataFrame):
 
     monthly = (
         work.groupby("month")["analysis_amount"]
-        .sum()
+        .agg(exact_sum)
         .abs()
         .reset_index(name="expense_total")
         .sort_values("month")
@@ -147,18 +148,18 @@ def predict_next_month_expense(df: pd.DataFrame):
         return None, monthly
 
     if len(monthly) == 1:
-        return round(float(monthly["expense_total"].iloc[0]), 2), monthly
+        return cents(monthly["expense_total"].iloc[0]), monthly
 
     monthly["prev"] = monthly["expense_total"].shift(1)
     monthly["delta"] = monthly["expense_total"] - monthly["prev"]
 
-    avg_delta = monthly["delta"].dropna().mean()
+    avg_delta = decimal_mean(monthly["delta"].dropna())
     if pd.isna(avg_delta):
         avg_delta = 0
 
-    prediction = float(monthly["expense_total"].iloc[-1] + avg_delta)
+    prediction = exact_sum([monthly["expense_total"].iloc[-1], avg_delta])
     if prediction < 0:
-        prediction = 0.0
+        prediction = 0
 
     return round(prediction, 2), monthly
 
@@ -182,7 +183,7 @@ def detect_seasonality(df: pd.DataFrame):
 
     seasonal = (
         work.groupby("month_num")["analysis_amount"]
-        .sum()
+        .agg(exact_sum)
         .abs()
         .reset_index(name="expense_total")
     )
@@ -209,7 +210,7 @@ def build_monthly_income_expense(report_df: pd.DataFrame):
             expense=work["analysis_amount"].where(work["analysis_amount"] < 0, 0).abs()
         )
         .groupby("month")[["income", "expense"]]
-        .sum()
+        .agg(exact_sum)
         .reset_index()
         .sort_values("month")
     )
@@ -223,23 +224,23 @@ def calculate_kpis(report_df: pd.DataFrame, monthly_income_expense: pd.DataFrame
     income_df = work[work["analysis_amount"] > 0].copy()
     expense_df = work[work["analysis_amount"] < 0].copy()
 
-    total_income = float(income_df["analysis_amount"].sum()) if not income_df.empty else 0.0
-    total_expenses = float(expense_df["analysis_amount"].abs().sum()) if not expense_df.empty else 0.0
+    total_income = exact_sum(income_df["analysis_amount"])
+    total_expenses = exact_sum(expense_df["analysis_amount"].abs())
     net_result = total_income - total_expenses
 
-    avg_monthly_income = float(monthly_income_expense["income"].mean()) if not monthly_income_expense.empty else 0.0
-    avg_monthly_expenses = float(monthly_income_expense["expense"].mean()) if not monthly_income_expense.empty else 0.0
+    avg_monthly_income = decimal_mean(monthly_income_expense["income"])
+    avg_monthly_expenses = decimal_mean(monthly_income_expense["expense"])
 
     if not monthly_income_expense.empty:
         burn_series = (monthly_income_expense["expense"] - monthly_income_expense["income"]).clip(lower=0)
-        burn_rate = float(burn_series.mean())
+        burn_rate = decimal_mean(burn_series)
     else:
-        burn_rate = 0.0
+        burn_rate = 0
 
     if total_income > 0:
         savings_rate = (net_result / total_income) * 100
     else:
-        savings_rate = 0.0
+        savings_rate = 0
 
     return {
         "total_income": round(total_income, 2),
@@ -270,13 +271,13 @@ def build_report_context(report_df: pd.DataFrame, months: int, selected_category
 
     summary = (
         work.groupby("category", dropna=False)["analysis_amount"]
-        .agg(["count", "sum", "mean"])
+        .agg(count='count', sum=exact_sum, mean=decimal_mean)
         .reset_index()
     )
 
     monthly_summary = (
         work.groupby(["month", "category"])["analysis_amount"]
-        .sum()
+        .agg(exact_sum)
         .reset_index()
         .sort_values(["month", "category"])
     )
@@ -284,23 +285,23 @@ def build_report_context(report_df: pd.DataFrame, months: int, selected_category
     expense_monthly = work[work["analysis_amount"] < 0].copy()
     monthly_total = (
         expense_monthly.groupby("month")["analysis_amount"]
-        .sum()
+        .agg(exact_sum)
         .abs()
         .reset_index(name="amount")
         .sort_values("month")
     )
 
     if not monthly_total.empty:
-        monthly_total["diff"] = monthly_total["amount"].diff().round(2)
+        monthly_total["diff"] = monthly_total["amount"].diff().map(lambda v: cents(v) if pd.notna(v) else None)
         monthly_total["change_%"] = (
             monthly_total["diff"] / monthly_total["amount"].shift(1) * 100
-        ).round(1)
-        monthly_total["trend"] = monthly_total["diff"].apply(
+        ).map(lambda v: round(v, 1) if pd.notna(v) else None)
+        monthly_total["trend"] = monthly_total["diff"].fillna(0).apply(
             lambda x: "⬆ Increase" if x > 0 else ("⬇ Decrease" if x < 0 else "—")
         )
     else:
-        monthly_total["diff"] = pd.Series(dtype="float64")
-        monthly_total["change_%"] = pd.Series(dtype="float64")
+        monthly_total["diff"] = pd.Series(dtype="object")
+        monthly_total["change_%"] = pd.Series(dtype="object")
         monthly_total["trend"] = pd.Series(dtype="object")
 
     monthly_income_expense = build_monthly_income_expense(work)
@@ -312,7 +313,7 @@ def build_report_context(report_df: pd.DataFrame, months: int, selected_category
     category_expenses = (
         work[work["analysis_amount"] < 0]
         .groupby("category")["analysis_amount"]
-        .sum()
+        .agg(exact_sum)
         .abs()
         .reset_index(name="expense_total")
         .sort_values("expense_total", ascending=False)

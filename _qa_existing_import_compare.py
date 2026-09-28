@@ -15,7 +15,8 @@ import parsing
 from _qa_safra_completion import fixture
 from _qa_safra_lifecycle import PDF, upload
 from _qa_safra_uat import labelled_accounts
-from _qa_safra_duplicate_preview import run_ui
+from _qa_safra_duplicate_preview import run_ui, PreviewUI
+from _qa_repair_diagnostics_export import verify_workbook
 
 
 def main():
@@ -80,6 +81,14 @@ def main():
             assert not any(r['Field'] == '_read_version' for r in readiness['fields'])
             assert compare.compare_existing(content) == result
             with ExitStack() as stack:
+                downloads = []
+                def download_button(ui, label, **kwargs):
+                    assert label == 'Export Repair Diagnostics'
+                    assert kwargs['on_click'] == 'ignore'
+                    verify_workbook(kwargs['data'], result['readiness'], result)
+                    downloads.append(kwargs)
+                    return False
+                stack.enter_context(patch.object(PreviewUI, 'download_button', download_button, create=True))
                 spies = []
                 allowed = {'get_connection', 'get_accounts', 'get_categories', 'get_rates',
                            'statement_already_imported', 'build_statement_hash'}
@@ -102,6 +111,7 @@ def main():
                     else:
                         assert not ui.tables
                 assert all(not spy.called for spy in spies)
+                assert len(downloads) == 2
         assert hashlib.sha256(path.read_bytes()).hexdigest() == before
         assert not any(s.lstrip().upper().startswith(('INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER')) for s in statements)
         assert compare.exact_decimal(Decimal('148351.30')) == Decimal('148351.30')
@@ -116,13 +126,14 @@ render_preview(st, b'%PDF-synthetic comparison only', 'synthetic.pdf', None, Non
 """
         with patch.object(db, 'get_connection', side_effect=readonly_connection), patch.object(
                 parsing.pdfplumber, 'open', return_value=PDF(pages)):
-            app = AppTest.from_string(script)
+            app = AppTest.from_string(script, default_timeout=30)
             app.query_params['authenticated'] = 'true'
             app.query_params['login_user'] = 'Areti'
             app.query_params['action'] = 'compare'
             app.run()
             assert not app.exception
             assert 'Compare with Existing Import' not in [b.label for b in app.button]
+            assert not app.get('download_button')
             app.session_state['login_username'] = 'Areti'
             app.run()
             assert 'Compare with Existing Import' not in [b.label for b in app.button]
@@ -132,11 +143,16 @@ render_preview(st, b'%PDF-synthetic comparison only', 'synthetic.pdf', None, Non
             next(b for b in app.button if b.label == 'Compare with Existing Import').click().run()
             assert not app.exception and not app.error and len(app.dataframe) == 5
             assert len(app.dataframe[0].value) == 6 and len(app.dataframe[1].value) == 9
+            download = app.get('download_button')
+            assert len(download) == 1 and download[0].label == 'Export Repair Diagnostics'
+            assert download[0].proto.ignore_rerun
             app.run()
             assert not app.dataframe
+            assert not app.get('download_button')
             app.session_state['third_report_authenticated'] = True
             app.run()
             assert 'Compare with Existing Import' not in [b.label for b in app.button]
+            assert not app.get('download_button')
         assert hashlib.sha256(path.read_bytes()).hexdigest() == before
         for state in ({}, {'authenticated': True}, {'authenticated': False, 'login_user': 'Areti'},
                       {'authenticated': True, 'login_user': 'areti'},

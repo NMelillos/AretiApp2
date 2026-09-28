@@ -259,7 +259,7 @@ def render_compare(ui, content):
         ui.dataframe(result['sections'], use_container_width=True, hide_index=True)
         ui.dataframe(result['transactions'], use_container_width=True, hide_index=True)
         from repair_readiness import render
-        render(ui, result['readiness'])
+        render(ui, result['readiness'], result)
     except CompareBlocked as exc:
         ui.error(str(exc))
     except Exception:

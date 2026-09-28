@@ -1,6 +1,7 @@
 """Read-only evidence and versioned hashes. No repair implementation exists."""
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
+from io import BytesIO
 import hashlib
 import json
 import math
@@ -144,7 +145,69 @@ def collect(cur, postgres, fingerprint, result, balances, imports, transactions)
     return {'schema': schema, 'fields': fields, 'hashes': hashes, 'audit_count': len(audit)}
 
 
-def render(ui, diagnostics):
+def export_workbook(diagnostics, comparison):
+    from existing_import_compare import authorized, CompareBlocked
+    if not authorized():
+        raise CompareBlocked('BLOCKED: authorized primary application session required.')
+    from openpyxl import Workbook
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    timestamp = datetime.now(timezone.utc)
+    sheets = {
+        'Record diagnostics': diagnostics['fields'],
+        'Schema metadata': diagnostics['schema'],
+        'Precondition hashes': diagnostics['hashes'],
+        'Account sections': comparison['sections'],
+        'Transactions': comparison['transactions'],
+        'Export metadata': [
+            {'Field': 'Exported at (UTC)', 'Value': timestamp.isoformat()},
+            {'Field': 'PDF fingerprint', 'Value': comparison['fingerprint']},
+            {'Field': 'Related audit records', 'Value': diagnostics['audit_count']},
+            {'Field': 'Mode', 'Value': 'READ ONLY - NO REPAIR'},
+            {'Field': 'Numeric encoding', 'Value': 'Exact text; no rounding or recalculation'},
+        ],
+    }
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    try:
+        for name, rows in sheets.items():
+            columns = list(dict.fromkeys(key for row in rows for key in row))
+            if len(rows) > 1048575 or len(columns) > 16384:
+                raise ValueError('Diagnostic snapshot exceeds XLSX limits')
+            sheet = workbook.create_sheet(name)
+            values = [columns] + [[row.get(key) for key in columns] for row in rows]
+            for row_index, values_row in enumerate(values, 1):
+                for col_index, value in enumerate(values_row, 1):
+                    text = _display(value)
+                    if len(text) > 32767 or ILLEGAL_CHARACTERS_RE.search(text):
+                        raise ValueError('Diagnostic value cannot be exported losslessly to XLSX')
+                    cell = sheet.cell(row_index, col_index, text)
+                    # Text avoids Excel's 15-digit numeric limit and prevents
+                    # descriptions beginning with '=' from becoming formulas.
+                    cell.data_type = 's'
+                    cell.number_format = '@'
+                    cell.alignment = Alignment(vertical='top', wrap_text=True)
+                    if row_index == 1:
+                        cell.font = Font(bold=True, color='FFFFFF')
+                        cell.fill = PatternFill('solid', fgColor='107572')
+            for index, column in enumerate(columns, 1):
+                sheet.column_dimensions[get_column_letter(index)].width = (
+                    62 if 'value' in column.lower() or 'hash' in column.lower() else 30)
+            sheet.freeze_panes = 'A2'
+            sheet.auto_filter.ref = sheet.dimensions
+        output = BytesIO()
+        workbook.save(output)
+        return output.getvalue(), 'NOMAD_Repair_Diagnostics_' + timestamp.strftime('%Y%m%d_%H%M%S_UTC.xlsx')
+    finally:
+        workbook.close()
+
+
+def render(ui, diagnostics, comparison):
+    from existing_import_compare import authorized
+    if not authorized():
+        return
     ui.subheader('Repair Readiness Diagnostics')
     ui.info('Current production values when connected to production; otherwise current test-database values. '
             'Proposed values come only from the PDF/parser. UNCHANGED / PRESERVE is not an update instruction. '
@@ -155,3 +218,7 @@ def render(ui, diagnostics):
     ui.dataframe(diagnostics['schema'], use_container_width=True, hide_index=True)
     ui.dataframe(diagnostics['fields'], use_container_width=True, hide_index=True)
     ui.dataframe(diagnostics['hashes'], use_container_width=True, hide_index=True)
+    data, filename = export_workbook(diagnostics, comparison)
+    ui.download_button('Export Repair Diagnostics', data=data, file_name=filename,
+                       mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                       on_click='ignore', icon=':material/download:')

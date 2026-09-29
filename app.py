@@ -40,10 +40,6 @@ if _THIRD_LINK_REQUEST:
 else:
     require_login()
 
-from database_identity import render_database_identity
-if render_database_identity():
-    st.stop()
-
 # Keep heavy data/reporting imports after the login gate so the first screen appears quickly.
 import pandas as pd
 

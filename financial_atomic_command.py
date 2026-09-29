@@ -23,21 +23,61 @@ def source_digest():
     return work.state_hash({p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files})
 
 
-def connection():
-    import db
-    import psycopg2
-    from psycopg2.extensions import parse_dsn
-    work.require(db.USING_POSTGRES and db.DATABASE_URL, 'AUTHORIZED_DATABASE_CONFIG_MISSING')
-    parts = parse_dsn(db.DATABASE_URL)
+def _identity_parameters(parts):
     host = parts.get('host', '')
     import re
     pooler = re.fullmatch(r'aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com', host)
     direct = host == 'db.' + APPROVED_PROJECT + '.supabase.co'
     work.require(direct or (pooler and parts.get('user', '').endswith('.' + APPROVED_PROJECT)), 'PROJECT_BINDING_FAILED')
     work.require(parts.get('dbname') == 'postgres' and parts.get('port', '5432') == '5432', 'CONNECTION_MODE_UNAPPROVED')
-    work.require(not any(k in parts for k in ('hostaddr', 'options', 'service', 'servicefile')), 'ROUTING_OVERRIDE_UNAPPROVED')
-    work.require(parts.get('sslmode') in ('require', 'verify-ca', 'verify-full'), 'TLS_CONFIGURATION_UNVERIFIED')
-    return psycopg2.connect(db.DATABASE_URL, connect_timeout=15)
+    work.require(not any(parts.get(k) for k in ('hostaddr', 'options', 'service', 'servicefile')), 'ROUTING_OVERRIDE_UNAPPROVED')
+
+
+class _ApplicationLease:
+    """Expose the raw cursor contract while retaining the application's pool owner."""
+    def __init__(self, owner):
+        self.owner = owner
+        self.raw = owner._connection
+        self.closed = False
+        self.original = {k: getattr(self.raw, k) for k in ('autocommit','isolation_level','readonly','deferrable')}
+
+    def __getattr__(self, name):
+        return getattr(self.raw, name)
+
+    def close(self):
+        if self.closed: return
+        self.closed = True
+        try:
+            self.raw.rollback()
+            self.raw.set_session(**{key: ('DEFAULT' if value is None else value)
+                                    for key, value in self.original.items()})
+        except Exception:
+            # Never return altered/uncertain session state to ordinary app code.
+            self.raw.close()
+        finally:
+            self.owner.close()
+
+
+def connection():
+    import db
+    from psycopg2.extensions import parse_dsn, TRANSACTION_STATUS_IDLE
+    work.require(db.USING_POSTGRES and db.DATABASE_URL, 'AUTHORIZED_DATABASE_CONFIG_MISSING')
+    _identity_parameters(parse_dsn(db.DATABASE_URL))
+    work.require(os.getenv('POSTGRES_SSLMODE', 'require') in ('require','verify-ca','verify-full'),
+                 'TLS_CONFIGURATION_UNVERIFIED')
+    owner = db.get_connection()
+    try:
+        raw = owner._connection
+        _identity_parameters(raw.get_dsn_parameters())
+        work.require(raw.get_dsn_parameters().get('sslmode') in ('require','verify-ca','verify-full'),
+                     'TLS_CONFIGURATION_UNVERIFIED')
+        work.require(raw.info.ssl_in_use is True, 'TLS_CONFIGURATION_UNVERIFIED')
+        work.require(raw.get_transaction_status() == TRANSACTION_STATUS_IDLE, 'IDLE_CONNECTION_REQUIRED')
+        return _ApplicationLease(owner)
+    except Exception as error:
+        owner.close()
+        if isinstance(error, work.Blocked): raise
+        raise work.Blocked('TLS_CONFIGURATION_UNVERIFIED') from None
 
 
 def confirm(args, plan_bytes):

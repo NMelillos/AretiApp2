@@ -77,6 +77,8 @@ ADDITIONS = {
 
 
 def protected_source(name, source):
+    from _qa_nomad_runtime import without_nomad_runtime
+    source = without_nomad_runtime(name, source)
     if name == 'app.py' and b'from financial_decimal import' in source:
         assert hashlib.sha256(source.replace(b'\r\n', b'\n')).hexdigest() == '1f40e314c3a31c814a8ffb54f23cdde570eeede26df7da57e3ce3b58f3af7481', 'Unreviewed application change'
         return subprocess.check_output(['git', 'show', BASE + ':' + name]).replace(b'\r\n', b'\n')

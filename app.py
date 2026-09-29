@@ -959,6 +959,7 @@ def render_session_line():
         unsafe_allow_html=True,
     )
     if right.button("Sign out"):
+        st.session_state.pop("_nomad_runtime_server_evidence", None)
         sign_out()
         st.rerun()
 
@@ -5337,6 +5338,9 @@ page = st.segmented_control(
 if st.query_params.get("page") != page:
     st.query_params["page"] = page
 
+if page != "Setup":
+    st.session_state.pop("_nomad_runtime_server_evidence", None)
+
 
 if page == "Import":
     st.subheader("Import Statement")
@@ -6517,6 +6521,9 @@ elif page == "Reports":
 
 elif page == "Setup":
     st.subheader("Setup")
+
+    from nomad_runtime import render as render_nomad_runtime
+    render_nomad_runtime(st)
 
     setup_categories = get_categories(include_subcategories=True)
     setup_accounts = get_accounts()

@@ -18,6 +18,8 @@ import pandas as pd
 def without_import_history_reliability(name, source):
     from financial_storage_qa import protected_source
     source = protected_source(name, source)
+    from _qa_database_identity import without_database_identity
+    source = without_database_identity(name, source)
     if name not in ('app.py', 'db.py') or b'from import_history import' not in source:
         return source
     source = source.replace(b'\r\n', b'\n')

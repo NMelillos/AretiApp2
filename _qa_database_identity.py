@@ -35,7 +35,7 @@ def main():
             assert query == identity.IDENTITY_QUERY
             assert query.startswith('SELECT ') and ';' not in query
             queries.append(query)
-        def fetchone(self): return ('17.2', 'synthetic_db', '127.0.0.1', 5432)
+        def fetchone(self): return ('17.2', 'synthetic_db', '127.0.0.1', 5432, username, username)
         def close(self): pass
     class Connection:
         def cursor(self): return Cursor()

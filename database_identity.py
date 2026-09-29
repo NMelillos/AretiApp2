@@ -1,4 +1,8 @@
-"""Temporary main-session identity screen. No application initialization or writes."""
+"""Temporary main-session identity screen. No application initialization or writes.
+
+Remove this screen and its app entry hook after identity capture and infrastructure
+integration are complete; repeat anonymous/THIRD/direct-access authorization QA.
+"""
 from contextlib import closing
 import ipaddress
 import os
@@ -9,7 +13,7 @@ import streamlit as st
 from existing_import_compare import authorized
 
 IDENTITY_QUERY = ('SELECT current_setting(\'server_version\'), current_database(), '
-                  'inet_server_addr()::text, inet_server_port()')
+                  'inet_server_addr()::text, inet_server_port(), current_user::text, session_user::text')
 
 
 class IdentityBlocked(ValueError):
@@ -50,6 +54,29 @@ def provider_hint(host):
     return provider + ' (hostname hint only)', resource
 
 
+def supabase_project_reference(parsed, live, host, port, current_user, session_user):
+    unknown = 'PROJECT REFERENCE NOT DETERMINED'
+    if (not re.fullmatch(r'aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com', host)
+            or port != 5432 or parsed.get('dbname') != 'postgres'
+            or not isinstance(live, dict)):
+        return unknown
+    if any(parsed.get(key) or live.get(key) for key in ('hostaddr', 'service', 'servicefile', 'options')):
+        return unknown
+    user = parsed.get('user')
+    match = re.fullmatch(r'postgres\.([a-z0-9]{20})', user) if isinstance(user, str) else None
+    if not match:
+        return unknown
+    live_host = live.get('host')
+    # Supavisor may expose only the base role on the PostgreSQL session. Bind the
+    # tenant suffix to the actual connected client, not just environment text.
+    if (not isinstance(live_host, str) or live_host.lower().rstrip('.') != host
+            or str(live.get('port')) != str(port)
+            or live.get('dbname') != parsed['dbname'] or live.get('user') != user
+            or current_user not in ('postgres', user) or session_user not in ('postgres', user)):
+        return unknown
+    return match.group(1)
+
+
 def read_identity():
     if not authorized():
         raise IdentityBlocked('Database identity is unavailable for this session.')
@@ -69,10 +96,14 @@ def read_identity():
             raise ValueError('Unsupported identity representation')
         with closing(db.get_connection()) as conn:
             try:
+                try:
+                    live = getattr(conn, '_connection', conn).get_dsn_parameters()
+                except Exception:
+                    live = None
                 with closing(conn.cursor()) as cur:
                     # One fixed built-in SELECT; no SET, session change or dynamic SQL.
                     cur.execute(IDENTITY_QUERY)
-                    version, current, address, server_port = cur.fetchone()
+                    version, current, address, server_port, current_user, session_user = cur.fetchone()
             finally:
                 conn.rollback()
         if not isinstance(version, str) or not re.fullmatch(r'[0-9][A-Za-z0-9. ()_+-]{0,100}', version):
@@ -89,11 +120,13 @@ def read_identity():
         if server_port is not None and (type(server_port) is not int or not 1 <= server_port <= 65535):
             raise ValueError('Invalid server port')
         provider, resource = provider_hint(host)
+        reference = supabase_project_reference(parsed, live, host, port, current_user, session_user)
         return {'Active variable': active, 'Hostname': host, 'Configured port': port,
                 'Database name': name, 'PostgreSQL server version': version,
                 'current_database()': current, 'inet_server_addr()': address,
                 'inet_server_port()': server_port if server_port is not None else 'Unavailable',
-                'Provider hostname hint': provider, 'Resource/reference from hostname': resource}
+                'Provider hostname hint': provider, 'Resource/reference from hostname': resource,
+                'Supabase project reference': reference}
     except Exception:
         raise IdentityBlocked('Database identity is unavailable. No configuration details were logged.') from None
 

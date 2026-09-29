@@ -105,6 +105,8 @@ def render(ui):
         clear()
         return
     sid = session_id()
+    from event_trigger_diagnostics import render as render_event_trigger_diagnostics
+    render_event_trigger_diagnostics(ui)
     ui.subheader('NOMAD Final Repair')
     uploaded = ui.file_uploader('Original NOMAD PDF', type=['pdf'], key='nomad_runtime_pdf')
     content = uploaded.getvalue() if uploaded is not None else None

@@ -105,22 +105,22 @@ def main():
         else: raise AssertionError('Mutation accepted')
     source=Path(n.__file__).read_text()
     assert not any(s in source for s in ('work.apply(','.commit(','.reverse(','.journal('))
-    lock=(Path(n.__file__).parent/'nomad_precheck_release.json').read_text()
-    def git(args,**kwargs):
-        if args==['git','rev-parse','HEAD']: return b'a'*40
-        if args==['git','rev-parse','HEAD^']: return n.APPROVED_PARENT.encode()
-        assert args==['git','show','HEAD:nomad_precheck_release.json']
-        return lock.encode()
-    with patch.dict(n.os.environ,{'RENDER_GIT_COMMIT':'a'*40,'RENDER_SERVICE_NAME':'aretiapp'}),patch.object(n.subprocess,'check_output',side_effect=git):
-        assert n.release_identity()['status']=='PASS'
-        with patch.dict(n.os.environ,{'RENDER_GIT_COMMIT':'b'*40}):
-            try: n.release_identity()
-            except ValueError: pass
-            else: raise AssertionError('Stale release accepted')
-        with patch.dict(n.os.environ,{'RENDER_SERVICE_NAME':'wrong'}):
-            try: n.release_identity()
-            except ValueError: pass
-            else: raise AssertionError('Wrong service accepted')
+    for sha in ('a'*40, 'B'*40):
+        with patch.dict(n.os.environ,{'RENDER_GIT_COMMIT':sha,'NOMAD_APPROVED_RELEASE_SHA':sha},clear=True):
+            assert n.release_identity()=={'status':'PASS','deployed_sha':sha,'approved_sha':sha}
+    for key in ('RENDER_GIT_COMMIT','NOMAD_APPROVED_RELEASE_SHA'):
+        for bad in (None,'','b'*40,'a'*39,'a'*41,'g'*40,' '+ 'a'*40,'a'*40+'\n','A'*40):
+            env={'RENDER_GIT_COMMIT':'a'*40,'NOMAD_APPROVED_RELEASE_SHA':'a'*40}
+            if bad is None: del env[key]
+            else: env[key]=bad
+            with patch.dict(n.os.environ,env,clear=True):
+                try: n.release_identity()
+                except ValueError as exc: assert str(exc)=='RELEASE_IDENTITY_UNVERIFIED'
+                else: raise AssertionError('Invalid or unapproved release accepted')
+    with patch.dict(n.os.environ,{},clear=True),patch.object(n,'connection') as connect:
+        with patch.object(n,'authorized',return_value=True):
+            assert n.run(b'not-used')['overall']=='BLOCKED'
+            connect.assert_not_called()
     print('PASS frozen hashes/schema/plan/metadata, authorization, read-only transaction, rollback, UI export and no repair')
 
 

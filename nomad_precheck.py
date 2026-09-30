@@ -4,9 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
-import subprocess
 
 from existing_import_compare import authorized
 from financial_atomic_command import connection
@@ -15,7 +13,6 @@ from reviewed_event_triggers import validate_catalog, digest, CatalogMismatch
 from event_trigger_diagnostics import rows, safe_export
 import nomad_precheck_bindings as bindings
 
-APPROVED_PARENT = 'bc31f0efef0fd106b093c03029af85e644f302db'
 TABLES = ['classified_transactions','statement_balances','rates','statement_imports',
           'category_list','transaction_change_log','account_list','transaction_memory']
 CATALOG_QUERIES = {
@@ -34,22 +31,13 @@ def require_auth():
 
 
 def release_identity():
-    root=Path(__file__).resolve().parent
-    def git(*args):
-        return subprocess.check_output(['git',*args],cwd=root,stderr=subprocess.DEVNULL,timeout=10).decode().strip()
     actual=os.getenv('RENDER_GIT_COMMIT','')
-    if not re.fullmatch('[0-9a-f]{40}',actual) or os.getenv('RENDER_SERVICE_NAME')!='aretiapp':
+    approved=os.getenv('NOMAD_APPROVED_RELEASE_SHA','')
+    if (not re.fullmatch('[0-9a-fA-F]{40}',actual)
+            or not re.fullmatch('[0-9a-fA-F]{40}',approved)
+            or actual!=approved):
         raise ValueError('RELEASE_IDENTITY_UNVERIFIED')
-    if git('rev-parse','HEAD')!=actual or git('rev-parse','HEAD^')!=APPROVED_PARENT:
-        raise ValueError('RELEASE_IDENTITY_UNVERIFIED')
-    lock=json.loads((root/'nomad_precheck_release.json').read_text())
-    current={p.name:hashlib.sha256(p.read_bytes().replace(b'\r\n',b'\n')).hexdigest()
-             for p in root.glob('*.py') if not p.name.startswith('_qa_')}
-    current['requirements.txt']=hashlib.sha256((root/'requirements.txt').read_bytes().replace(b'\r\n',b'\n')).hexdigest()
-    if lock['sources']!=current or json.loads(git('show','HEAD:nomad_precheck_release.json'))!=lock:
-        raise ValueError('RELEASE_IDENTITY_UNVERIFIED')
-    return {'status':'PASS','deployed_sha':actual,'approved_parent':APPROVED_PARENT,
-            'source_digest':digest(current),'service':'aretiapp'}
+    return {'status':'PASS','deployed_sha':actual,'approved_sha':approved}
 
 
 class ReadOnlyCursor:

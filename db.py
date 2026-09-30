@@ -134,10 +134,15 @@ class PostgresCursor:
         self._cursor = cursor
 
     def execute(self, query, params=None):
+        from financial_writer_control import needs_guard, writer_guard
+        if needs_guard(query):
+            writer_guard(self._cursor)
         self._cursor.execute(_postgres_query(query), params)
         return self
 
     def executemany(self, query, params=None):
+        from financial_writer_control import writer_guard
+        writer_guard(self._cursor)
         self._cursor.executemany(_postgres_query(query), params or [])
         return self
 
@@ -271,6 +276,14 @@ def _ensure_column(cur, table_name, column_name, definition):
 
 def init_db():
     conn = get_connection()
+    if USING_POSTGRES:
+        from financial_writer_control import read
+        # A restarted read-only application must not attempt startup DDL while
+        # an audited repair awaits verification. The durable fence is authoritative.
+        if read(conn._connection)['state'] != 'NORMAL':
+            conn.close()
+            return
+        conn.rollback()
     cur = conn.cursor()
 
     cur.execute("""

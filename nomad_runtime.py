@@ -12,7 +12,7 @@ from financial_preconditions import collect_locked, hash_index
 from existing_import_compare import authorized
 
 PDF_SHA256 = 'b8413ee856c8bbc14529662297e70f7057ea9b992335c8269c5b43a8f5bf4d0f'
-ATOMIC_SHA256 = 'a1f094c41e17e960b2bb3b68b457009c157f6cef198bfad223fd340d491314a9'
+ATOMIC_SHA256 = '597bba599632b0236f5a7b9d02af65de04096bfd8f021322e1ebda1c9c36df36'
 TRANSACTIONS = frozenset((5910,5911,5914,5915,5916,5917,5918))
 APPROVED_FIELDS = frozenset(
     [('classified_transactions', i, 'amount') for i in TRANSACTIONS] +
@@ -36,7 +36,7 @@ SAFE_REASONS = {
 
 
 def check_source():
-    work.require(hashlib.sha256(Path(work.__file__).read_bytes()).hexdigest() == ATOMIC_SHA256,
+    work.require(hashlib.sha256(Path(work.__file__).read_bytes().replace(b'\r\n', b'\n')).hexdigest() == ATOMIC_SHA256,
                  'REVIEWED_ATOMIC_SOURCE_CHANGED')
 
 
@@ -109,6 +109,7 @@ def render(ui):
     from event_trigger_diagnostics import render as render_event_trigger_diagnostics
     render_event_trigger_diagnostics(ui)
     from nomad_precheck import render as render_nomad_precheck
-    render_nomad_precheck(ui)
+    evidence = render_nomad_precheck(ui)
     ui.subheader('NOMAD Final Repair')
-    ui.info('Repair is unavailable. This release permits read-only precheck only.')
+    from nomad_controlled_repair import render as render_controlled_repair
+    render_controlled_repair(ui, evidence)

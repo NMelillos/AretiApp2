@@ -1,6 +1,6 @@
 """Compatibility layer for historical source guards, not behavioral tests.
 
-Only the reviewed Decimal function bodies/imports are normalized. Every other
+Only reviewed Decimal and writer-fence bodies/imports are normalized. Every other
 AST node must still match the deployed baseline. Runtime tests use live code.
 """
 import ast
@@ -10,6 +10,7 @@ import subprocess
 BASE = '48a6efd9cdc4b58972e87887a7f7af7d613aeca6'
 FUNCTIONS = {
     'db.py': {
+        'init_db': '2af9575cb7800356c8fb6ace7d19891caa1b788e871940c46c16ba3f8283e1dc',
         '_parse_rate_month_cell': 'b0065c228508624233a111fbd75aa64d978d598db81a0c600e756b6cf4cbc2c6',
         'get_transaction_change_log': '017fe0876342c0c2057475aba755d614deaf37f6f55cc7fe9f1c99498bc194ac',
         'get_import_transaction_audit': 'b9ce759f29fb048c1cd1d5b0cb3d8ba510c3c2b6b80116239d802f847975b848',
@@ -91,10 +92,14 @@ def protected_source(name, source):
     baseline = subprocess.check_output(['git', 'show', BASE + ':' + name]).replace(b'\r\n', b'\n')
     old, current = ast.parse(baseline), ast.parse(source)
     old_functions = {n.name: n for n in old.body if isinstance(n, ast.FunctionDef)}
+    old_classes = {n.name: n for n in old.body if isinstance(n, ast.ClassDef)}
     additions = [ast.dump(n) for n in ast.parse(ADDITIONS[name]).body]
     result, found = [], set()
     for node in current.body:
         signature = ast.dump(node)
+        if name == 'db.py' and isinstance(node, ast.ClassDef) and node.name == 'PostgresCursor':
+            assert hashlib.sha256(signature.encode()).hexdigest() == '91e80ad1cb19c4b1394c453b3fbc741715b89428f0cf5ea7b1df25951b050517', 'Unreviewed writer guard change'
+            node = old_classes[node.name]
         if signature in additions:
             additions.remove(signature)
             continue

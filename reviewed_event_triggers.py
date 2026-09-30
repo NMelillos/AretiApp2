@@ -1,7 +1,8 @@
-"""Exact 2026-09-30 catalog approval for read-only preclearance only.
+"""Exact 2026-09-30 provider catalog approval.
 
-This does not approve snapshot/audit CREATE TABLE or relax the atomic Apply guard.
-No connection creation, expectation regeneration, DDL or mutation is provided.
+Capture remains SELECT/SHOW only, including in the controlled write transaction.
+Additional fixed recovery/fence DDL is reviewed in FINANCIAL_WRITER_CONTROL.md;
+this module provides no generic DDL bypass or expectation regeneration.
 """
 import hashlib
 import json
@@ -51,6 +52,14 @@ def validate_catalog(cursor):
     cursor.execute('SHOW transaction_read_only')
     if cursor.fetchone()[0] != 'on':
         raise CatalogMismatch('READ_ONLY_TRANSACTION_REQUIRED')
+    return validate_execution_catalog(cursor)
+
+
+def validate_execution_catalog(cursor):
+    """Same frozen catalog, usable under the repair controller's write transaction.
+
+    This function only SELECTs/SHOWs. It never changes triggers or expectations.
+    """
     cursor.execute('SHOW server_version'); version=cursor.fetchone()[0]
     cursor.execute('SHOW session_replication_role'); role=cursor.fetchone()[0]
     cursor.execute(CATALOG); triggers=rows(cursor)

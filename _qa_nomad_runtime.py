@@ -85,6 +85,7 @@ def main():
     real_precheck = n.precheck
     state={'authenticated':True,'login_user':'Areti'}
     with patch.object(n.st,'session_state',ui.session_state), patch.object(n,'authorized',return_value=True), \
+         patch('nomad_precheck.authorized',return_value=True), \
          patch.object(n,'session_id',return_value='session-a'), patch.object(n,'check_source'), \
          patch.object(n,'PDF_SHA256',hashlib.sha256(content).hexdigest()), \
          patch.object(n,'precheck',return_value={'manifest':result,'plan':{'safe':'hash'}}) as prepare, \

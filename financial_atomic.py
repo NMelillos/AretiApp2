@@ -3,7 +3,7 @@
 In-database snapshots protect against this operation, not loss of the database.
 Append-only triggers do not constrain a database owner/superuser.
 """
-from contextlib import closing
+from contextlib import closing, nullcontext
 from datetime import date, datetime
 from decimal import Decimal
 import hashlib
@@ -58,9 +58,20 @@ def identity(cur):
     return state_hash(cur.fetchone())
 
 
-def catalog(cur):
-    cur.execute("SELECT 1 FROM pg_event_trigger WHERE evtenabled<>'D'")
-    require(not cur.fetchall(), 'DDL_EVENT_TRIGGERS_REQUIRE_SEPARATE_REVIEW')
+def catalog(cur, review=None):
+    if review is None:
+        cur.execute("SELECT 1 FROM pg_event_trigger WHERE evtenabled<>'D'")
+        require(not cur.fetchall(), 'DDL_EVENT_TRIGGERS_REQUIRE_SEPARATE_REVIEW')
+    else:
+        from nomad_execution_review import ReviewedNomad
+        if type(review) is not ReviewedNomad:
+            # Synthetic policy injection is confined to isolated local QA, not
+            # a generic production "allow triggers/RLS" switch.
+            parameters = cur.connection.get_dsn_parameters()
+            require(parameters.get('host') in ('127.0.0.1','::1') and
+                    parameters.get('dbname','').startswith('qa_financial_'),
+                    'REVIEWED_PRODUCTION_POLICY_REQUIRED')
+        review.execution_catalog(cur)
     _catalog_contract(cur, TABLES)
     cur.execute("SELECT c.relname,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=ANY(%s) ORDER BY 1", (list(TABLES),))
     require(cur.fetchall() == [(t, 'r') for t in sorted(TABLES)], 'NONSTANDARD_TABLE_REQUIRES_REVIEW')
@@ -68,8 +79,12 @@ def catalog(cur):
     require(not cur.fetchall(), 'INHERITANCE_REQUIRES_REVIEW')
     # SQL/PLpgSQL helpers can hide financial coercions or side effects not fully
     # represented by pg_depend. Never infer their safety from table hashes.
-    cur.execute("SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e')")
-    require(not cur.fetchall(), 'PUBLIC_FUNCTIONS_REQUIRE_SEPARATE_REVIEW')
+    cur.execute("SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e') ORDER BY p.oid")
+    functions = cur.fetchall()
+    if review is None:
+        require(not functions, 'PUBLIC_FUNCTIONS_REQUIRE_SEPARATE_REVIEW')
+    else:
+        review.public_functions(functions)
     cur.execute('''SELECT DISTINCT ns.nspname, c.relname FROM pg_constraint k
         JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace ns ON ns.oid=c.relnamespace
         JOIN pg_class p ON p.oid=k.confrelid JOIN pg_namespace pn ON pn.oid=p.relnamespace
@@ -92,12 +107,15 @@ def catalog(cur):
     for key, query in queries.items():
         cur.execute(query)
         result[key] = cur.fetchall()
-    require(not any(r[2] or r[3] for r in result['security'] if r[0] in TABLES), 'ROW_SECURITY_REQUIRES_REVIEW')
+    if review is None:
+        require(not any(r[2] or r[3] for r in result['security'] if r[0] in TABLES), 'ROW_SECURITY_REQUIRES_REVIEW')
+    else:
+        review.security(cur, result)
     return result
 
 
-def capture(cur):
-    result = {'money': _snapshot(cur), 'catalog': catalog(cur), 'dependencies': {}, 'bits': {}, 'versions': {}}
+def capture(cur, review=None):
+    result = {'money': _snapshot(cur), 'catalog': catalog(cur, review), 'dependencies': {}, 'bits': {}, 'versions': {}}
     for table in TABLES:
         if table not in FINANCIAL_COLUMNS:
             cur.execute(sql.SQL('SELECT * FROM public.{} ORDER BY id').format(sql.Identifier(table)))
@@ -132,8 +150,10 @@ def locks(cur):
         sql.SQL(',').join(sql.Identifier('public', t) for t in sorted(TABLES))))
 
 
-def source(cur, content, manifest):
-    catalog(cur)
+def source(cur, content, manifest, review=None):
+    catalog(cur, review)
+    if review is not None:
+        review.preconditions(cur, content, manifest)
     require(hashlib.sha256(content).hexdigest() == manifest['pdf_sha256'], 'PDF_FINGERPRINT_CHANGED')
     changes = manifest['changes']
     keys = {(r['table'], r['id'], r['field']) for r in changes}
@@ -166,13 +186,13 @@ def reconcile(cur, content):
             Decimal(s['Stored money_out']).copy_negate()]) == Decimal(s['Stored closing_balance']), 'BALANCE_EQUATION_FAILED')
 
 
-def prepare(conn, content, manifest):
+def prepare(conn, content, manifest, review=None):
     """Read-only plan digest; full values are never printed or returned to UI."""
     session(conn, True)
     try:
         with conn.cursor() as cur:
-            source(cur, content, manifest)
-            state = capture(cur)
+            source(cur, content, manifest, review)
+            state = capture(cur, review)
             targets(state, manifest)
             return {'state_hash': state_hash(state), 'database_hash': identity(cur),
                     'manifest_hash': state_hash(manifest), 'pdf_sha256': manifest['pdf_sha256']}
@@ -278,15 +298,24 @@ def check_after(before, after, values):
         require(encode(expected) == encode(list(new)), 'COLUMN_CONTRACT_CHANGED')
 
 
-def apply(connect, *, content, manifest, plan, operation_id, actor, fail_at=None):
+def apply(connect, *, content, manifest, plan, operation_id, actor, fail_at=None,
+          controller=None, review=None, before_commit=None):
     """Explicit trusted server call. No provider/manual-backup Boolean gate."""
     require(re.fullmatch('[A-Za-z0-9_-]{1,80}', operation_id or '') and actor, 'OPERATOR_ID_REQUIRED')
     require(plan['manifest_hash'] == state_hash(manifest) and plan['pdf_sha256'] == hashlib.sha256(content).hexdigest(), 'APPROVAL_CHANGED')
     attempted = False
-    with closing(connect()) as conn:
+    require((controller is None and review is None and before_commit is None)
+            or (controller is not None and review is not None and before_commit is not None), 'CONTROLLER_CONTRACT_REQUIRED')
+    with (closing(connect()) if controller is None else nullcontext(controller)) as conn:
         session(conn, False)
         try:
             with conn.cursor() as cur:
+                if controller is None:
+                    from financial_writer_control import writer_guard
+                    writer_guard(cur)
+                else:
+                    from financial_writer_control import assert_owned
+                    assert_owned(conn)
                 locks(cur)
                 require(identity(cur) == plan['database_hash'], 'WRONG_DATABASE')
                 cur.execute('SELECT to_regnamespace(%s)', (JOURNAL,))
@@ -296,14 +325,15 @@ def apply(connect, *, content, manifest, plan, operation_id, actor, fail_at=None
                     if prior is not None:
                         require(prior['plan'] == plan, 'OPERATION_BINDING_CHANGED')
                         require(stored(cur, operation_id, 'REVERSE') is None, 'OPERATION_ALREADY_REVERSED')
-                        require(state_hash(capture(cur)) == state_hash(stored(cur, operation_id, 'APPLY')), 'POST_STATE_CHANGED')
+                        require(state_hash(capture(cur, review)) == state_hash(stored(cur, operation_id, 'APPLY')), 'POST_STATE_CHANGED')
                         reconcile(cur, content)
                         conn.rollback()
                         return {'repeated': True, 'changed': 0}
-                source(cur, content, manifest)
-                before = capture(cur)
+                source(cur, content, manifest, review)
+                before = capture(cur, review)
                 require(state_hash(before) == plan['state_hash'], 'LOCKED_PRECONDITION_CHANGED')
                 values = targets(before, manifest)
+                if review is not None: review.execution_catalog(cur)
                 journal(cur, create=True)
                 payload = {'before': before, 'plan': plan, 'manifest': manifest,
                            'policy': preservation_manifest(before['money'])}
@@ -317,11 +347,12 @@ def apply(connect, *, content, manifest, plan, operation_id, actor, fail_at=None
                 require(fail_at != 'ddl', 'INJECTED_FAILURE')
                 write_values(cur, values)
                 require(fail_at != 'repair', 'INJECTED_FAILURE')
-                after = capture(cur)
+                after = capture(cur, review)
                 check_after(before, after, values)
                 reconcile(cur, content)
                 event(cur, operation_id, 'APPLY', after)
                 require(fail_at != 'audit', 'INJECTED_FAILURE')
+                if before_commit is not None: before_commit(conn)
             attempted = True
             conn.commit()
         except BaseException:
@@ -329,6 +360,8 @@ def apply(connect, *, content, manifest, plan, operation_id, actor, fail_at=None
             except Exception: pass
             if attempted: raise Blocked('COMMIT_UNCERTAIN_KEEP_WRITERS_CLOSED_VERIFY') from None
             raise
+    if controller is not None:
+        return {'changed': 18, 'repeated': False}
     try:
         verify(connect, operation_id=operation_id, content=content)
     except BaseException:
@@ -336,7 +369,7 @@ def apply(connect, *, content, manifest, plan, operation_id, actor, fail_at=None
     return {'changed': 18, 'repeated': False}
 
 
-def verify(connect, *, operation_id, content, reversed_state=False):
+def verify(connect, *, operation_id, content, reversed_state=False, review=None):
     with closing(connect()) as conn:
         session(conn, True)
         try:
@@ -347,7 +380,7 @@ def verify(connect, *, operation_id, content, reversed_state=False):
                 require(identity(cur) == snapshot['plan']['database_hash'], 'WRONG_DATABASE')
                 require(hashlib.sha256(content).hexdigest() == snapshot['manifest']['pdf_sha256'], 'PDF_FINGERPRINT_CHANGED')
                 expected = stored(cur, operation_id, 'REVERSE' if reversed_state else 'APPLY')
-                require(expected is not None and state_hash(capture(cur)) == state_hash(expected), 'POST_STATE_CHANGED')
+                require(expected is not None and state_hash(capture(cur, review)) == state_hash(expected), 'POST_STATE_CHANGED')
                 if not reversed_state: reconcile(cur, content)
         finally:
             conn.rollback()
@@ -361,6 +394,8 @@ def reverse(connect, *, operation_id, content, expected_after_hash, fail_at=None
         session(conn, False)
         try:
             with conn.cursor() as cur:
+                from financial_writer_control import writer_guard
+                writer_guard(cur)
                 locks(cur)
                 journal(cur)
                 snapshot = stored(cur, operation_id)

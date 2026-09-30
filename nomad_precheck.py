@@ -163,5 +163,6 @@ def render(ui):
             ui.download_button('Export NOMAD Precheck Evidence',data=data,
                 file_name='NOMAD_Precheck_'+datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_UTC')+'.json',
                 mime='application/json',on_click='ignore',key='nomad_final_readonly_export')
+            return evidence
         except Exception:
             ui.error('READ-ONLY NOMAD PRECHECK BLOCKED - authorized non-sensitive evidence could not be produced')

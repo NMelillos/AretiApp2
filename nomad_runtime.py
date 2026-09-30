@@ -101,49 +101,14 @@ def precheck(content):
 
 
 def render(ui):
+    # Retire all runtime repair evidence, including evidence from older sessions.
+    clear()
     if not authorized():
-        clear()
         return
-    sid = session_id()
+    session_id()
     from event_trigger_diagnostics import render as render_event_trigger_diagnostics
     render_event_trigger_diagnostics(ui)
+    from nomad_precheck import render as render_nomad_precheck
+    render_nomad_precheck(ui)
     ui.subheader('NOMAD Final Repair')
-    uploaded = ui.file_uploader('Original NOMAD PDF', type=['pdf'], key='nomad_runtime_pdf')
-    content = uploaded.getvalue() if uploaded is not None else None
-    digest = hashlib.sha256(content).hexdigest() if content else None
-    evidence = st.session_state.get(STATE)
-    if evidence and (evidence['session'] != sid or evidence['pdf'] != digest):
-        clear()
-        evidence = None
-    if ui.button('RUN NOMAD FINAL PRECHECK', disabled=not content or bool(evidence and evidence.get('attempted'))):
-        clear()
-        try:
-            result = precheck(content)
-            evidence = dict(result, session=sid, pdf=digest, attempted=False, complete=False)
-            st.session_state[STATE] = evidence
-        except Exception as error:
-            evidence = None
-            reason = SAFE_REASONS.get(str(error)) if isinstance(error, work.Blocked) else None
-            ui.error('PRECHECK BLOCKED - ' + (reason or 'source, scope, schema or dependency validation failed'))
-    if evidence and not evidence['attempted']:
-        ui.success('PRECHECK PASS - 18 approved field changes across 11 rows')
-    confirmation = ui.text_input('Confirmation', key='nomad_runtime_confirmation')
-    ready = bool(evidence and not evidence['attempted'] and confirmation == 'CONFIRM NOMAD REPAIR')
-    if ui.button('EXECUTE NOMAD CONTROLLED REPAIR', disabled=not ready):
-        # Consume server evidence before any call. Reruns/errors never auto-retry.
-        evidence['attempted'] = True
-        try:
-            work.require(authorized() and session_id() == evidence['session'], 'SESSION_CHANGED')
-            check_source()
-            work.require(hashlib.sha256(content).hexdigest() == evidence['pdf'] == PDF_SHA256, 'PDF_FINGERPRINT_CHANGED')
-            result = work.apply(connection, content=content, manifest=evidence['manifest'],
-                                plan=evidence['plan'], operation_id=OPERATION, actor='Areti')
-            work.require(not result['repeated'], 'ALREADY_EXECUTED')
-            evidence['complete'] = True
-        except Exception:
-            ui.error('REPAIR STOPPED / VERIFICATION FAILED - do not retry; state verification required')
-        finally:
-            evidence.pop('manifest', None)
-            evidence.pop('plan', None)
-    if evidence and evidence.get('complete'):
-        ui.success('NOMAD COMPLETED AND VERIFIED')
+    ui.info('Repair is unavailable. This release permits read-only precheck only.')

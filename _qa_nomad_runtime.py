@@ -80,6 +80,7 @@ def main():
         def text_input(self,*a,**k): return self.text
         def error(self,text): self.output.append(text)
         def success(self,text): self.output.append(text)
+        def info(self,text): self.output.append(text)
     ui=UI()
     real_precheck = n.precheck
     state={'authenticated':True,'login_user':'Areti'}
@@ -88,21 +89,15 @@ def main():
          patch.object(n,'PDF_SHA256',hashlib.sha256(content).hexdigest()), \
          patch.object(n,'precheck',return_value={'manifest':result,'plan':{'safe':'hash'}}) as prepare, \
          patch.object(n.work,'apply',return_value={'repeated':False}) as apply:
-        n.render(ui); prepare.assert_not_called(); apply.assert_not_called()
-        ui.clicked={'RUN NOMAD FINAL PRECHECK'}; n.render(ui); prepare.assert_called_once()
-        ui.clicked={'EXECUTE NOMAD CONTROLLED REPAIR'}; ui.text='wrong'; n.render(ui); apply.assert_not_called()
-        ui.text='CONFIRM NOMAD REPAIR'; n.render(ui); apply.assert_called_once()
-        n.render(ui); apply.assert_called_once()
-        assert ui.output[-1] == 'NOMAD COMPLETED AND VERIFIED'
-        n.clear(); ui.clicked={'EXECUTE NOMAD CONTROLLED REPAIR'}; n.render(ui); apply.assert_called_once()
-        ui.clicked={'RUN NOMAD FINAL PRECHECK'}; n.render(ui)
-        with patch.object(n,'session_id',return_value='new-session'):
-            ui.clicked={'EXECUTE NOMAD CONTROLLED REPAIR'}; n.render(ui); apply.assert_called_once()
-        n.clear(); ui.clicked={'RUN NOMAD FINAL PRECHECK'}; n.render(ui)
-        ui.clicked={'EXECUTE NOMAD CONTROLLED REPAIR'}; apply.side_effect=ValueError('synthetic-private-detail')
-        n.render(ui); assert apply.call_count == 2
-        n.render(ui); assert apply.call_count == 2
-        assert all('synthetic-private-detail' not in s for s in ui.output)
+        # Repair UI is explicitly retired by the read-only preclearance release.
+        # Old widget payloads and old session evidence must never call Apply.
+        for clicks in (set(),{'RUN NOMAD FINAL PRECHECK'},{'EXECUTE NOMAD CONTROLLED REPAIR'}):
+            ui.clicked=clicks; ui.text='CONFIRM NOMAD REPAIR'
+            ui.session_state[n.STATE]={'manifest':result,'plan':{'safe':'hash'},'attempted':False}
+            n.render(ui); n.render(ui)
+            assert n.STATE not in ui.session_state
+            prepare.assert_not_called(); apply.assert_not_called()
+            assert 'Repair is unavailable' in ui.output[-1]
         with patch.object(n,'authorized',return_value=False):
             n.render(ui); assert n.STATE not in ui.session_state
             blocked(lambda:real_precheck(content))
@@ -116,7 +111,7 @@ def main():
               'login_username':'Areti','query_username':'Areti'}
         with patch.object(auth.st,'session_state',fake), patch.object(auth,'get_script_run_ctx',return_value=object() if ctx else None):
             assert auth.authorized() is expected
-    print('PASS runtime scope, wrong PDF/ID/field, authorization, session/confirmation, double execution, safe output')
+    print('PASS runtime scope, wrong PDF/ID/field, authorization, retired repair controls, stale session refusal')
 
 
 if __name__ == '__main__': main()

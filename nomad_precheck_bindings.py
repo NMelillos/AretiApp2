@@ -2,7 +2,19 @@
 WORKBOOK_SHA256 = '6651384ebe7d0ae0b468c4f47e667ad1309855f43c6cb6b7bf8ef9ac61057369'
 PLAN_DIGEST = 'cf216e827d251c47247f8181175d86c21b2e5591648ea9987e7bbe339918d211'
 SCHEMA_DIGEST = '3d6f1a21fbb41a211f5097af7f5defcd367de240c88183941fe977dc5083467e'
-EXTENDED_CATALOG_DIGEST = None  # Not captured by the approved September 28 export.
+EXTENDED_CATALOG_DIGEST = '6cae0b306f98590d14e06e6f889752398352c43aee667b656d6140b738520e3a'
+# Capture provenance only; release authorization remains the two server-side SHAs.
+EXTENDED_CATALOG_REVIEW = {
+    'evidence_file_sha256': '894a14233d2b66c8eb176c2ad4655437024cf9b0f1b9b7ec67c207592ced218f',
+    'evidence_digest': 'df3e48dc0b4f7aafd8a23224a59e38b12fd25ffd517b0255266fda9efdbcd6de',
+    'captured_at': '2026-09-30T06:35:16.364313+00:00',
+    'capture_release_sha': '0e141137d656b1182cbcc8760aa92e7be0b26b2c',
+    'pdf_sha256': 'b8413ee856c8bbc14529662297e70f7057ea9b992335c8269c5b43a8f5bf4d0f',
+    'preconditions_digest': 'fcf936480d89243c0ffaa7ef5e9582c95d82f616b84340ffa043ef64063831c5',
+    'catalog_digest': EXTENDED_CATALOG_DIGEST,
+    'catalog_counts': {'columns': 90, 'constraints': 14, 'dependencies': 116,
+                       'indexes': 32, 'relations': 8, 'triggers': 0},
+}
 HASH_BINDINGS = {
 ('classified_transactions','5910'): '48e7e57a38258abd6eac333c037f45e22c23fa2ae6fa62eae3d675eed06f50d3',
 ('classified_transactions','5911'): 'e36d0b858fa7689909108deec65ab1e8d5cf10060338a6b45527506b350781f8',

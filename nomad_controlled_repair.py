@@ -7,6 +7,7 @@ import financial_writer_control as fence
 from financial_atomic_command import connection
 import nomad_precheck as precheck
 from nomad_execution_review import ReviewedNomad
+from nomad_attempt import Attempt, SESSION_KEY
 
 OPERATION = 'nomad-frozen-final-v1'
 CONFIRMATION = 'REPAIR APPROVED NOMAD IMPORT'
@@ -14,29 +15,44 @@ READY_KEY = '_nomad_controlled_readiness'
 
 
 def _execute(connect, review, content, release):
+    attempt = Attempt(OPERATION)
+    try:
+        return _run(connect, review, content, release, attempt)
+    except BaseException as error:
+        attempt.failure(error)
+        attempt.publish()
+        raise
+
+
+def _run(connect, review, content, release, attempt):
     """Server-owned dependencies only; no SQL, IDs or plan accepted from the UI."""
     with closing(connect()) as controller:
         atomic.session(controller, False)
+        attempt.phase('acquire_controller')
         fence.acquire(controller)
-        committed_or_uncertain = False
         started = False
         try:
             # Validate the approved trigger/RLS bodies before *any* control DDL.
+            attempt.phase('review_catalog')
             with controller.cursor() as cur:
                 atomic.catalog(cur, review)
             controller.rollback()
+            attempt.phase('begin_attempt')
             fence.install(controller)
             fence.begin(controller, OPERATION, release['approved_sha'],
-                        precheck.bindings.EXTENDED_CATALOG_DIGEST, 'Areti')
+                        precheck.bindings.EXTENDED_CATALOG_DIGEST, 'Areti', attempt.data['attempt_id'])
             controller.commit()
             started = True
+            attempt.data['durable_fence_state'] = 'REPAIR_IN_PROGRESS'
             fence.assert_owned(controller)
             atomic.require(fence.read(controller)['state'] == 'REPAIR_IN_PROGRESS', 'FENCE_STATE_CHANGED')
             controller.rollback()
             atomic.session(controller, True)
+            attempt.phase('derive_source')
             with controller.cursor() as cur:
                 manifest = review.derive(cur, content)
             controller.rollback()
+            attempt.phase('prepare')
             plan = atomic.prepare(controller, content, manifest, review)
 
             def before_commit(conn):
@@ -45,48 +61,61 @@ def _execute(connect, review, content, release):
                                  'REPAIR_COMMITTED_UNVERIFIED', 'reconciled_before_commit')
 
             # If the commit acknowledgement is lost, never guess whether it ran.
-            committed_or_uncertain = True
-            try:
-                result = atomic.apply(connect, content=content, manifest=manifest,
-                    plan=plan, operation_id=OPERATION, actor='Areti', controller=controller,
-                    review=review, before_commit=before_commit)
-            except atomic.Blocked as error:
-                if str(error) != 'COMMIT_UNCERTAIN_KEEP_WRITERS_CLOSED_VERIFY':
-                    committed_or_uncertain = False
-                raise
+            result = atomic.apply(connect, content=content, manifest=manifest,
+                plan=plan, operation_id=OPERATION, actor='Areti', controller=controller,
+                review=review, before_commit=before_commit, progress=attempt.phase)
             # A genuinely separate lease performs the read-back. The dedicated
             # controller retains its exclusive SESSION lock across both commits.
+            attempt.data.update(durable_fence_state='REPAIR_COMMITTED_UNVERIFIED',
+                                transaction_classification='COMMITTED_UNVERIFIED')
+            attempt.phase('independent_verification')
             fence.assert_owned(controller)
             controller.rollback()
             verification = atomic.verify(connect, operation_id=OPERATION, content=content, review=review)
             atomic.require(verification['verified'], 'INDEPENDENT_VERIFY_FAILED')
             fence.assert_owned(controller)
+            attempt.phase('verified_release')
             fence.transition(controller, OPERATION, 'REPAIR_COMMITTED_UNVERIFIED',
                              'NORMAL', 'independently_verified:' + verification['after_hash'])
             controller.commit()
+            attempt.data.update(durable_fence_state='NORMAL', transaction_classification='VERIFIED')
             fence.release(controller)
             return result
-        except BaseException:
+        except BaseException as error:
+            attempt.failure(error)
             try:
                 controller.rollback()
                 atomic.session(controller, False)
-                if started and not committed_or_uncertain:
+                if started and not attempt.data['commit_attempted']:
                     # Safe only after confirmed rollback on the same live session.
                     fence.assert_owned(controller)
+                    attempt.data.update(commit_outcome_known=True, transaction_classification='ROLLED_BACK',
+                                        durable_fence_state='NORMAL')
                     fence.transition(controller, OPERATION, 'REPAIR_IN_PROGRESS',
-                                     'NORMAL', 'aborted_before_repair_commit')
+                                     'NORMAL', 'aborted_before_repair_commit', failure=dict(attempt.data))
                     controller.commit()
                     fence.release(controller)
                 elif started:
                     fence.assert_owned(controller)
                     current = fence.read(controller)
+                    attempt.data['durable_fence_state'] = current['state']
                     if current['state'] in ('REPAIR_IN_PROGRESS', 'REPAIR_COMMITTED_UNVERIFIED'):
+                        attempt.data.update(durable_fence_state='RECOVERY_REQUIRED',
+                            transaction_classification=('COMMITTED_UNVERIFIED' if
+                                attempt.data['commit_outcome_known'] else 'UNCERTAIN'))
                         fence.transition(controller, OPERATION, current['state'],
-                                         'RECOVERY_REQUIRED', 'outcome_requires_independent_verification')
+                                         'RECOVERY_REQUIRED', 'outcome_requires_independent_verification',
+                                         failure=dict(attempt.data))
                         controller.commit()
+                else:
+                    current = fence.read(controller)
+                    attempt.data['durable_fence_state'] = current['state']
+                    if current['state'] != 'NORMAL':
+                        attempt.data.update(transaction_classification='UNCERTAIN', commit_outcome_known=False)
             except BaseException:
                 # Lost connection/uncertain rollback leaves the durable fence.
-                pass
+                attempt.data.update(durable_fence_state='UNKNOWN', transaction_classification='UNCERTAIN',
+                                    commit_outcome_known=False)
             raise
         finally:
             # Never return a session advisory lock to the shared application pool.
@@ -145,7 +174,12 @@ def render(ui, evidence=None):
     from nomad_runtime import session_id, PDF_SHA256
     if not precheck.authorized():
         st.session_state.pop(READY_KEY, None)
+        st.session_state.pop(SESSION_KEY, None)
         return
+    failure = st.session_state.get(SESSION_KEY)
+    if failure:
+        ui.info('Last failed attempt: ' + failure['attempt_id'] + '; phase: ' + failure['phase']
+                + '; error: ' + failure['error_identifier'] + '; outcome: ' + failure['transaction_classification'])
     from nomad_recovery_status import read_status
     try:
         recovery = read_status()

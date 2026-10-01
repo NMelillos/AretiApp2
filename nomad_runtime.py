@@ -12,7 +12,7 @@ from financial_preconditions import collect_locked, hash_index
 from existing_import_compare import authorized
 
 PDF_SHA256 = 'b8413ee856c8bbc14529662297e70f7057ea9b992335c8269c5b43a8f5bf4d0f'
-ATOMIC_SHA256 = '597bba599632b0236f5a7b9d02af65de04096bfd8f021322e1ebda1c9c36df36'
+ATOMIC_SHA256 = '35d99ad30c3800e8f43065ab2600a6ced5296d776cde61dac9891241955b11bd'
 TRANSACTIONS = frozenset((5910,5911,5914,5915,5916,5917,5918))
 APPROVED_FIELDS = frozenset(
     [('classified_transactions', i, 'amount') for i in TRANSACTIONS] +

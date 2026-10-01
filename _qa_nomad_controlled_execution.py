@@ -115,11 +115,33 @@ def main():
             with patch.object(work,'source',side_effect=work.Blocked('STALE_HASH')):
                 expect_failure(lambda:attempt('stale'))
             same_before(); assert state()['state']=='NORMAL'
+            first_attempt = state()['binding'].get('attempt_id')
+            assert first_attempt, 'Execution attempt must have a unique identity'
+            with patch.object(work,'source',side_effect=work.Blocked('STALE_HASH')):
+                expect_failure(lambda:attempt('stale'))
+            same_before(); assert state()['state']=='NORMAL'
+            assert state()['binding']['attempt_id'] != first_attempt
+            failure = state()['binding']['failure']
+            assert failure['transaction_classification'] == 'ROLLED_BACK'
+            assert failure['phase'] == 'prepare'
+            assert failure['exception_class'] == 'Blocked'
+            assert failure['commit_attempted'] is False
             # Fail after DDL inside the same transaction; control event rolls back too.
             with patch.object(work,'write_values',side_effect=work.Blocked('EXPECTED_OLD_VALUE_CHANGED')):
                 expect_failure(lambda:attempt('old-value'))
             same_before(); assert state()['state']=='NORMAL'
             # Crash immediately before commit leaves no partial migration.
+            def database_failure(cur, values):
+                cur.execute('SELECT 1/0')
+            with patch.object(work,'write_values',side_effect=database_failure):
+                expect_failure(lambda:attempt('sql-failure'))
+            same_before(); assert state()['state']=='NORMAL'
+            failure = state()['binding']['failure']
+            assert failure['phase']=='approved_corrections'
+            assert failure['exception_class']=='DivisionByZero'
+            assert failure['sqlstate']=='22012'
+            assert failure['transaction_begun'] and not failure['commit_attempted']
+            assert 'private payload' not in str(failure)
             real_transition=fence.transition
             def crash_before_commit(conn,op,old,new,phase):
                 real_transition(conn,op,old,new,phase)

@@ -299,11 +299,12 @@ def check_after(before, after, values):
 
 
 def apply(connect, *, content, manifest, plan, operation_id, actor, fail_at=None,
-          controller=None, review=None, before_commit=None):
+          controller=None, review=None, before_commit=None, progress=None):
     """Explicit trusted server call. No provider/manual-backup Boolean gate."""
     require(re.fullmatch('[A-Za-z0-9_-]{1,80}', operation_id or '') and actor, 'OPERATOR_ID_REQUIRED')
     require(plan['manifest_hash'] == state_hash(manifest) and plan['pdf_sha256'] == hashlib.sha256(content).hexdigest(), 'APPROVAL_CHANGED')
     attempted = False
+    phase = progress if progress is not None else lambda name: None
     require((controller is None and review is None and before_commit is None)
             or (controller is not None and review is not None and before_commit is not None), 'CONTROLLER_CONTRACT_REQUIRED')
     with (closing(connect()) if controller is None else nullcontext(controller)) as conn:
@@ -316,6 +317,7 @@ def apply(connect, *, content, manifest, plan, operation_id, actor, fail_at=None
                 else:
                     from financial_writer_control import assert_owned
                     assert_owned(conn)
+                phase('transaction_locks')
                 locks(cur)
                 require(identity(cur) == plan['database_hash'], 'WRONG_DATABASE')
                 cur.execute('SELECT to_regnamespace(%s)', (JOURNAL,))
@@ -329,32 +331,41 @@ def apply(connect, *, content, manifest, plan, operation_id, actor, fail_at=None
                         reconcile(cur, content)
                         conn.rollback()
                         return {'repeated': True, 'changed': 0}
+                phase('locked_preconditions')
                 source(cur, content, manifest, review)
                 before = capture(cur, review)
                 require(state_hash(before) == plan['state_hash'], 'LOCKED_PRECONDITION_CHANGED')
                 values = targets(before, manifest)
                 if review is not None: review.execution_catalog(cur)
+                phase('snapshot')
                 journal(cur, create=True)
                 payload = {'before': before, 'plan': plan, 'manifest': manifest,
                            'policy': preservation_manifest(before['money'])}
                 cur.execute('INSERT INTO financial_recovery.snapshots(operation_id,payload,payload_hash,actor) VALUES (%s,%s,%s,%s)',
                             (operation_id, encode(payload), state_hash(payload), actor))
                 require(fail_at != 'snapshot', 'INJECTED_FAILURE')
+                phase('numeric_migration')
                 for table, field, kind, *_ in before['money']['schema']:
                     if kind != 'numeric':
                         cur.execute(sql.SQL('ALTER TABLE public.{} ALTER COLUMN {} TYPE numeric USING {}::numeric').format(
                             sql.Identifier(table), sql.Identifier(field), sql.Identifier(field)))
                 require(fail_at != 'ddl', 'INJECTED_FAILURE')
+                phase('approved_corrections')
                 write_values(cur, values)
                 require(fail_at != 'repair', 'INJECTED_FAILURE')
+                phase('precommit_reconciliation')
                 after = capture(cur, review)
                 check_after(before, after, values)
                 reconcile(cur, content)
+                phase('append_audit')
                 event(cur, operation_id, 'APPLY', after)
                 require(fail_at != 'audit', 'INJECTED_FAILURE')
+                phase('commit_fence')
                 if before_commit is not None: before_commit(conn)
             attempted = True
+            phase('repair_commit')
             conn.commit()
+            phase('repair_committed')
         except BaseException:
             try: conn.rollback()
             except Exception: pass

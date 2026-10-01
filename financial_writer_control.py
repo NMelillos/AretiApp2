@@ -5,6 +5,7 @@ install the ledger after validating the reviewed provider DDL catalog.
 """
 import json
 import re
+import uuid
 from functools import lru_cache
 
 KEY = 617294382
@@ -215,7 +216,21 @@ def integrity(cur):
     require(not cur.fetchall())
 
 
-def begin(conn, repair_id, release_sha, evidence_digest, actor):
+def retry_history(rows):
+    """Only intact, confirmed pre-commit abort pairs permit reuse of an operation."""
+    require(len(rows) % 2 == 0)
+    for start, finish in zip(rows[::2], rows[1::2]):
+        require(start[0] == 'REPAIR_IN_PROGRESS' and start[2] == 'precheck')
+        require(finish[0] == 'NORMAL' and finish[2] == 'aborted_before_repair_commit')
+        original = dict(start[1]); completed = dict(finish[1])
+        failure = completed.pop('failure', None)
+        require(original == completed)
+        if failure is not None:
+            require(failure['transaction_classification'] in ('NOT_STARTED', 'ROLLED_BACK')
+                    and failure['commit_attempted'] is False and failure['commit_outcome_known'] is True)
+
+
+def begin(conn, repair_id, release_sha, evidence_digest, actor, attempt_id=None):
     assert_owned(conn)
     require(actor == 'Areti' and re.fullmatch('[0-9a-fA-F]{40}', release_sha)
             and re.fullmatch('[0-9a-f]{64}', evidence_digest))
@@ -223,13 +238,23 @@ def begin(conn, repair_id, release_sha, evidence_digest, actor):
         _bounds(cur)
         integrity(cur)
         require(_read(cur)['state'] == 'NORMAL')
-        cur.execute('SELECT 1 FROM financial_control.fence WHERE repair_id=%s', (repair_id,))
-        require(not cur.fetchall())
+        cur.execute('SELECT state,binding,phase FROM financial_control.fence WHERE repair_id=%s ORDER BY revision', (repair_id,))
+        history = cur.fetchall()
+        retry_history(history)
+        attempt_id = attempt_id or uuid.uuid4().hex
+        require(re.fullmatch('[0-9a-f]{32}', attempt_id))
+        require(all(row[1].get('attempt_id') != attempt_id for row in history))
+        # Ledger rollback alone is insufficient if a committed journal exists.
+        cur.execute("SELECT to_regnamespace('financial_recovery')")
+        if cur.fetchone()[0] is not None:
+            from financial_atomic import audit_guard, stored
+            audit_guard(cur)
+            require(all(stored(cur, repair_id, kind) is None for kind in (None, 'APPLY', 'REVERSE')))
         cur.execute("INSERT INTO financial_control.fence(state,repair_id,binding,phase) VALUES ('REPAIR_IN_PROGRESS',%s,%s::jsonb || jsonb_build_object('started_at',CURRENT_TIMESTAMP),'precheck')",
-                    (repair_id, json.dumps(dict(release_sha=release_sha, evidence_digest=evidence_digest, actor=actor))))
+                    (repair_id, json.dumps(dict(release_sha=release_sha, evidence_digest=evidence_digest, actor=actor, attempt_id=attempt_id))))
 
 
-def transition(conn, repair_id, expected, target, phase):
+def transition(conn, repair_id, expected, target, phase, failure=None):
     assert_owned(conn)
     allowed = {('REPAIR_IN_PROGRESS','NORMAL'), ('REPAIR_IN_PROGRESS','REPAIR_COMMITTED_UNVERIFIED'),
                ('REPAIR_IN_PROGRESS','RECOVERY_REQUIRED'), ('REPAIR_COMMITTED_UNVERIFIED','RECOVERY_REQUIRED'),
@@ -240,5 +265,9 @@ def transition(conn, repair_id, expected, target, phase):
         integrity(cur)
         previous = _read(cur)
         require(previous['state'] == expected and previous['repair_id'] == repair_id)
+        binding = dict(previous['binding'])
+        if failure is not None:
+            require(failure['attempt_id'] == binding.get('attempt_id'))
+            binding['failure'] = failure
         cur.execute('INSERT INTO financial_control.fence(state,repair_id,binding,phase) VALUES (%s,%s,%s,%s)',
-                    (target, repair_id, json.dumps(previous['binding']), phase))
+                    (target, repair_id, json.dumps(binding), phase))

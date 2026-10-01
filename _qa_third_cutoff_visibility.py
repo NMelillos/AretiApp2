@@ -37,6 +37,11 @@ def main():
             token = b'    ("CHF", ("CHF",)),\n'
             assert actual.count(token) == 1
             actual = actual.replace(token, b"", 1)
+        if name == "requirements.txt":
+            # Exact reviewed SQL-parser dependency; all other bytes stay protected.
+            parser_dependency = b"pglast==7.18\n"
+            assert actual.count(parser_dependency) == 1
+            actual = actual.replace(parser_dependency, b"", 1)
         assert actual == expected.replace(b"\r\n", b"\n"), name
     current_third = function(new, "render_third_link_report")
     assert "_render_report_cutoff_notice" not in ast.unparse(current_third)

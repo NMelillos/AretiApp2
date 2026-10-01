@@ -146,6 +146,17 @@ def render(ui, evidence=None):
     if not precheck.authorized():
         st.session_state.pop(READY_KEY, None)
         return
+    from nomad_recovery_status import read_status
+    try:
+        recovery = read_status()
+    except Exception:
+        recovery = dict(state='UNAVAILABLE', transaction_status='UNCERTAIN')
+    ui.info('Current repair fence: ' + recovery['state']
+            + '. Repair transaction status: ' + recovery['transaction_status'] + '.')
+    if recovery['state'] != 'NORMAL' or recovery['transaction_status'] == 'UNCERTAIN':
+        st.session_state.pop(READY_KEY, None)
+        ui.info('Writers remain protected. Do not repeat Repair or clear the fence. Independent verification or controlled recovery is required.')
+        return
     uploaded = st.session_state.get('nomad_runtime_pdf')
     if uploaded is None:
         st.session_state.pop(READY_KEY, None)

@@ -5,6 +5,7 @@ install the ledger after validating the reviewed provider DDL catalog.
 """
 import json
 import re
+from functools import lru_cache
 
 KEY = 617294382
 SCHEMA = 'financial_control'
@@ -83,6 +84,57 @@ def writer_guard(cur):
         raise
 
 
+READ_FUNCTIONS = frozenset(('abs avg count max min sum round lower upper trim btrim '
+    'ltrim rtrim length char_length substring substr replace concat concat_ws '
+    'to_char to_date to_timestamp date_trunc date_part extract now '
+    'current_database current_schema current_schemas version inet_server_addr inet_server_port '
+    'pg_backend_pid pg_get_userbyid pg_get_functiondef pg_get_function_identity_arguments '
+    'pg_get_expr pg_get_constraintdef pg_get_indexdef pg_get_triggerdef pg_get_viewdef '
+    'pg_get_serial_sequence pg_typeof pg_encoding_to_char pg_table_is_visible '
+    'to_regclass to_regnamespace to_regprocedure format obj_description col_description pg_describe_object '
+    'json_build_object jsonb_build_object json_agg jsonb_agg json_object_agg jsonb_object_agg '
+    'array_agg string_agg bool_and bool_or array_length array_to_string unnest '
+    'aclexplode row_number rank dense_rank lag lead first_value last_value '
+    'regexp_replace regexp_match regexp_matches octet_length encode decode '
+    'float4send float8send pg_total_relation_size').split())
+
+
+def _read_tree(node):
+    if isinstance(node, list):
+        return all(_read_tree(item) for item in node)
+    if not isinstance(node, dict):
+        return True
+    for kind, value in node.items():
+        if kind.endswith('Stmt') and kind not in ('SelectStmt', 'VariableShowStmt'):
+            return False
+        if kind in ('IntoClause', 'LockingClause', 'intoClause', 'lockingClause'):
+            return False
+        if kind == 'FuncCall':
+            names = [part.get('String', {}).get('sval') for part in value['funcname']]
+            if not names or names[-1] not in READ_FUNCTIONS:
+                return False
+            if len(names) > 1 and names[:-1] != ['pg_catalog']:
+                return False
+        if not _read_tree(value):
+            return False
+    return True
+
+
+@lru_cache(maxsize=512)
+def _read_statement(text):
+    from pglast.parser import parse_sql_json, ParseError
+    try:
+        # DB-API placeholders represent values, not SQL operations. Classification
+        # never interpolates private parameter values or alters executed SQL.
+        source = re.sub(r'%\([A-Za-z_][A-Za-z_0-9]*\)s|%s|\?', 'NULL', text)
+        statements = json.loads(parse_sql_json(source))['stmts']
+        return (len(statements) == 1
+                and set(statements[0]['stmt']) <= {'SelectStmt', 'VariableShowStmt'}
+                and _read_tree(statements[0]['stmt']))
+    except (ValueError, KeyError, TypeError, ParseError):
+        return False
+
+
 def needs_guard(query):
     if not isinstance(query, str): return True
     text = query.strip().rstrip(';').strip()
@@ -94,11 +146,9 @@ def needs_guard(query):
         return False
     if re.fullmatch(r'SET\s+LOCAL\s+extra_float_digits\s*=\s*3', text, re.I):
         return False
-    # Fail closed for CTEs, multiple statements, lock-taking reads, CALL and DO.
-    # Ordinary catalog/report SELECT and SHOW stay available during maintenance.
-    return not (re.match(r'^(SELECT|SHOW)\b', text, re.I)
-                and ';' not in text
-                and not re.search(r'\bFOR\s+(UPDATE|SHARE|NO\s+KEY\s+UPDATE|KEY\s+SHARE)\b|pg_(try_)?advisory', text, re.I))
+    # PostgreSQL's parser distinguishes read-only WITH from data-changing CTEs,
+    # ignores comments/literals and rejects SELECT INTO and row/advisory locks.
+    return not _read_statement(text)
 
 
 def assert_owned(conn):

@@ -14,8 +14,11 @@ so a stale financial transaction snapshot cannot hide a committed blocking fence
 This covers db.py imports, balances, rates, edits, backfills, classifications,
 Reviewed, SPLIT, memory, history, settings and reset helpers; split_editing,
 import_history and safra_history use that same connection/cursor wrapper.
-Lock-taking SELECTs and CTEs also require the guard. Ordinary SELECT/SHOW reads
-do not acquire the writer lock. There is no client-controlled exemption.
+PostgreSQL syntax-tree classification guards mutating CTEs, SELECT INTO,
+lock-taking SELECTs, unknown/mutating functions and multi-statement execution.
+Read-only CTEs and ordinary SELECT/SHOW reads do not acquire the writer lock.
+There is no client-controlled exemption. Comments and string contents are not
+treated as SQL operations; unsupported syntax remains guarded.
 
 The raw atomic apply/reverse helpers require the same writer guard unless called
 by the dedicated reviewed controller. The separate financial_remediation helper
@@ -68,6 +71,13 @@ state and source reconciliation on a separate connection before clearing a
 blocking fence. It is not a UI/HTTP endpoint and never runs automatically.
 Missing APPLY evidence or failed read-back stays blocked for operator review.
 Never manually delete the ledger, reset its state, or blindly repeat the repair.
+
+The existing Repair section reads status using a separate READ ONLY / REPEATABLE
+READ connection. It reports the durable fence and hash-checked committed audit
+phase without performing Repair or any fence transition. A blocking/unknown
+state hides the Repair action. IN_PROGRESS without committed audit is UNCERTAIN:
+absence of APPLY alone cannot distinguish a transaction that never started from
+one that rolled back. Deployment, refresh and status reads never clear a fence.
 
 ## Deployment gate
 

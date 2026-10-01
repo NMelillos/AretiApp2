@@ -83,7 +83,8 @@ def main():
          patch.object(controlled.precheck,'release_identity',return_value={'approved_sha':'a'*40}), \
          patch.object(runtime,'session_id',return_value='same-server-session'), \
          patch.object(runtime,'PDF_SHA256',hashlib.sha256(content).hexdigest()), \
-         patch.object(auth.st,'session_state',state),patch.object(controlled,'execute') as execute:
+         patch.object(auth.st,'session_state',state),patch.object(controlled,'execute') as execute, \
+         patch('nomad_recovery_status.read_status',return_value={'state':'NORMAL','transaction_status':'NOT STARTED'}):
         controlled.render(ui,{'overall':'PASS'}); execute.assert_not_called()
         ui.clicked=True
         controlled.render(ui); execute.assert_not_called()

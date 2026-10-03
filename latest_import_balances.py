@@ -53,12 +53,14 @@ def snapshot(db):
             WHERE i.transaction_count = (
                 SELECT COUNT(*) FROM classified_transactions t
                 WHERE t.statement_hash = b.statement_hash AND t.split_parent_id IS NULL
-            ) AND (i.transaction_count > 0 OR (
-                COALESCE(b.period_start, '') <> '' AND COALESCE(b.period_end, '') <> ''
-                AND COALESCE(b.account_number, '') <> '' AND COALESCE(b.currency, '') <> ''
-                AND b.opening_balance IS NOT NULL AND b.closing_balance IS NOT NULL
-                AND b.opening_balance = b.closing_balance
-            ))
+            )
+            AND NULLIF(TRIM(b.period_start), '') IS NOT NULL
+            AND NULLIF(TRIM(b.period_end), '') IS NOT NULL
+            AND NULLIF(TRIM(b.account_number), '') IS NOT NULL
+            AND NULLIF(TRIM(b.currency), '') IS NOT NULL
+            AND NULLIF(TRIM(CAST(b.opening_balance AS TEXT)), '') IS NOT NULL
+            AND NULLIF(TRIM(CAST(b.closing_balance AS TEXT)), '') IS NOT NULL
+            AND (i.transaction_count > 0 OR b.opening_balance = b.closing_balance)
         )
         SELECT a.id AS account_id, a.account_number, a.account_name, a.bank,
                a.currency, a.rate_type, r.import_id, r.imported_at,

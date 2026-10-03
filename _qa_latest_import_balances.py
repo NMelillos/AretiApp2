@@ -43,6 +43,25 @@ def main():
                 statement(1,7,'2026-10-03T09:00:00+00:00','2026-09-30','999','999','USD',count=1)
                 statement(6,8,'2026-10-03T09:00:00+00:00','2026-09-30','5','6','USD')
                 statement(7,9,'2026-08-01T09:00:00+00:00','2026-07-31','-0.10','-0.10','EUR')
+                # Production-shaped legacy rows have matching transaction counts,
+                # but a missing field on the SAME balance row makes them ineligible.
+                missing_fields = (('period_start', None), ('period_end', ''),
+                                  ('opening_balance', None), ('closing_balance', None),
+                                  ('account_number', ''), ('currency', ''),
+                                  ('period_start', ''), ('period_end', None),
+                                  ('opening_balance', ''), ('closing_balance', '  '))
+                for import_id, (field, value) in enumerate(missing_fields, 11):
+                    statement(1,import_id,'2026-10-04T09:00:00+00:00','2026-09-30','999','999','USD',count=1)
+                    c.execute('INSERT INTO classified_transactions (statement_hash,row_hash) VALUES (?,?)',
+                              (f'qa-{import_id}',f'row-{import_id}'))
+                    c.execute(f'UPDATE statement_balances SET {field}=? WHERE statement_hash=?',
+                              (value,f'qa-{import_id}'))
+                # A non-empty whitespace date is also incomplete; no complete prior
+                # import means NO IMPORT even when transaction_count matches.
+                statement(5,40,'2026-10-04T09:00:00+00:00','2026-09-30','999','999','USD',count=1)
+                c.execute('INSERT INTO classified_transactions (statement_hash,row_hash) VALUES (?,?)',
+                          ('qa-40','row-40'))
+                c.execute("UPDATE statement_balances SET period_start='   ' WHERE statement_hash='qa-40'")
                 for currency, rate in (('EUR','1.2'),('GBP','1.3')):
                     c.execute('INSERT INTO rates (rate_month,rate_type,rate_value) VALUES (?,?,?)',
                               ('2026-07-01',currency+'/USD',rate))
@@ -55,6 +74,9 @@ def main():
                 assert fx.call_count == 4 and conversion.call_count == 3
                 assert connect.call_count == 2, 'Snapshot must use a bounded number of queries'
             assert len(rows) == 7 and len({r['Account number'] for r in rows}) == 7
+            for row in rows:
+                if row['Status'] == 'IMPORTED':
+                    assert all(row[k] not in ('', None) for k in COLUMNS[4:9])
             by_account = {r['Account number']: r for r in rows}
             a = by_account['A1']
             assert a['Statement end date'] == '2026-08-31'
@@ -111,14 +133,39 @@ def postgres():
         with raw:
             with raw.cursor() as c:
                 c.execute('CREATE TABLE account_list (id integer, account_name text, bank text, account_number text, currency text, rate_type text)')
-                c.execute('CREATE TABLE statement_imports (id integer, statement_hash text, imported_at text, transaction_count integer)')
-                c.execute('CREATE TABLE statement_balances (statement_hash text, account_name text, bank text, account_number text, currency text, period_start text, period_end text, opening_balance numeric, closing_balance numeric)')
+                c.execute('CREATE TABLE statement_imports (id integer PRIMARY KEY, statement_hash text UNIQUE, imported_at text, transaction_count integer)')
+                c.execute('CREATE TABLE statement_balances (statement_hash text UNIQUE, account_name text, bank text, account_number text, currency text, period_start text, period_end text, opening_balance numeric, closing_balance numeric)')
                 c.execute('CREATE TABLE classified_transactions (id integer, statement_hash text, split_parent_id integer)')
                 c.execute('CREATE TABLE rates (rate_month text, rate_type text, rate_value numeric)')
                 c.execute("INSERT INTO account_list VALUES (1,'QA','QA bank','QA-1','USD','USD/USD')")
                 c.execute("INSERT INTO statement_imports VALUES (1,'old','2026-10-03T14:00:00+03:00',0),(2,'new','2026-10-03T12:00:00+00:00',0),(3,'tie','2026-10-03T15:00:00+03:00',0)")
                 for key, balance in (('old','1.01'),('new','2.02'),('tie','12345678901234567890.12')):
                     c.execute("INSERT INTO statement_balances VALUES (%s,'QA','QA bank','QA-1','USD','2026-08-01','2026-08-31',%s,%s)", (key,balance,balance))
+                # Positive-count legacy imports are complete by transaction count
+                # yet incomplete by their own balance row, exactly as production.
+                missing_fields = (('period_start', None), ('period_end', ''),
+                                  ('opening_balance', None), ('closing_balance', None),
+                                  ('account_number', ''), ('currency', ''),
+                                  ('period_start', '   '))
+                for import_id, (field, value) in enumerate(missing_fields, 4):
+                    key = f'incomplete-{import_id}'
+                    c.execute("INSERT INTO statement_imports VALUES (%s,%s,'2026-10-04T12:00:00+00:00',1)",(import_id,key))
+                    c.execute("INSERT INTO classified_transactions VALUES (%s,%s,NULL)",(import_id,key))
+                    c.execute("INSERT INTO statement_balances VALUES (%s,'QA','QA bank','QA-1','USD','2026-09-01','2026-09-30',999,999)",(key,))
+                    c.execute(f'UPDATE statement_balances SET {field}=%s WHERE statement_hash=%s',(value,key))
+                for account_id, currency in ((2,'USD'),(3,'EUR'),(4,'GBP')):
+                    key = f'account-{account_id}'
+                    c.execute("INSERT INTO account_list VALUES (%s,'QA','QA bank',%s,%s,%s)",
+                              (account_id,f'QA-{account_id}',currency,currency+'/USD'))
+                    c.execute("INSERT INTO statement_imports VALUES (%s,%s,'2026-10-04T12:00:00+00:00',1)",(100+account_id,key))
+                    c.execute("INSERT INTO classified_transactions VALUES (%s,%s,NULL)",(100+account_id,key))
+                    c.execute("INSERT INTO statement_balances VALUES (%s,'QA','QA bank',%s,%s,%s,%s,%s,%s)",
+                              (key,f'QA-{account_id}',currency,
+                               '' if account_id==2 else '2026-08-01',
+                               '' if account_id==2 else '2026-08-31',
+                               None if account_id==2 else 100 if account_id==3 else 200,
+                               None if account_id==2 else 100 if account_id==3 else 200))
+                c.execute("INSERT INTO rates VALUES ('2026-08-01','EUR/USD',1.2),('2026-08-01','GBP/USD',1.3)")
         raw.close()
         def connect():
             connection = psycopg2.connect(dbname=name, **options)
@@ -127,10 +174,16 @@ def postgres():
         with patch.object(db, 'get_connection', side_effect=connect), patch.object(db, 'USING_POSTGRES', True):
             rows, total, warnings = snapshot(db)
         expected = Decimal('12345678901234567890.12')
-        assert len(rows) == 1 and total == expected and not warnings
-        assert rows[0]['Opening balance'] == rows[0]['Closing balance'] == expected
+        by_account = {r['Account number']:r for r in rows}
+        assert len(rows) == len(by_account) == 4 and total == expected+Decimal('380.00') and not warnings
+        assert by_account['QA-1']['Opening balance'] == by_account['QA-1']['Closing balance'] == expected
+        assert by_account['QA-1']['Closing balance converted to USD'] == expected
+        assert by_account['QA-1']['Statement end date'] == '2026-08-31'
+        assert by_account['QA-2']['Status'] == 'NO IMPORT'
+        assert by_account['QA-3']['Closing balance converted to USD'] == Decimal('120.00')
+        assert by_account['QA-4']['Closing balance converted to USD'] == Decimal('260.00')
         assert '12,345,678,901,234,567,890.12' in print_document(rows,total,warnings)
-        print('PASS: PostgreSQL timestamp offsets/ID tie and exact NUMERIC beyond float precision')
+        print('PASS: PostgreSQL complete-row fallback despite matching positive counts; NO IMPORT; exact USD, approved EUR/GBP FX, timestamp/ID ties, zero-write reads')
     finally:
         with admin.cursor() as cur:
             cur.execute('DROP DATABASE IF EXISTS ' + name)

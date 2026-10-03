@@ -11,3 +11,4 @@ transactions.db
 *.log
 *.tmp
 *.bak
+.deployment_identity.json

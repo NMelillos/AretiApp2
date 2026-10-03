@@ -42,6 +42,11 @@ def main():
             parser_dependency = b"pglast==7.18\n"
             assert actual.count(parser_dependency) == 1
             actual = actual.replace(parser_dependency, b"", 1)
+        if name == "render.yaml":
+            # Only the release-identity evidence build step is authorized here.
+            build = b"    buildCommand: pip install -r requirements.txt && python deployment_identity.py\n"
+            assert actual.count(build) == 1
+            actual = actual.replace(build, b"    buildCommand: pip install -r requirements.txt\n", 1)
         assert actual == expected.replace(b"\r\n", b"\n"), name
     current_third = function(new, "render_third_link_report")
     assert "_render_report_cutoff_notice" not in ast.unparse(current_third)

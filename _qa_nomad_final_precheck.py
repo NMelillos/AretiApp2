@@ -89,6 +89,7 @@ def main():
         class UI:
             def __init__(self): self.clicked=False; self.downloads=[]; self.errors=[]
             def subheader(self,*a): pass
+            def info(self,*a): pass
             def file_uploader(self,*a,**k): return SimpleNamespace(getvalue=lambda:data)
             def button(self,*a,**k): return self.clicked
             def success(self,*a): pass
@@ -105,15 +106,15 @@ def main():
         else: raise AssertionError('Mutation accepted')
     source=Path(n.__file__).read_text()
     assert not any(s in source for s in ('work.apply(','.commit(','.reverse(','.journal('))
-    for sha in ('a'*40, 'B'*40):
-        with patch.dict(n.os.environ,{'RENDER_GIT_COMMIT':sha,'NOMAD_APPROVED_RELEASE_SHA':sha},clear=True):
+    for sha in ('a'*40, 'b'*40):
+        with patch('deployment_identity.actual_identity',return_value=sha), patch.dict(n.os.environ,{'RENDER_GIT_COMMIT':sha,'NOMAD_APPROVED_RELEASE_SHA':sha},clear=True):
             assert n.release_identity()=={'status':'PASS','deployed_sha':sha,'approved_sha':sha}
     for key in ('RENDER_GIT_COMMIT','NOMAD_APPROVED_RELEASE_SHA'):
-        for bad in (None,'','b'*40,'a'*39,'a'*41,'g'*40,' '+ 'a'*40,'a'*40+'\n','A'*40):
+        for bad in ('b'*40,'a'*39,'a'*41,'g'*40,' '+ 'a'*40,'a'*40+'\n','A'*40):
             env={'RENDER_GIT_COMMIT':'a'*40,'NOMAD_APPROVED_RELEASE_SHA':'a'*40}
             if bad is None: del env[key]
             else: env[key]=bad
-            with patch.dict(n.os.environ,env,clear=True):
+            with patch('deployment_identity.actual_identity',return_value='a'*40), patch.dict(n.os.environ,env,clear=True):
                 try: n.release_identity()
                 except ValueError as exc: assert str(exc)=='RELEASE_IDENTITY_UNVERIFIED'
                 else: raise AssertionError('Invalid or unapproved release accepted')

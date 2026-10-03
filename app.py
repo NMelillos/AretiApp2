@@ -39,6 +39,10 @@ if _THIRD_LINK_REQUEST:
     require_third_report_login()
 else:
     require_login()
+    if st.query_params.get("nomad_recovery") == "1":
+        from nomad_recovery_page import render_nomad_recovery_page
+        render_nomad_recovery_page()
+        st.stop()
 
 # Keep heavy data/reporting imports after the login gate so the first screen appears quickly.
 import pandas as pd

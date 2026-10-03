@@ -9,6 +9,15 @@ import hashlib
 def without_nomad_runtime(name, source):
     if name != 'app.py': return source
     source = source.replace(b'\r\n', b'\n')
+    recovery_hook = (b'    if st.query_params.get("nomad_recovery") == "1":\n'
+                     b'        from nomad_recovery_page import render_nomad_recovery_page\n'
+                     b'        render_nomad_recovery_page()\n'
+                     b'        st.stop()\n')
+    if recovery_hook in source:
+        assert source.count(recovery_hook) == 1
+        assert source.count(b'else:\n    require_login()\n' + recovery_hook) == 1, 'Recovery hook moved outside main login gate'
+        assert source.index(recovery_hook) < source.index(b'import pandas as pd'), 'Recovery hook must precede heavy imports'
+        source = source.replace(recovery_hook, b'', 1)
     blocks = (
         b'\nif page != "Setup":\n    st.session_state.pop("_nomad_runtime_server_evidence", None)\n',
         b'\n    from nomad_runtime import render as render_nomad_runtime\n    render_nomad_runtime(st)\n',

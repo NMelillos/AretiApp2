@@ -1575,7 +1575,11 @@ def parse_pdf(uploaded_file):
                         and (re.search(r"(?im)^Account statement\b", safra_text)
                              or "date ref. no. transaction value date debit credit balance in" in safra_text.lower())):
                     try:
-                        return _parse_safra_pages(pages)
+                        from safra_layout import booking_text
+                        return _parse_safra_pages([
+                            booking_text(page, page_text)
+                            for page, page_text in zip(pdf.pages, pages)
+                        ])
                     except SafraParseError:
                         raise
                     except Exception as exc:

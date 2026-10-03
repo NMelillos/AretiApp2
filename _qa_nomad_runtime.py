@@ -7,6 +7,8 @@ import hashlib
 
 
 def without_nomad_runtime(name, source):
+    from safra_balances_qa import without_safra_balances
+    source = without_safra_balances(name, source)
     if name != 'app.py': return source
     source = source.replace(b'\r\n', b'\n')
     recovery_hook = (b'    if st.query_params.get("nomad_recovery") == "1":\n'

@@ -53,7 +53,8 @@ def cold_route(mode):
 
 
 def main():
-    source = Path('app.py').read_text(encoding='utf-8')
+    from safra_balances_qa import without_safra_balances
+    source = without_safra_balances('app.py', Path('app.py').read_bytes()).decode('utf-8')
     hook = ('    if st.query_params.get("nomad_recovery") == "1":\n'
             '        from nomad_recovery_page import render_nomad_recovery_page\n'
             '        render_nomad_recovery_page()\n'

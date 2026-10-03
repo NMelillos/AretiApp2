@@ -5320,6 +5320,7 @@ PAGES = [
     "Pending Review",
     "Database",
     "Balances",
+    "Latest Import Balances",
     "Memory",
     "Reports",
     "Setup",
@@ -6268,6 +6269,11 @@ elif page == "Database":
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
     render_manual_transaction_form(categories, subcategories)
+
+
+elif page == "Latest Import Balances":
+    from latest_import_balances import render as render_latest_import_balances
+    render_latest_import_balances(st)
 
 
 elif page == "Balances":

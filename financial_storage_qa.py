@@ -78,6 +78,8 @@ ADDITIONS = {
 
 
 def protected_source(name, source):
+    from safra_balances_qa import without_safra_balances
+    source = without_safra_balances(name, source)
     from _qa_nomad_runtime import without_nomad_runtime
     source = without_nomad_runtime(name, source)
     if name == 'app.py' and b'from financial_decimal import' in source:

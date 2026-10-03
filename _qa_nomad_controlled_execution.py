@@ -79,7 +79,7 @@ def main():
                     work.require(plan==manifest,'SYNTHETIC_PLAN_CHANGED')
                 def derive(self,cur,pdf): return manifest
             review=SyntheticReview()
-            release={'approved_sha':'a'*40}
+            release={'approved_sha':controlled.RECOVERY_SOURCE_RELEASE}
             def state():
                 with closing(raw()) as conn:
                     return fence.read(conn)
@@ -180,10 +180,12 @@ def main():
             assert state()['state']=='RECOVERY_REQUIRED'; writers_blocked()
             with patch.object(controlled,'connection',raw),patch.object(controlled,'OPERATION','uncertain'), \
                  patch.object(controlled,'ReviewedNomad',return_value=review), \
-                 patch.object(controlled.precheck,'require_auth'),patch.object(controlled.precheck,'release_identity',return_value=release):
+                 patch('nomad_runtime.PDF_SHA256',hashlib.sha256(content).hexdigest()), \
+                 patch.object(controlled.precheck,'require_auth'),patch.object(controlled.precheck,'release_identity',return_value={'approved_sha':'b'*40}):
                 verified=controlled.verify_and_release(content,'VERIFY COMMITTED NOMAD REPAIR')
                 assert verified['verified']
             assert state()['state']=='NORMAL'
+            assert state()['phase']=='independently_verified:'+verified['after_hash']
             with closing(app()) as writer:
                 writer.cursor().execute('UPDATE classified_transactions SET reviewed=reviewed'); writer.rollback()
             expect_failure(lambda:attempt('uncertain'))
@@ -199,10 +201,22 @@ def main():
             with patch.object(work,'verify',side_effect=work.Blocked('SYNTHETIC_VERIFY_FAILURE')):
                 expect_failure(lambda:attempt('verify-failure'))
             assert state()['state']=='RECOVERY_REQUIRED'; writers_blocked()
+            protected_state = state()
             with patch.object(controlled,'connection',raw),patch.object(controlled,'OPERATION','verify-failure'), \
                  patch.object(controlled,'ReviewedNomad',return_value=review), \
-                 patch.object(controlled.precheck,'require_auth'),patch.object(controlled.precheck,'release_identity',return_value=release):
+                 patch('nomad_runtime.PDF_SHA256',hashlib.sha256(content).hexdigest()), \
+                 patch.object(controlled.precheck,'require_auth'),patch.object(controlled.precheck,'release_identity',return_value={'approved_sha':'b'*40}), \
+                 patch.object(work,'verify',side_effect=work.Blocked('POST_STATE_CHANGED')):
+                expect_failure(lambda:controlled.verify_and_release(content,'VERIFY COMMITTED NOMAD REPAIR'))
+            assert state() == protected_state
+            writers_blocked()
+            with patch.object(controlled,'connection',raw),patch.object(controlled,'OPERATION','verify-failure'), \
+                 patch.object(controlled,'ReviewedNomad',return_value=review), \
+                 patch('nomad_runtime.PDF_SHA256',hashlib.sha256(content).hexdigest()), \
+                 patch.object(controlled.precheck,'require_auth'),patch.object(controlled.precheck,'release_identity',return_value={'approved_sha':'b'*40}):
                 verified=controlled.verify_and_release(content,'VERIFY COMMITTED NOMAD REPAIR')
+            assert state()['state']=='NORMAL'
+            assert state()['phase']=='independently_verified:'+verified['after_hash']
             work.reverse(raw,operation_id='verify-failure',content=content,expected_after_hash=verified['after_hash'])
             with closing(raw()) as conn:
                 with conn.cursor() as cur:

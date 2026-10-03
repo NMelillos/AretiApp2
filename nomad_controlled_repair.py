@@ -10,6 +10,7 @@ from nomad_execution_review import ReviewedNomad
 from nomad_attempt import Attempt, SESSION_KEY
 
 OPERATION = 'nomad-frozen-final-v1'
+RECOVERY_SOURCE_RELEASE = '8a59cd47f634e5e66217bdb3bf18d5903526a30b'
 CONFIRMATION = 'REPAIR APPROVED NOMAD IMPORT'
 READY_KEY = '_nomad_controlled_readiness'
 
@@ -135,13 +136,16 @@ def execute(content, confirmation):
 
 
 def verify_and_release(content, confirmation):
-    """Explicit recovery entry point, not exposed by UI, startup or HTTP routes.
+    """Explicit authenticated recovery entry point, never called automatically.
 
     Does not rerun Repair or infer success from a timeout. A committed audited
     repair must pass the same independent verifier before writers can resume.
     """
     precheck.require_auth()
     atomic.require(confirmation == 'VERIFY COMMITTED NOMAD REPAIR', 'DELIBERATE_CONFIRMATION_REQUIRED')
+    from nomad_runtime import PDF_SHA256
+    atomic.require(isinstance(content, bytes) and hashlib.sha256(content).hexdigest() == PDF_SHA256,
+                   'PDF_FINGERPRINT_CHANGED')
     release = precheck.release_identity()
     with closing(connection()) as controller:
         atomic.session(controller, False)
@@ -150,7 +154,9 @@ def verify_and_release(content, confirmation):
             current = fence.read(controller)
             atomic.require(current['repair_id'] == OPERATION and current['state'] in
                            ('REPAIR_IN_PROGRESS', 'REPAIR_COMMITTED_UNVERIFIED', 'RECOVERY_REQUIRED'), 'RECOVERY_STATE_CHANGED')
-            atomic.require(current['binding']['release_sha'] == release['approved_sha']
+            source_release = (release['approved_sha'] if current['state'] == 'REPAIR_IN_PROGRESS'
+                              else RECOVERY_SOURCE_RELEASE)
+            atomic.require(current['binding']['release_sha'] == source_release
                            and current['binding']['evidence_digest'] == precheck.bindings.EXTENDED_CATALOG_DIGEST,
                            'RECOVERY_APPROVAL_CHANGED')
             controller.rollback()
@@ -176,15 +182,36 @@ def render(ui, evidence=None):
         st.session_state.pop(READY_KEY, None)
         st.session_state.pop(SESSION_KEY, None)
         return
-    failure = st.session_state.get(SESSION_KEY)
-    if failure:
-        ui.info('Last failed attempt: ' + failure['attempt_id'] + '; phase: ' + failure['phase']
-                + '; error: ' + failure['error_identifier'] + '; outcome: ' + failure['transaction_classification'])
     from nomad_recovery_status import read_status
     try:
         recovery = read_status()
     except Exception:
         recovery = dict(state='UNAVAILABLE', transaction_status='UNCERTAIN')
+    if recovery['state'] in ('REPAIR_COMMITTED_UNVERIFIED', 'RECOVERY_REQUIRED'):
+        st.session_state.pop(READY_KEY, None)
+        ui.info('Committed NOMAD repair requires independent verification before writers can resume.')
+        uploaded = st.session_state.get('nomad_runtime_pdf')
+        if uploaded is None:
+            return
+        content = uploaded.getvalue()
+        if not isinstance(content, bytes) or hashlib.sha256(content).hexdigest() != PDF_SHA256:
+            ui.error('Verification blocked: original NOMAD PDF fingerprint does not match.')
+            return
+        confirmed = ui.checkbox('I confirm verification of the committed NOMAD repair',
+                                key='nomad_recovery_confirm')
+        if ui.button('Verify committed NOMAD repair and release writers', disabled=not confirmed,
+                     key='nomad_recovery_verify'):
+            try:
+                atomic.require(confirmed is True, 'DELIBERATE_CONFIRMATION_REQUIRED')
+                verify_and_release(content, 'VERIFY COMMITTED NOMAD REPAIR')
+                ui.success('NOMAD repair independently verified. Normal writers are enabled.')
+            except BaseException:
+                ui.error('Verification did not complete verified release. Writers remain protected; do not retry Repair or clear the fence.')
+        return
+    failure = st.session_state.get(SESSION_KEY)
+    if failure:
+        ui.info('Last failed attempt: ' + failure['attempt_id'] + '; phase: ' + failure['phase']
+                + '; error: ' + failure['error_identifier'] + '; outcome: ' + failure['transaction_classification'])
     ui.info('Current repair fence: ' + recovery['state']
             + '. Repair transaction status: ' + recovery['transaction_status'] + '.')
     if recovery['state'] != 'NORMAL' or recovery['transaction_status'] == 'UNCERTAIN':

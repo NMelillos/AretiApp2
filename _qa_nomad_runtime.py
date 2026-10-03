@@ -9,6 +9,8 @@ import hashlib
 def without_nomad_runtime(name, source):
     if name != 'app.py': return source
     source = source.replace(b'\r\n', b'\n')
+    from _qa_ops_console import without_ops_hook
+    source = without_ops_hook(source)
     recovery_hook = (b'    if st.query_params.get("nomad_recovery") == "1":\n'
                      b'        from nomad_recovery_page import render_nomad_recovery_page\n'
                      b'        render_nomad_recovery_page()\n'
@@ -41,6 +43,9 @@ def main():
         source = Path(name).read_bytes().replace(b'\r\n', b'\n')
         base = subprocess.check_output(['git','show','de6557df7b6865c82406773fb0b7a6ad15147cd5:'+name]).replace(b'\r\n',b'\n')
         if name == 'app.py': source = without_nomad_runtime(name, source)
+        if name == 'auth.py':
+            from _qa_ops_console import without_ops_auth_cleanup
+            source = without_ops_auth_cleanup(source)
         assert source == base, 'Unrelated application/auth change'
     import nomad_runtime as n
     import financial_atomic as work

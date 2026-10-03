@@ -134,6 +134,8 @@ def get_third_report_user():
 def sign_out():
     for key in ["authenticated", "login_user", "login_error", "login_username", "login_password"]:
         st.session_state.pop(key, None)
+    for key in ("_ops_owner_proof", "_ops_result", "_ops_owner_password", "_ops_owner_attempts"):
+        st.session_state.pop(key, None)
 
 
 def sign_out_third_report():

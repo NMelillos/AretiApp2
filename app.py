@@ -39,6 +39,10 @@ if _THIRD_LINK_REQUEST:
     require_third_report_login()
 else:
     require_login()
+    if st.query_params.get("ops") == "1":
+        from ops_console import render_ops_console
+        render_ops_console()
+        st.stop()
     if st.query_params.get("nomad_recovery") == "1":
         from nomad_recovery_page import render_nomad_recovery_page
         render_nomad_recovery_page()

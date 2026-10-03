@@ -27,6 +27,9 @@ def main():
     for name in ("auth.py", "reporting.py", "db.py", "requirements.txt", "render.yaml"):
         expected = subprocess.check_output(["git", "show", f"{BASE}:{name}"])
         actual = Path(name).read_bytes().replace(b"\r\n", b"\n")
+        if name == "auth.py":
+            from _qa_ops_console import without_ops_auth_cleanup
+            actual = without_ops_auth_cleanup(actual)
         if name == "reporting.py":
             from _qa_income_membership import protected_reporting
             actual = protected_reporting(actual)

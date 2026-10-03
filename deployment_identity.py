@@ -104,11 +104,16 @@ def verify_evidence(root, evidence):
     return sha
 
 
-def actual_identity(root=None):
+def actual_identity(root=None, *, allow_git=True):
     root = ROOT if root is None else Path(root).resolve()
     artifact = root / ARTIFACT
     try:
-        evidence = json.loads(artifact.read_text()) if artifact.exists() else checkout_evidence(root)
+        if artifact.exists():
+            evidence = json.loads(artifact.read_text())
+        elif allow_git:
+            evidence = checkout_evidence(root)
+        else:
+            raise ValueError('ACTUAL_IDENTITY_UNAVAILABLE')
         return verify_evidence(root, evidence)
     except ValueError:
         raise
@@ -116,13 +121,13 @@ def actual_identity(root=None):
         raise ValueError('ACTUAL_IDENTITY_UNAVAILABLE') from None
 
 
-def release_status():
+def release_status(*, allow_git=True):
     approved = os.getenv('NOMAD_APPROVED_RELEASE_SHA', '')
     render = os.getenv('RENDER_GIT_COMMIT', '')
     actual = ''
     reason = ''
     try:
-        actual = actual_identity()
+        actual = actual_identity() if allow_git else actual_identity(allow_git=False)
         if render and (not SHA.fullmatch(render) or render != actual):
             reason = 'RENDER_IDENTITY_CONFLICT'
         elif not SHA.fullmatch(approved):

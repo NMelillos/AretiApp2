@@ -54,6 +54,8 @@ def cold_route(mode):
 
 def main():
     source = Path('app.py').read_text(encoding='utf-8')
+    from _qa_ops_console import without_ops_hook
+    source = without_ops_hook(source.encode()).decode()
     hook = ('    if st.query_params.get("nomad_recovery") == "1":\n'
             '        from nomad_recovery_page import render_nomad_recovery_page\n'
             '        render_nomad_recovery_page()\n'

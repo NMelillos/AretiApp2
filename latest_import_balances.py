@@ -8,7 +8,9 @@ import pandas as pd
 from financial_decimal import optional_decimal, exact_sum, cents
 from import_history import cyprus_time
 
-NOTE = ('One row per account. Latest means committed import time, not statement end date. '
+NOTE = ('INTERIM PARTIAL REPORT: current Setup accounts only. Accounts absent from Setup are outside '
+        'this report and are not enumerated. This is not a complete reconciled total of all accounts. '
+        'One row per account/currency. Latest means committed import time, not statement end date. '
         'Newer incomplete imports remain visible; older balances are never substituted.')
 COLUMNS = ('Account number', 'Account name', 'Bank', 'Import date',
            'Statement start date', 'Statement end date', 'Opening balance',
@@ -279,12 +281,16 @@ def workbook_bytes(rows, total, warnings, generated_at=None):
     sheet.auto_filter.ref = sheet.dimensions
     info = book.create_sheet('Verification')
     info.append(['Generated', (generated_at or datetime.now(ZoneInfo('Europe/Nicosia'))).isoformat()])
-    info.append(['Selection', NOTE])
+    info.append(['Report scope', NOTE])
     info.append(['Total basis', 'Eligible deposit balances only; liabilities and unverified values excluded'])
-    info.append(['Total USD', float(total) if len(total.as_tuple().digits) <= 15 else str(total)])
+    info.append(['Partial USD total (current Setup eligible deposits)', float(total) if len(total.as_tuple().digits) <= 15 else str(total)])
     info.cell(4,2).number_format = '#,##0.00'
     info.append(['Excel precision', 'Values exceeding 15 digits are exact text, not rounded numeric cells.'])
-    for warning in warnings: info.append(['Excluded', warning])
+    info.append(['Excluded accounts/balances', 'Per-account exclusions and reasons follow; balances remain visible on the main sheet. Accounts outside Setup are not enumerated.'])
+    if not warnings:
+        info.append(['Excluded', 'No current Setup balances excluded by report eligibility; accounts outside Setup remain outside scope.'])
+    for warning in warnings:
+        info.append(['Excluded' if 'excluded' in warning.lower() else 'Verification warning', warning])
     for row in info:
         for cell in row:
             if isinstance(cell.value, str):
@@ -351,7 +357,11 @@ Card/liability balances are shown in their stored statement convention and exclu
 or the earliest configured rate when no earlier month exists (existing application policy). Missing rates are excluded.</p>
 <button onclick="window.print()">Print / Save as PDF</button>
 <table><thead><tr>{headings}</tr></thead><tbody>{body}</tbody></table>
-<p class="total">{'PARTIAL ' if warnings else ''}TOTAL USD VALUE OF ALL ACCOUNTS (eligible deposit balances): {cell(total)}</p>
+<p class="total">PARTIAL TOTAL USD — CURRENT SETUP ACCOUNTS (eligible deposit balances): {cell(total)}</p>
+<h2>Excluded balances and other verification warnings</h2>
+<p>Only warnings stating that a balance is excluded remove it from the partial total.
+Import-time verification warnings alone do not change balance eligibility.</p>
+{'' if warnings else '<p>No current Setup balances excluded by report eligibility; accounts outside Setup remain outside scope.</p>'}
 <ul class="warnings">{warning_html}</ul>
 </body></html>'''
 
@@ -360,6 +370,7 @@ def render(st):
     import db
     import streamlit.components.v1 as components
     st.subheader('Latest Import Balances')
+    st.info(NOTE)
     try:
         rows, total, warnings = snapshot(db)
     except Exception:

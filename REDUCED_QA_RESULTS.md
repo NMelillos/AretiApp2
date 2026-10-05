@@ -1,5 +1,7 @@
 # Reduced-candidate executed QA
 
+This records the historical 7ea6920 targeted checkpoint. The later conditional-release run and report-labeling follow-up are recorded in INTERIM_QA_RESULTS.md: 62/85 latest applicable outcomes pass and 23 fail; release regression remains unmet. Do not present this earlier five-script checkpoint as final release approval.
+
 2026-10-05. Tested the actual reduced branch; the full candidate's 89/89 result is not evidence for this build. No unchanged full suite was rerun.
 
 Private runner: `E:/AretiCodex/_runtime/master-continuation-20261005/run_qa.py`. Python: `C:/Program Files/Python312/python.exe`. Invocation pattern:

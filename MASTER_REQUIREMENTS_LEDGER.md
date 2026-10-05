@@ -15,3 +15,9 @@ The authoritative full master ledger and all evidence mappings remain preserved 
 | Release identity, rollback and authenticated verification | Local scope prepared only | Fresh remote main / local identity checks | No / none / pending | Current service/SHA/access, practical rollback, approved non-production UAT, final required release suite and explicit hold lift |
 
 Evidence: full master/eighteen screenshots already reviewed, preserved with original candidate; current reduced tests documented in REDUCED_QA_RESULTS.md. New candidate is a separate local branch from verified f3ea9ce, not the full candidate with its guard disabled. All five status dimensions must remain separate in future handovers.
+
+## Conditional interim release update
+
+The user approved 7ea6920 as interim reduced scope only, subject to all release gates; no repeated scope approval is needed. UI, HTML/PDF and Excel now explicitly identify a partial current-Setup report, preserve visible uncertain balances, and distinguish exclusions from other verification warnings. Full reconciled/all-account reporting remains OPEN; accounts absent from Setup are outside this report and are not enumerated.
+
+Latest technical QA: 62/85 applicable script outcomes PASS, 23 FAIL after one full run and targeted corrected-port/report checks. Final report/AppTest/scope tests passed; protected baseline financial modules unchanged. Release regression, current hosting/live SHA/access, inherited diff against live, practical rollback, hosted performance and Areti acceptance remain unmet. No deployment or data repair occurred. See INTERIM_QA_RESULTS.md and INTERIM_RELEASE_GATES.md. Historical corrections, original 429 diagnosis, BOC/Citi parsing, import outcomes and CNB/SPLIT issues remain open and are not fixed by this interim scope.

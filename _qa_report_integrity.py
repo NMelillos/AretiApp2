@@ -62,11 +62,21 @@ def main():
         rows[0]['Bank']='<script>unsafe</script>'
         html=print_document(rows,total,warnings,generated)
         assert '<script>unsafe</script>' not in html and 'PARTIAL TOTAL' in html
+        assert 'current Setup accounts only' in html and 'not a complete reconciled total' in html
+        assert 'TOTAL USD VALUE OF ALL ACCOUNTS' not in html
+        assert 'Excluded balances and other verification warnings' in html
         assert '17.43' in html and '15.29' in html and 'Card/liability balances' in html
         book=load_workbook(BytesIO(workbook_bytes(rows,total,warnings,generated)))
         assert book.active['B2'].data_type=='s'
         assert book.active['G2'].number_format.startswith('#,##0.00')
         assert book['Verification']['B4'].value==float(total)
+        assert 'current Setup accounts only' in book['Verification']['B2'].value
+        assert 'Partial USD total' in book['Verification']['A4'].value
+        assert any('QA-4' in str(row[1].value) for row in book['Verification'] if len(row)>1)
+        assert any(row[0].value=='Verification warning' and 'ordering is unverified' in str(row[1].value) for row in book['Verification'])
+        assert not any(row[0].value=='Excluded' and 'ordering is unverified' in str(row[1].value) for row in book['Verification'])
+        complete_html=print_document([rows[0]],Decimal('17.43'),[],generated)
+        assert 'PARTIAL TOTAL' in complete_html and 'outside Setup remain outside scope' in complete_html
         assert book.active['G2'].data_type=='n'
         with closing(db.get_connection()) as conn:assert '\n'.join(conn.iterdump())==before
         unknown_precision=dict(rows[0],Currency='KWD',**{'Opening balance':Decimal('1.234'),'Closing balance':Decimal('1.234')})

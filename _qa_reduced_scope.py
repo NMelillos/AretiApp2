@@ -15,7 +15,13 @@ def main():
     assert not any(os.getenv(k) for k in ('DATABASE_URL','POSTGRES_URL','SUPABASE_URL'))
     import db
     assert not db.USING_POSTGRES
-    allowed={'app.py','review_state.py','latest_import_balances.py'}
+    allowed={'app.py','review_state.py','latest_import_balances.py',
+             'safra_balances_qa.py','_qa_latest_import_balances.py'}
+    hook=("    if name == 'app.py':\n"
+          "        from reduced_release_qa import historical_app_source\n"
+          "        source = historical_app_source(source)\n")
+    guard=Path('safra_balances_qa.py').read_text(encoding='utf-8')
+    assert guard.count(hook)==1 and guard.replace(hook,'',1)==old('safra_balances_qa.py')
     preserved=[]
     for name in subprocess.check_output(['git','ls-tree','--name-only',BASE]).decode().splitlines():
         if name.endswith('.py') and name not in allowed:

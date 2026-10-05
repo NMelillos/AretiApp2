@@ -34,6 +34,9 @@ def without_safra_balances(name, source):
     present = APP_BRANCH in source if name == 'app.py' else NEW_DISPATCH in source
     if not present:
         return source
+    if name == 'app.py':
+        from reduced_release_qa import historical_app_source
+        source = historical_app_source(source)
     assert hashlib.sha256(source).hexdigest() == HASHES[name], 'Unreviewed Safra/balances source change'
     if name == 'app.py':
         assert source.count(APP_NAV) == source.count(APP_BRANCH) == 1

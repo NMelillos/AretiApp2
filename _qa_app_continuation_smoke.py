@@ -52,6 +52,10 @@ def main():
                 assert values['Rule'] == values['Other'] == 1
             if page == 'Setup':
                 assert len(at.get('file_uploader')) == 3
+            if page == 'Latest Import Balances':
+                from latest_import_balances import NOTE
+                assert any(item.value==NOTE for item in at.info)
+                assert 'current Setup accounts only' in NOTE and 'not a complete reconciled total' in NOTE
             if page == 'Corrections':
                 assert [item.label for item in at.checkbox]==['Load correction controls and current repair status']
                 assert at.checkbox[0].value is False

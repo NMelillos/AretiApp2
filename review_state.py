@@ -61,3 +61,11 @@ def counts(active_rows):
     reviewed = status.eq("reviewed") | flag.isin(TRUE_FLAGS)
     pending = status.isin(["", "pending"]) & ~reviewed
     return {"pending": int(pending.sum()), "reviewed": int(reviewed.sum())}
+
+
+def match_buckets(rows):
+    """An exhaustive, mutually exclusive partition of the visible population."""
+    matches = rows.get('match_type', pd.Series('', index=rows.index)).map(_text)
+    counts = {key: int(matches.eq(key).sum()) for key in ('exact', 'similar', 'new', 'rule')}
+    counts['other'] = len(rows) - sum(counts.values())
+    return counts

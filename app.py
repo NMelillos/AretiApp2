@@ -2612,6 +2612,11 @@ def render_app_header():
 def render_status_bar():
     try:
         counts = get_dashboard_counts()
+        # The header and Pending Review use the same fresh population on this
+        # rerun, rather than two independently aged cache entries.
+        global _pending_run_snapshot
+        _pending_run_snapshot = _db_get_pending_transactions()
+        counts = dict(counts, pending=len(_pending_run_snapshot))
     except Exception as exc:
         st.warning(f"Dashboard counts are temporarily unavailable: {exc}")
         return
@@ -2678,7 +2683,34 @@ def missing_account_rate_types(accounts=None, rates=None):
     return [rate_type for rate_type in required if rate_type not in loaded]
 
 
+def _save_setup_upload(upload, writer, label):
+    """Keep sibling setup controls usable after a failed save; never replay writes."""
+    try:
+        with st.spinner(f"Saving {label}..."):
+            count = writer(upload)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    except Exception as exc:
+        status = getattr(exc, "status_code", getattr(exc, "code", None))
+        if status == 429:
+            headers = getattr(exc, "headers", {}) or {}
+            retry_after = headers.get("Retry-After")
+            guidance = f" Wait {retry_after} before retrying." if retry_after else " Wait before retrying."
+            st.error("The setup request was rate limited (429)." + guidance
+                     + " Verify the saved setup first; this write has not been replayed.")
+        else:
+            st.error("The setup save could not be confirmed. Reload and verify the saved setup before retrying. No automatic retry was made.")
+        return
+    st.session_state["setup_save_message"] = f"Loaded {count} {label}."
+    st.cache_data.clear()
+    st.rerun()
+
+
 def render_setup_loader(key_prefix):
+    message = st.session_state.pop("setup_save_message", "")
+    if message:
+        st.success(message)
     st.info(
         "First-time setup is required before importing statements. "
         "Upload the three control workbooks; after they are loaded, the statement uploader will unlock."
@@ -2690,13 +2722,7 @@ def render_setup_loader(key_prefix):
     ]
     if not missing_shared:
         if st.button("Load setup from shared folder", type="primary", key=f"{key_prefix}_shared_setup"):
-            category_count, account_count, rate_count = load_shared_setup_files()
-            st.success(
-                f"Loaded {category_count} category rows, "
-                f"{account_count} accounts, and {rate_count} monthly rates."
-            )
-            st.cache_data.clear()
-            st.rerun()
+            _save_setup_upload(None, lambda _: sum(load_shared_setup_files()), "shared setup rows")
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -2706,10 +2732,7 @@ def render_setup_loader(key_prefix):
             key=f"{key_prefix}_category_file",
         )
         if category_file and st.button("Replace categories", type="primary", key=f"{key_prefix}_replace_categories"):
-            count = replace_categories_from_excel(category_file)
-            st.success(f"Loaded {count} category rows.")
-            st.cache_data.clear()
-            st.rerun()
+            _save_setup_upload(category_file, replace_categories_from_excel, "category rows")
 
     with c2:
         account_file = st.file_uploader(
@@ -2718,10 +2741,7 @@ def render_setup_loader(key_prefix):
             key=f"{key_prefix}_account_file",
         )
         if account_file and st.button("Replace accounts", type="primary", key=f"{key_prefix}_replace_accounts"):
-            count = replace_accounts_from_excel(account_file)
-            st.success(f"Loaded {count} account rows.")
-            st.cache_data.clear()
-            st.rerun()
+            _save_setup_upload(account_file, replace_accounts_from_excel, "account rows")
 
     with c3:
         rates_file = st.file_uploader(
@@ -2730,10 +2750,7 @@ def render_setup_loader(key_prefix):
             key=f"{key_prefix}_rates_file",
         )
         if rates_file and st.button("Replace rates", type="primary", key=f"{key_prefix}_replace_rates"):
-            count = replace_rates_from_excel(rates_file)
-            st.success(f"Loaded {count} monthly rates.")
-            st.cache_data.clear()
-            st.rerun()
+            _save_setup_upload(rates_file, replace_rates_from_excel, "monthly rates")
 
 
 EXECUTIVE_REPORT_PAGE = "Executive Summary"
@@ -5310,6 +5327,7 @@ if is_executive_report_request():
 
 render_app_header()
 render_session_line()
+_pending_run_snapshot = None
 render_status_bar()
 render_unsafe_storage_notice()
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -5325,6 +5343,9 @@ PAGES = [
     "Reports",
     "Setup",
 ]
+from existing_import_compare import authorized as corrections_authorized
+if corrections_authorized():
+    PAGES.append("Corrections")
 page = st.segmented_control(
     "Section",
     PAGES,
@@ -5343,7 +5364,7 @@ page = st.segmented_control(
 if st.query_params.get("page") != page:
     st.query_params["page"] = page
 
-if page != "Setup":
+if page != "Corrections":
     st.session_state.pop("_nomad_runtime_server_evidence", None)
 
 
@@ -5837,7 +5858,8 @@ elif page == "Pending Review":
     pending_save_message = st.session_state.pop("pending_review_save_message", "")
     if pending_save_message:
         st.success(pending_save_message)
-    pending = get_pending_transactions()
+    pending = (_pending_run_snapshot.copy() if _pending_run_snapshot is not None
+               else _db_get_pending_transactions())
     categories = get_categories()
     subcategories = get_subcategories()
 
@@ -5891,12 +5913,16 @@ elif page == "Pending Review":
                 )
             ].copy()
 
-        p1, p2, p3, p4, p5 = st.columns(5)
+        from review_state import match_buckets
+        pending_buckets = match_buckets(pending_view)
+        p1, p2, p3, p4, p5, p6, p7 = st.columns(7)
         p1.metric("Visible rows", len(pending_view))
         p2.metric("All pending backlog", len(pending))
-        p3.metric("Exact", int((pending_view["match_type"] == "exact").sum()))
-        p4.metric("Similar", int((pending_view["match_type"] == "similar").sum()))
-        p5.metric("New", int((pending_view["match_type"] == "new").sum()))
+        p3.metric("Exact", pending_buckets['exact'])
+        p4.metric("Similar", pending_buckets['similar'])
+        p5.metric("New", pending_buckets['new'])
+        p6.metric("Rule", pending_buckets['rule'])
+        p7.metric("Other", pending_buckets['other'])
         if statement_filter != "All pending statements" and len(pending) != len(pending_view):
             st.info(
                 f"You are viewing {len(pending_view)} row(s) for {statement_filter}. "
@@ -6529,11 +6555,22 @@ elif page == "Reports":
         st.dataframe(preview, use_container_width=True, height=460)
 
 
+elif page == "Corrections":
+    if not corrections_authorized():
+        st.error("Corrections require the authenticated main Areti session.")
+        st.stop()
+    st.subheader("Corrections")
+    st.caption("Read-only diagnostics and existing controlled repair tools. Existing approval and release gates apply.")
+    if st.checkbox("Load correction controls and current repair status", key="load_correction_controls"):
+        from nomad_runtime import render as render_nomad_runtime
+        render_nomad_runtime(st)
+
+
 elif page == "Setup":
     st.subheader("Setup")
-
-    from nomad_runtime import render as render_nomad_runtime
-    render_nomad_runtime(st)
+    setup_save_message = st.session_state.pop("setup_save_message", "")
+    if setup_save_message:
+        st.success(setup_save_message)
 
     setup_categories = get_categories(include_subcategories=True)
     setup_accounts = get_accounts()
@@ -6547,13 +6584,7 @@ elif page == "Setup":
     ]
     if not missing_shared:
         if st.button("Load shared folder setup", type="primary"):
-            category_count, account_count, rate_count = load_shared_setup_files()
-            st.success(
-                f"Loaded {category_count} category rows, "
-                f"{account_count} accounts, and {rate_count} monthly rates."
-            )
-            st.cache_data.clear()
-            st.rerun()
+            _save_setup_upload(None, lambda _: sum(load_shared_setup_files()), "shared setup rows")
     elif setup_missing:
         st.warning("Shared setup files missing: " + ", ".join(missing_shared))
 
@@ -6561,26 +6592,17 @@ elif page == "Setup":
     with c1:
         category_file = st.file_uploader("Expense categories", type=["xlsx", "xls"], key="category_file")
         if category_file and st.button("Replace categories", type="primary"):
-            count = replace_categories_from_excel(category_file)
-            st.success(f"Loaded {count} category rows.")
-            st.cache_data.clear()
-            st.rerun()
+            _save_setup_upload(category_file, replace_categories_from_excel, "category rows")
 
     with c2:
         account_file = st.file_uploader("Who made the expense", type=["xlsx", "xls"], key="account_file")
         if account_file and st.button("Replace accounts", type="primary"):
-            count = replace_accounts_from_excel(account_file)
-            st.success(f"Loaded {count} account rows.")
-            st.cache_data.clear()
-            st.rerun()
+            _save_setup_upload(account_file, replace_accounts_from_excel, "account rows")
 
     with c3:
         rates_file = st.file_uploader("Monthly rates", type=["xlsx", "xls"], key="rates_file")
         if rates_file and st.button("Replace rates", type="primary"):
-            count = replace_rates_from_excel(rates_file)
-            st.success(f"Loaded {count} monthly rates.")
-            st.cache_data.clear()
-            st.rerun()
+            _save_setup_upload(rates_file, replace_rates_from_excel, "monthly rates")
 
     if setup_missing_rates:
         st.warning(

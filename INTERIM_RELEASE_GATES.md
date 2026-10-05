@@ -4,6 +4,8 @@
 
 Deployment remains HELD. No push, merge, deployment, historical production repair, schema change, reimport, taxonomy remapping or safeguard removal has occurred. Full candidate and handover `eb46d0ee2c263ab3d3e3108a398d3ecac1c39a8e` remain clean and preserved.
 
+Latest hosting lookup: existing deployment records identify exact service `srv-d7aj84khg0os73b4g0i0` and its recorded dashboard URL. Fresh connector lookups for this exact service and deploy both return404 in the confirmed workspace. Historical identity is established; current ownership/access/live SHA/rollback remain unresolved. See HOSTING_LOOKUP_CHECKPOINT.md; no replacement service or inferred deployment target.
+
 | Gate | Verified evidence | Status |
 | --- | --- | --- |
 | Actual hosting service, live SHA and access before push/merge | Fresh Render `list_services(workspaceId=tea-d8nphahkh4rs73fesktg, includePreviews=true)` returned `null`; local Render CLI unavailable. Workspace read access was already confirmed by the user. Exact service/access question submitted, with no guessed target | BLOCKED: actual service, live SHA and deploy/log access unverified |

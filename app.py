@@ -43,6 +43,11 @@ else:
         from nomad_recovery_page import render_nomad_recovery_page
         render_nomad_recovery_page()
         st.stop()
+    if _REQUESTED_PAGE == "Statement Summary":
+        from statement_summary_page import render_statement_summary_page
+        render_statement_summary_page()
+        st.stop()
+    st.link_button("Statement Summary", "?page=Statement+Summary")
 
 # Keep heavy data/reporting imports after the login gate so the first screen appears quickly.
 import pandas as pd

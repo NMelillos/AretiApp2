@@ -28,6 +28,11 @@ from auth import (
 THIRD_LINK_REPORT_PAGE = "TB & NF Family Office Report"
 THIRD_LINK_REPORT_PAGES = {THIRD_LINK_REPORT_PAGE, "Family Office Report", "TB & NF Family Office Expenses Report"}
 _REQUESTED_PAGE = st.query_params.get("page")
+if _REQUESTED_PAGE == "Statement+Summary":
+    _REQUESTED_PAGE = "Statement Summary"
+if _REQUESTED_PAGE == "Statement Summary" and not st.session_state.get("authenticated"):
+    # Keep the requested destination across the login rerun, even if the URL changes.
+    st.session_state["summary_login_destination"] = True
 _THIRD_LINK_REQUEST = _REQUESTED_PAGE in THIRD_LINK_REPORT_PAGES
 
 st.set_page_config(
@@ -39,15 +44,20 @@ if _THIRD_LINK_REQUEST:
     require_third_report_login()
 else:
     require_login()
+    if st.session_state.pop("summary_login_destination", False):
+        _REQUESTED_PAGE = "Statement Summary"
     if st.query_params.get("nomad_recovery") == "1":
         from nomad_recovery_page import render_nomad_recovery_page
         render_nomad_recovery_page()
         st.stop()
     if _REQUESTED_PAGE == "Statement Summary":
+        st.query_params["page"] = "Statement Summary"
         from statement_summary_page import render_statement_summary_page
         render_statement_summary_page()
         st.stop()
-    st.link_button("Statement Summary", "?page=Statement+Summary")
+    if st.button("Statement Summary", key="open_statement_summary"):
+        st.query_params["page"] = "Statement Summary"
+        st.rerun()
 
 # Keep heavy data/reporting imports after the login gate so the first screen appears quickly.
 import pandas as pd

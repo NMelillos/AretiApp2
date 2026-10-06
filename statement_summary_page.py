@@ -7,7 +7,9 @@ def render_statement_summary_page():
     st.title('Statement Summary')
     st.info('Read-only PDF preview. No transactions, classifications or stored balances are created or changed. This is separate from normal Upload.')
     st.caption('Bank of Cyprus text statements supported first. Other layouts or scanned fields return NOT VERIFIED. Zero transactions are supported; transaction extraction is never required.')
-    st.link_button('Return to application', '?page=Import')
+    if st.button('Return to application', key='return_from_summary'):
+        st.query_params['page'] = 'Import'
+        st.rerun()
     uploaded = st.file_uploader('Choose a statement PDF', type=['pdf'], key='summary_pdf')
     if uploaded is None:
         return

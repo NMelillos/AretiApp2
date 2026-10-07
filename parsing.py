@@ -6,6 +6,7 @@ from io import BytesIO
 import pandas as pd
 from cnb_import import CNBParseError, is_cnb, parse_cnb
 from comerica_checks import ComericaChecksError, parse_checks_only
+from comerica_balances import withdrawals_only_balance
 
 from utils import extract_beneficiary, infer_transaction_type, normalize_description, simplify_merchant
 
@@ -1148,6 +1149,12 @@ def extract_statement_balance(uploaded_file, file_name=""):
             checked = parse_checks_only(pdf)
             if checked is not None:
                 return checked[1]
+            page = pdf.pages[0]
+            panel = page.crop((0, 0, page.width * .60, page.height)).extract_text() or ''
+            balance = withdrawals_only_balance(panel, text, _parse_comerica_pdf_text(text),
+                                              extract_statement_balance_from_text(text, file_name))
+            if balance is not None:
+                return balance
     return extract_statement_balance_from_text(text, file_name)
 
 

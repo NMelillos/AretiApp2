@@ -5180,6 +5180,16 @@ def render_third_link_report():
         unsafe_allow_html=True,
     )
     render_third_report_session_line()
+    if st.button('Latest Import Balances', key='third_latest_import_balances'):
+        st.session_state['third_latest_balances_open'] = True
+    if st.session_state.get('third_latest_balances_open'):
+        if st.button('Return to THIRD REPORT', key='third_latest_balances_return'):
+            st.session_state['third_latest_balances_open'] = False
+            st.rerun()
+        from latest_balances_compact import render as render_compact_balances
+        import db as compact_db
+        render_compact_balances(st, compact_db)
+        return
     status_slot = st.empty()
     status_slot.info("Loading report data...")
 

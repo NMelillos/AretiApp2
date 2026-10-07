@@ -1147,6 +1147,8 @@ def extract_statement_balance(uploaded_file, file_name=""):
     with pdfplumber.open(uploaded_file) as pdf:
         pages = [page.extract_text() or "" for page in pdf.pages]
         text = "\n".join(pages)
+        if is_cnb(text):
+            return parse_cnb(pages, pdf.metadata).attrs['statement_balance']
         if "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
             from boc_import import parse_pages
             balance = parse_pages(pdf.pages, pages)[1]

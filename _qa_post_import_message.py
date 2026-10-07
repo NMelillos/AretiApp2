@@ -93,6 +93,23 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(len(reuse.body),1)
         reuse_try.body=reuse.orelse
         self.assertEqual(ast.dump(current_hint),ast.dump(prior_hint))
+        # This package additionally authorizes only the exact compact THIRD branch.
+        third=next(n for n in current.body if isinstance(n,ast.FunctionDef) and n.name=='render_third_link_report')
+        at=next(i for i,n in enumerate(third.body) if isinstance(n,ast.Expr)
+                and isinstance(n.value,ast.Call) and ast.unparse(n.value.func)=='render_third_report_session_line')+1
+        expected_third=ast.parse('''if st.button('Latest Import Balances', key='third_latest_import_balances'):
+    st.session_state['third_latest_balances_open'] = True
+if st.session_state.get('third_latest_balances_open'):
+    if st.button('Return to THIRD REPORT', key='third_latest_balances_return'):
+        st.session_state['third_latest_balances_open'] = False
+        st.rerun()
+    from latest_balances_compact import render as render_compact_balances
+    import db as compact_db
+    render_compact_balances(st, compact_db)
+    return
+''').body
+        self.assertEqual([ast.dump(n) for n in third.body[at:at+2]], [ast.dump(n) for n in expected_third])
+        del third.body[at:at+2]
         self.assertEqual(ast.dump(current),ast.dump(baseline))
 
     def test_preview_does_not_write(self):

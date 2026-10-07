@@ -109,6 +109,14 @@ def parse_cnb(pages, metadata):
     result["source_account_number"] = number
     result.attrs["cnb_account"] = number
     result.attrs["cnb_alias"] = alias
+    result.attrs['statement_balance'] = dict(
+        bank='CNB', account_number=number, currency='USD',
+        period_start=start.isoformat(), period_end=end.isoformat(),
+        opening_balance=amount(opening), money_in=credits, money_out=debits,
+        closing_balance=amount(closing), source='CNB Account Summary',
+        transaction_count=len(rows),
+        source_movements=[(row[0], Decimal(row[2])) for row in rows],
+    )
     return result
 
 
@@ -128,3 +136,24 @@ def cnb_account(df, accounts):
     if len(candidates) != 1:
         raise CNBParseError("CNB requires exactly one verified existing USD account.")
     return candidates.iloc[0].to_dict()
+
+
+def validate_preview(frame, balance, account):
+    """Preserve the Account Summary proof through normal atomic import."""
+    number = str(frame.attrs.get('cnb_account', ''))
+    allowed = {number, str(frame.attrs.get('cnb_alias', ''))} - {''}
+    if (balance.get('source') != 'CNB Account Summary' or balance.get('account_number') != number
+            or str(account.get('account_number', '')) not in allowed
+            or str(account.get('bank', '')).strip().casefold() not in ('cnb', 'city national bank')
+            or account.get('currency') != 'USD' or balance.get('currency') != 'USD'):
+        raise CNBParseError('CNB preview account identity is not verified.')
+    movements = [(str(row['Date']), Decimal(str(row['Amount']))) for row in frame.to_dict('records')]
+    if (movements != balance.get('source_movements') or len(frame) != balance.get('transaction_count')
+            or not frame.account_number.eq(account['account_number']).all()
+            or not frame.currency.eq('USD').all()):
+        raise CNBParseError('CNB preview no longer matches the verified source.')
+    incoming = sum((value for _, value in movements if value > 0), Decimal(0))
+    outgoing = -sum((value for _, value in movements if value < 0), Decimal(0))
+    if (incoming != balance.get('money_in') or outgoing != balance.get('money_out')
+            or balance['opening_balance'] + incoming - outgoing != balance['closing_balance']):
+        raise CNBParseError('CNB Account Summary does not reconcile; no rows imported.')

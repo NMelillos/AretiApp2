@@ -10,7 +10,8 @@ from import_history import cyprus_time
 
 NOTE = ('INTERIM PARTIAL REPORT: current Setup accounts only. Accounts absent from Setup are outside '
         'this report and are not enumerated. This is not a complete reconciled total of all accounts. '
-        'One row per account/currency. Latest means committed import time, not statement end date. '
+        'One row per account/currency. Latest normally means committed import time; a verified older '
+        'BOC/CNB statement cannot displace a newer complete statement. '
         'Newer incomplete imports remain visible; older balances are never substituted.')
 COLUMNS = ('Account number', 'Account name', 'Bank', 'Import date',
            'Statement start date', 'Statement end date', 'Opening balance',
@@ -67,6 +68,8 @@ def snapshot(db):
         ), candidates AS (
             SELECT a.id AS account_id, i.id AS import_id, i.imported_at, i.transaction_count,
                    b.period_start, b.period_end,
+                   b.notes, b.source,
+                   CAST(b.money_in AS TEXT) AS money_in, CAST(b.money_out AS TEXT) AS money_out,
                    CAST(b.opening_balance AS TEXT) AS opening_balance,
                    CAST(b.closing_balance AS TEXT) AS closing_balance,
                    {storage_type('opening_balance')} AS opening_storage_type,
@@ -95,6 +98,7 @@ def snapshot(db):
         SELECT a.id AS account_id, a.account_number, a.account_name, a.bank,
                a.currency, a.rate_type, r.import_id, r.imported_at,
                r.period_start, r.period_end, r.opening_balance, r.closing_balance,
+               r.notes, r.source, r.money_in, r.money_out,
                r.statement_currency, r.statement_account_number, r.transaction_count,
                r.statement_bank, r.statement_account_name,
                r.source_rows, r.opening_storage_type, r.closing_storage_type
@@ -104,6 +108,12 @@ def snapshot(db):
     connection = db.get_connection()
     try:
         rows = pd.read_sql_query(query, connection, coerce_float=False).to_dict('records')
+        from balance_only import verified_record
+        for row in rows:
+            row['_verified_balance_only'] = verified_record(
+                connection, row['notes'], row['statement_bank'], row['statement_account_number'],
+                row['statement_currency'], row['opening_balance'], row['money_in'],
+                row['money_out'], row['closing_balance'])
     finally:
         connection.close()
     rates = db._load_rate_lookup()  # One batch, using the application's approved lookup.
@@ -123,6 +133,26 @@ def snapshot(db):
         else:
             selected = max(imported_rows, key=lambda row: row['import_id'])
             warnings.append(f"{selected['account_number']}: import ordering is unverified; latest import ID selected because a legacy timestamp is missing, invalid or timezone-unverified.")
+        # A newly verified older source may be recorded in history, but must not
+        # displace a newer complete statement already available for this identity.
+        if imported_rows and selected['source'] in ('BOC bank columns', 'CNB Account Summary'):
+            def complete_period(row):
+                try:
+                    start, end = date.fromisoformat(str(row['period_start'])), date.fromisoformat(str(row['period_end']))
+                    return end if (start <= end and optional_decimal(row['opening_balance']) is not None
+                                   and optional_decimal(row['closing_balance']) is not None
+                                   and row['statement_currency'] == row['currency']
+                                   and row['transaction_count'] == row['source_rows']
+                                   and (row['transaction_count'] != 0 or row['opening_balance'] == row['closing_balance']
+                                        or row['_verified_balance_only'])) else None
+                except (ValueError, TypeError):
+                    return None
+            selected_end = complete_period(selected)
+            newer = [row for row in imported_rows if complete_period(row) is not None
+                     and selected_end is not None and complete_period(row) > selected_end]
+            if newer:
+                warnings.append(f"{selected['account_number']}: older verified statement recorded in history; a newer complete statement remains displayed.")
+                selected = max(newer, key=lambda row: (complete_period(row), row['import_id']))
         selected = dict(selected)
         if len(aliases) > 1:
             representative = min(population, key=lambda row: row['account_id'])
@@ -156,7 +186,7 @@ def snapshot(db):
                 complete = date.fromisoformat(str(row['period_start'])) <= date.fromisoformat(str(row['period_end']))
             except ValueError:
                 complete = False
-        if complete and row['transaction_count'] == 0 and opening != closing:
+        if complete and row['transaction_count'] == 0 and opening != closing and not row['_verified_balance_only']:
             complete = False
         precision_known = currency.upper() in ('USD', 'EUR', 'GBP', 'CHF')
         exact_storage = all(str(row[key]).lower() in ('numeric', 'decimal', 'text', 'integer', 'bigint', 'smallint')

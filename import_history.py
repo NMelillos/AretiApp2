@@ -15,6 +15,10 @@ def commit_statement(db, frame, name, fingerprint, balance, account):
     if frame.attrs.get('safra_sections'):
         return db.save_pending_transactions(frame, name, fingerprint)
     account, balance = dict(account or {}), dict(balance or {})
+    if frame.attrs.get('cnb_account'):
+        from cnb_import import cnb_account, validate_preview as validate_cnb
+        account = cnb_account(frame, db.get_accounts())
+        validate_cnb(frame, balance, account)
     if balance.get('source') == 'BOC bank columns':
         from boc_import import validate_preview
         validate_preview(frame, balance, account)
@@ -57,8 +61,11 @@ def commit_statement(db, frame, name, fingerprint, balance, account):
             conn.rollback()
             return result
         if not frame.empty and not inserted:
-            conn.rollback()
-            return 0, True, skipped
+            if balance.get('source') != 'BOC bank columns' or skipped != len(frame):
+                conn.rollback()
+                return 0, True, skipped
+            from balance_only import audit_overlap
+            balance['notes'] = audit_overlap(conn, frame, balance, account)
         if not db.save_statement_balance(fingerprint, name, balance, account, _connection=conn):
             raise ValueError('The statement balance section could not be recorded.')
         timestamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -80,6 +87,14 @@ def completed_history(db, history):
         return history
     conn = db.get_connection()
     try:
+        from balance_only import verified_record
+        balance_only = set()
+        cur = conn.cursor()
+        cur.execute('''SELECT statement_hash, notes, bank, account_number, currency,
+            opening_balance, money_in, money_out, closing_balance FROM statement_balances''')
+        for row in cur.fetchall():
+            if verified_record(conn, *row[1:]):
+                balance_only.add(row[0])
         sections = pd.read_sql_query('''
             SELECT b.statement_hash, COUNT(t.id) AS source_rows
             FROM statement_balances b
@@ -97,7 +112,7 @@ def completed_history(db, history):
                   & result.account_number.fillna('').ne('') & result.currency.fillna('').ne('')
                   & result.opening_balance.notna() & result.closing_balance.notna()
                   & result.opening_balance.eq(result.closing_balance))
-    result = result[~zero | valid_zero].copy()
+    result = result[~zero | valid_zero | result.statement_hash.isin(balance_only)].copy()
     result['duplicate_status'] = 'Imported'
     return result
 

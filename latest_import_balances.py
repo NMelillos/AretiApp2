@@ -16,7 +16,7 @@ NOTE = ('INTERIM PARTIAL REPORT: current Setup accounts only. Accounts absent fr
 COLUMNS = ('Account number', 'Account name', 'Bank', 'Import date',
            'Statement start date', 'Statement end date', 'Opening balance',
            'Closing balance', 'Currency', 'Closing balance converted to USD', 'Status',
-           'Verification', 'Applied FX')
+           'Verification', 'Applied FX', 'Credits / money in', 'Debits / money out')
 
 BANK_ALIASES = {'BOC':'BANKOFCYPRUS','CITIBANK':'CITI','CITIBANKCREDITCARD':'CITI',
                 'CNB':'CITYNATIONALBANK','AMEX':'AMERICANEXPRESS',
@@ -233,7 +233,7 @@ def snapshot(db):
             opening, closing,
             currency, usd if usd is not None else ('NOT AVAILABLE' if imported else ''),
             'AMBIGUOUS SETUP IDENTITY' if ambiguous else ('IMPORTED' if complete else 'INCOMPLETE') if imported else 'NO IMPORT',
-            verification, applied_fx,
+            verification, applied_fx, optional_decimal(row['money_in']) if imported else None, optional_decimal(row['money_out']) if imported else None,
         ))))
     result.sort(key=lambda row: (row['Bank'], row['Account name'],
                                 -(datetime.fromisoformat(row['Import date'][:19]).timestamp()
@@ -303,7 +303,7 @@ def workbook_bytes(rows, total, warnings, generated_at=None):
         for cell in sheet[sheet.max_row]:
             if isinstance(cell.value, str):
                 cell.data_type = 's'
-        for position in (7,8,10):
+        for position in (7,8,10,COLUMNS.index('Credits / money in')+1,COLUMNS.index('Debits / money out')+1):
             known_precision = position == 10 or row['Currency'].upper() in ('USD','EUR','GBP','CHF')
             sheet.cell(sheet.max_row, position).number_format = (
                 '#,##0.00;[Red]-#,##0.00' if known_precision else '#,##0.################')
@@ -351,7 +351,7 @@ def print_document(rows, total, warnings, generated_at=None):
         body_parts.append('<tr>' + ''.join(
             f'<td class="fresh">{cell(row[column])}<br>Under 30 days</td>'
             if column == 'Import date' and fresh_import(row[column], generated_at)
-            else f'<td>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance") else "USD")}</td>' for column in COLUMNS) + '</tr>')
+            else f'<td>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
     body = ''.join(body_parts)
     warning_html = ''.join(f'<li>{escape(warning)}</li>' for warning in warnings)
     return f'''<!doctype html>

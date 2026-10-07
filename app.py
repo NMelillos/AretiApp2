@@ -1473,10 +1473,13 @@ def guess_account_index(file_bytes, file_name, accounts, labels, balance_info=No
     sample = file_bytes[:250000].decode("latin-1", errors="ignore")
     if file_name.lower().endswith(".pdf"):
         try:
-            import pdfplumber
+            if balance_info.get('source') == 'BOC bank columns' and balance_info.get('structural_validation') and balance_info.get('source_account_hint_text'):
+                sample = balance_info['source_account_hint_text'] + "\n" + sample
+            else:
+                import pdfplumber
 
-            with pdfplumber.open(BytesIO(file_bytes)) as pdf:
-                sample = "\n".join(page.extract_text() or "" for page in pdf.pages[:2]) + "\n" + sample
+                with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+                    sample = "\n".join(page.extract_text() or "" for page in pdf.pages[:2]) + "\n" + sample
         except Exception:
             pass
     searchable = f"{file_name} {sample}".upper()
@@ -5427,6 +5430,9 @@ if page == "Import":
 
         import_started = False
         try:
+            preview_message = st.empty()
+            if import_requested:
+                preview_message.warning("IN PROGRESS — Importing statement. Please wait for confirmed completion; do not submit again.")
             progress_slot = st.empty()
             progress_slot.markdown(
                 '<div class="import-progress"><span class="import-runner">&#x1F3C3;</span>'
@@ -5438,7 +5444,7 @@ if page == "Import":
                 balance_info = {}
                 selected_account = {}
                 if "safra_sections" not in parsed.attrs:
-                    balance_info = parse_statement_balance(file_bytes, uploaded_statement.name)
+                    balance_info = parsed.attrs.get("statement_balance") or parse_statement_balance(file_bytes, uploaded_statement.name)
                     labels, lookup = account_options(accounts)
                     default_account_index = guess_account_index(file_bytes, uploaded_statement.name, accounts, labels, balance_info)
                     selected_label = st.selectbox("Account", labels, index=default_account_index)
@@ -5477,15 +5483,15 @@ if page == "Import":
                 classified = classify_statement_rows(parsed, get_memory())
                 if "safra_sections" in parsed.attrs:
                     classified.attrs["safra_sections"] = parsed.attrs["safra_sections"]
-                    if classified.empty:
-                        classified = classified.reindex(columns=list(dict.fromkeys([
-                            *classified.columns, "match_type", "suggested_category", "suggested_subcategory",
-                        ])))
+                if classified.empty and ("safra_sections" in parsed.attrs or balance_info.get('source') == 'BOC bank columns'):
+                    classified = classified.reindex(columns=list(dict.fromkeys([
+                        *classified.columns, "match_type", "suggested_category", "suggested_subcategory",
+                    ])))
             finally:
                 progress_slot.empty()
 
-            preview_message = st.empty()
-            preview_message.success(f"Prepared {len(classified)} transactions for review. Preview only; nothing has been imported.")
+            if not import_requested:
+                preview_message.success(f"Prepared {len(classified)} transactions for review. Preview only; nothing has been imported.")
 
             duplicate_lines = int(classified["dup_flag"].fillna(False).astype(bool).sum()) if "dup_flag" in classified else 0
             new_import_lines = max(len(classified) - duplicate_lines, 0)
@@ -5646,6 +5652,7 @@ if page == "Import":
                         selected_account,
                     )
                 if duplicate_statement:
+                    preview_message.empty()
                     import_button.empty()
                     preview_warning.empty()
                     st.warning("This statement already exists. It was not imported again.")
@@ -5674,6 +5681,7 @@ if page == "Import":
                         if clear is not None:
                             clear()
         except Exception as exc:
+            preview_message.empty()
             if import_started:
                 st.session_state["statement_import_failure"] = {
                     "hash": statement_hash, "message": str(exc),

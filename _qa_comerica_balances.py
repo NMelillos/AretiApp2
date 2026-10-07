@@ -83,6 +83,12 @@ class BalanceTests(unittest.TestCase):
         for env in ('COMERICA_SOURCE','ARETI_SUMMARY_SOURCE','TIMUR_SOURCE'):
             source = Path(os.environ[env]); content=source.read_bytes()
             current=parsing.parse_pdf(BytesIO(content)); old=prior.parse_pdf(BytesIO(content))
+            if env == 'ARETI_SUMMARY_SOURCE':
+                # BOC balance metadata is the intentional change in this package.
+                pd.testing.assert_frame_equal(current[old.columns],old)
+                meta=current.attrs['statement_balance']
+                self.assertEqual(meta['opening_balance']+meta['money_in']-meta['money_out'],meta['closing_balance'])
+                continue
             pd.testing.assert_frame_equal(current,old); self.assertEqual(current.attrs,old.attrs)
             self.assertEqual(parsing.extract_statement_balance(BytesIO(content),source.name),
                              prior.extract_statement_balance(BytesIO(content),source.name))

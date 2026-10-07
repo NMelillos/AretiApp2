@@ -82,6 +82,14 @@ class ChecksTests(unittest.TestCase):
             source=Path(os.environ[env])
             rows=parsing.parse_pdf(BytesIO(source.read_bytes()))
             prior=baseline.parse_pdf(BytesIO(source.read_bytes()))
+            if env == 'ARETI_SUMMARY_SOURCE':
+                # This package intentionally adds source-column BOC metadata.
+                # Preserve this known-good source's existing transaction values
+                # and descriptions; separate BOC QA validates new source facts.
+                pd.testing.assert_frame_equal(rows[prior.columns], prior)
+                meta = rows.attrs['statement_balance']
+                self.assertEqual(meta['opening_balance'] + meta['money_in'] - meta['money_out'], meta['closing_balance'])
+                continue
             pd.testing.assert_frame_equal(rows,prior)
             self.assertEqual(rows.attrs,prior.attrs)
             if env=='TIMUR_SOURCE':

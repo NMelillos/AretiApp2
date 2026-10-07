@@ -81,6 +81,18 @@ class CompletionTests(unittest.TestCase):
         current=ast.parse(Path('app.py').read_text())
         find=lambda tree: next(n for n in tree.body if isinstance(n,ast.If) and ast.unparse(n.test)=="page == 'Import'")
         find(current).body=find(baseline).body
+        # Only the explicit BOC reuse branch may differ in this shared helper.
+        current_hint=next(n for n in current.body if isinstance(n,ast.FunctionDef) and n.name=='guess_account_index')
+        prior_hint=next(n for n in baseline.body if isinstance(n,ast.FunctionDef) and n.name=='guess_account_index')
+        reuse_try=next(n for n in ast.walk(current_hint) if isinstance(n,ast.Try))
+        reuse=reuse_try.body[0]
+        self.assertIsInstance(reuse,ast.If)
+        expected="balance_info.get('source') == 'BOC bank columns' and balance_info.get('structural_validation') and balance_info.get('source_account_hint_text')"
+        self.assertEqual(ast.dump(reuse.test),ast.dump(ast.parse(expected,mode='eval').body))
+        self.assertEqual(ast.dump(reuse.body[0]),ast.dump(ast.parse("sample = balance_info['source_account_hint_text'] + '\\n' + sample").body[0]))
+        self.assertEqual(len(reuse.body),1)
+        reuse_try.body=reuse.orelse
+        self.assertEqual(ast.dump(current_hint),ast.dump(prior_hint))
         self.assertEqual(ast.dump(current),ast.dump(baseline))
 
     def test_preview_does_not_write(self):

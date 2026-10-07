@@ -4,6 +4,7 @@ from datetime import datetime
 from io import BytesIO
 
 import pandas as pd
+from boc_import import BOCParseError
 from cnb_import import CNBParseError, is_cnb, parse_cnb
 from comerica_checks import ComericaChecksError, parse_checks_only
 from comerica_balances import withdrawals_only_balance
@@ -1144,7 +1145,13 @@ def extract_statement_balance(uploaded_file, file_name=""):
         return {}
     uploaded_file.seek(0)
     with pdfplumber.open(uploaded_file) as pdf:
-        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        pages = [page.extract_text() or "" for page in pdf.pages]
+        text = "\n".join(pages)
+        if "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
+            from boc_import import parse_pages
+            balance = parse_pages(pdf.pages, pages)[1]
+            balance['source_account_hint_text'] = "\n".join(pages[:2])
+            return balance
         if _detect_bank_name(text, file_name) == "Comerica":
             checked = parse_checks_only(pdf)
             if checked is not None:
@@ -1600,7 +1607,22 @@ def parse_pdf(uploaded_file):
                     rows = _parse_revolut_pdf_text(text)
                     diagnostics = _revolut_status_counts(text)
                 elif "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
-                    rows = _parse_bank_of_cyprus_pdf_text(text)
+                    from boc_import import parse_document
+                    sections = parse_document(pdf.pages, pages)
+                    if len(sections) != 1:
+                        raise BOCParseError("Upload one BOC account statement at a time; no rows imported.")
+                    rows, balance = sections[0]
+                    balance['source_account_hint_text'] = "\n".join(pages[:2])
+                    # Retain established description/memory/duplicate keys when
+                    # the old text reader identifies exactly the same dated rows.
+                    # Only the validated bank columns determine amount and sign.
+                    legacy = _parse_generic_pdf_text(text)
+                    if len(legacy) == len(rows) and all(_parse_pdf_date(old[0]) == row[0] for old, row in zip(legacy, rows)):
+                        for old, row in zip(legacy, rows):
+                            row[1] = old[1]
+                    frame = _frame_from_pdf_rows(rows)
+                    frame.attrs["statement_balance"] = balance
+                    return frame
                 elif (
                     "COMERICA" in text_upper
                     or "COMMERCIALCHECKING" in text_compact
@@ -1625,7 +1647,7 @@ def parse_pdf(uploaded_file):
                     diagnostics["completed_rows"] = len(frame)
                     frame.attrs["parse_diagnostics"] = diagnostics
                 return frame
-        except (RevolutBusinessParseError, SafraParseError, CNBParseError, ComericaChecksError):
+        except (RevolutBusinessParseError, SafraParseError, CNBParseError, ComericaChecksError, BOCParseError):
             raise
         except Exception:
             rows = []

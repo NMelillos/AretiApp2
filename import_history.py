@@ -15,6 +15,9 @@ def commit_statement(db, frame, name, fingerprint, balance, account):
     if frame.attrs.get('safra_sections'):
         return db.save_pending_transactions(frame, name, fingerprint)
     account, balance = dict(account or {}), dict(balance or {})
+    if balance.get('source') == 'BOC bank columns':
+        from boc_import import validate_preview
+        validate_preview(frame, balance, account)
     if not account.get('account_number') or not account.get('currency'):
         raise ValueError('A complete statement account is required.')
     if frame.empty:

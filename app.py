@@ -5406,6 +5406,9 @@ if page == "Import":
         file_bytes = uploaded_statement.getvalue()
         statement_hash = build_statement_hash(file_bytes)
         if statement_already_imported(statement_hash):
+            completed_message = st.session_state.get("completed_statement_import_message", {})
+            if completed_message.get("hash") == statement_hash:
+                st.success(completed_message["message"])
             from safra_duplicate_preview import is_existing_safra, render_preview
             if is_existing_safra(statement_hash):
                 render_preview(st, file_bytes, uploaded_statement.name, accounts, parse_statement)
@@ -5476,7 +5479,8 @@ if page == "Import":
             finally:
                 progress_slot.empty()
 
-            st.success(f"Prepared {len(classified)} transactions for review. Preview only; nothing has been imported.")
+            preview_message = st.empty()
+            preview_message.success(f"Prepared {len(classified)} transactions for review. Preview only; nothing has been imported.")
 
             duplicate_lines = int(classified["dup_flag"].fillna(False).astype(bool).sum()) if "dup_flag" in classified else 0
             new_import_lines = max(len(classified) - duplicate_lines, 0)
@@ -5616,18 +5620,29 @@ if page == "Import":
             if st.button("Import statement", type="primary"):
                 import db as import_db
                 from import_history import commit_statement
-                inserted, duplicate_statement, skipped_duplicates = commit_statement(
-                    import_db,
-                    classified,
-                    uploaded_statement.name,
-                    statement_hash,
-                    balance_info,
-                    selected_account,
-                )
+                with st.spinner("Importing statement. Please wait for confirmed completion..."):
+                    inserted, duplicate_statement, skipped_duplicates = commit_statement(
+                        import_db,
+                        classified,
+                        uploaded_statement.name,
+                        statement_hash,
+                        balance_info,
+                        selected_account,
+                    )
                 if duplicate_statement:
                     st.warning("This statement already exists. It was not imported again.")
                 else:
-                    st.success(f"Imported {inserted} transactions to pending review.")
+                    if inserted:
+                        message = (
+                            f"{inserted} uploaded transactions have been imported into the database "
+                            "and are now available in Pending Review for categorisation."
+                        )
+                    else:
+                        message = "Statement imported successfully. No new transactions were added; statement account sections were recorded."
+                    st.session_state["completed_statement_import_message"] = {
+                        "hash": statement_hash, "message": message,
+                    }
+                    preview_message.success(message)
                     if skipped_duplicates:
                         st.info(f"Skipped {skipped_duplicates} duplicate transaction line(s).")
                     for reader in (get_import_history, get_import_transaction_audit,

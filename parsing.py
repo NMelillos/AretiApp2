@@ -5,6 +5,7 @@ from io import BytesIO
 
 import pandas as pd
 from cnb_import import CNBParseError, is_cnb, parse_cnb
+from comerica_checks import ComericaChecksError, parse_checks_only
 
 from utils import extract_beneficiary, infer_transaction_type, normalize_description, simplify_merchant
 
@@ -1143,6 +1144,10 @@ def extract_statement_balance(uploaded_file, file_name=""):
     uploaded_file.seek(0)
     with pdfplumber.open(uploaded_file) as pdf:
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        if _detect_bank_name(text, file_name) == "Comerica":
+            checked = parse_checks_only(pdf)
+            if checked is not None:
+                return checked[1]
     return extract_statement_balance_from_text(text, file_name)
 
 
@@ -1594,6 +1599,9 @@ def parse_pdf(uploaded_file):
                     or "COMMERCIALCHECKING" in text_compact
                     or "BUSINESSMONEYMARKETACCOUNT" in text_compact
                 ):
+                    checked = parse_checks_only(pdf)
+                    if checked is not None:
+                        return _frame_from_pdf_rows(checked[0])
                     rows = _parse_comerica_pdf_text(text)
                 elif (
                     "CARDMEMBER SERVICE" in text
@@ -1610,7 +1618,7 @@ def parse_pdf(uploaded_file):
                     diagnostics["completed_rows"] = len(frame)
                     frame.attrs["parse_diagnostics"] = diagnostics
                 return frame
-        except (RevolutBusinessParseError, SafraParseError, CNBParseError):
+        except (RevolutBusinessParseError, SafraParseError, CNBParseError, ComericaChecksError):
             raise
         except Exception:
             rows = []

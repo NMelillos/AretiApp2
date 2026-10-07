@@ -159,9 +159,9 @@ class CompletionTests(unittest.TestCase):
         with patch('import_history.commit_statement',side_effect=commit), patch.object(DeltaGenerator,'success',success):
             self.import_file(app)
         self.complete(app,2)
-        # Priority 3 deliberately retains the existing button/confirmation state.
-        self.assertTrue(any(b.label=='Import statement' for b in app.button))
-        self.assertTrue(any('before confirming Import statement' in e.value for e in app.warning))
+        # Priority 4 supersedes retention: completed previews have no import control.
+        self.assertFalse(any(b.label=='Import statement' for b in app.button))
+        self.assertFalse(any('before confirming Import statement' in e.value for e in app.warning))
 
     def test_overlap_count_uses_inserted_not_preview(self):
         app=self.run_app(self.app()); self.import_file(app)

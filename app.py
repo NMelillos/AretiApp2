@@ -5405,6 +5405,10 @@ if page == "Import":
     if uploaded_statement:
         file_bytes = uploaded_statement.getvalue()
         statement_hash = build_statement_hash(file_bytes)
+        import_requested = st.session_state.pop("statement_import_request", None) == statement_hash
+        import_failure = st.session_state.pop("statement_import_failure", {})
+        if import_failure.get("hash") == statement_hash:
+            st.error(import_failure["message"])
         if statement_already_imported(statement_hash):
             completed_message = st.session_state.get("completed_statement_import_message", {})
             if completed_message.get("hash") == statement_hash:
@@ -5421,6 +5425,7 @@ if page == "Import":
             )
             st.stop()
 
+        import_started = False
         try:
             progress_slot = st.empty()
             progress_slot.markdown(
@@ -5613,11 +5618,22 @@ if page == "Import":
                 height=360,
             )
 
-            st.warning(
+            preview_warning = st.empty()
+            preview_warning.warning(
                 "Please verify the preview signs, amounts and accounts before confirming Import statement."
             )
 
-            if st.button("Import statement", type="primary"):
+            def request_statement_import(source_hash):
+                st.session_state["statement_import_request"] = source_hash
+
+            import_button = st.empty()
+            import_button.button(
+                "Importing statement..." if import_requested else "Import statement",
+                type="primary", key="confirm_statement_import", disabled=import_requested,
+                on_click=request_statement_import, args=(statement_hash,),
+            )
+            if import_requested:
+                import_started = True
                 import db as import_db
                 from import_history import commit_statement
                 with st.spinner("Importing statement. Please wait for confirmed completion..."):
@@ -5630,8 +5646,12 @@ if page == "Import":
                         selected_account,
                     )
                 if duplicate_statement:
+                    import_button.empty()
+                    preview_warning.empty()
                     st.warning("This statement already exists. It was not imported again.")
                 else:
+                    import_button.empty()
+                    preview_warning.empty()
                     if inserted:
                         message = (
                             f"{inserted} uploaded transactions have been imported into the database "
@@ -5654,6 +5674,11 @@ if page == "Import":
                         if clear is not None:
                             clear()
         except Exception as exc:
+            if import_started:
+                st.session_state["statement_import_failure"] = {
+                    "hash": statement_hash, "message": str(exc),
+                }
+                st.rerun()
             st.error(str(exc))
 
 

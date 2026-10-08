@@ -49,60 +49,98 @@ def parse_cnb(pages, metadata):
     if datetime.strptime(opening_date, "%m/%d/%Y").date() not in (prior, start) or datetime.strptime(closing_date, "%m/%d/%Y").date() != end:
         fail()
     credits = amount(unique(rf"^Total credits \+\$({money})$", r"^Total credits\b"))
-    debits = amount(unique(rf"^Total debits - \$({money})$", r"^Total debits\b"))
-    deposit_count, deposit_total = unique(rf"Credits Deposits \((\d+)\) \+ ({money})$")
-    debit_count, debit_total = unique(rf"^Electronic db \((\d+)\) - ({money})$")
-    for label, sign in ((r"Electronic cr", r"\+"), (r"Other credits", r"\+"),
-                        (r"Debits Checks paid", "-"), (r"Other debits", "-")):
-        count, total = unique(rf"{label}\s*\((\d+)\) {sign} ({money})$")
-        if int(count) != 0 or amount(total) != 0:
+    # Zero-debit statements omit both debit breakdown and transaction sections.
+    zero_debits = re.findall(rf"^Debits - \$({money})$", text, re.MULTILINE)
+    if zero_debits:
+        if len(zero_debits) != 1 or amount(zero_debits[0]) != 0:
             fail()
-    rows = []
-    state = None
-    seen = []
-    header = False
-    counts = {"DEPOSITS": 0, "ELECTRONIC DEBITS": 0}
-    sums = {key: Decimal(0) for key in counts}
+        debits = Decimal(0)
+    else:
+        debits = amount(unique(rf"^Total debits - \$({money})$", r"^Total debits\b"))
+    labels = {
+        "DEPOSITS": (r"Credits Deposits", r"\+", 1),
+        "ELECTRONIC CREDITS": (r"Electronic cr", r"\+", 1),
+        "CHECKS PAID": (r"Debits Checks paid", "-", -1),
+        "ELECTRONIC DEBITS": (r"Electronic db", "-", -1),
+    }
+    expected = {}
+    for section, (label, sign, direction) in labels.items():
+        found = re.findall(rf"{label}\s*\((\d+)\) {sign} ({money})$", text, re.MULTILINE)
+        if not found and zero_debits and direction == -1:
+            expected[section] = (0, Decimal(0))
+        elif len(found) != 1:
+            fail()
+        else:
+            count, total = found[0]
+            expected[section] = (int(count), amount(total))
+            if (int(count) == 0) != (amount(total) == 0):
+                fail()
+    for label, sign in ((r"Other credits", r"\+"),(r"Other debits", "-")):
+        found = re.findall(rf"{label}\s*\((\d+)\) {sign} ({money})$", text, re.MULTILINE)
+        if not found and zero_debits and label == 'Other debits':
+            continue
+        if len(found) != 1 or int(found[0][0]) != 0 or amount(found[0][1]) != 0:
+            fail()
+    headers = {'DEPOSITS':'Date Description Reference Credits',
+               'ELECTRONIC CREDITS':'Date Description Credits',
+               'ELECTRONIC DEBITS':'Date Description Debits'}
+    rows, state, seen, header = [], None, [], False
+    counts = {key:0 for key in labels}
+    sums = {key:Decimal(0) for key in labels}
     for line in lines:
-        if line in ("DEPOSITS", "ELECTRONIC DEBITS", "DAILY BALANCES"):
+        if line in labels or line == 'DAILY BALANCES':
             if state and not header:
                 fail()
+            if line in seen:
+                fail()
             seen.append(line)
-            state = None if line == "DAILY BALANCES" else line
+            state = None if line == 'DAILY BALANCES' else line
             header = False
             continue
         if state is None:
-            if re.match(r"\d{1,2}-\d{2}\b", line):
-                daily_money = rf"(?:{money}|\.\d{{2}})"
-                if not seen or seen[-1] != "DAILY BALANCES" or not re.fullmatch(rf"(?:\d{{1,2}}-\d{{2}} {daily_money})(?: \d{{1,2}}-\d{{2}} {daily_money})*", line):
+            if re.match(r"\d{1,2}-\d{1,2}\b", line):
+                daily_money = rf"(?:{money}|\.\d{{1,2}})"
+                if not seen or seen[-1] != 'DAILY BALANCES' or not re.fullmatch(rf"(?:\d{{1,2}}-\d{{1,2}} {daily_money})(?: \d{{1,2}}-\d{{1,2}} {daily_money})*",line):
                     fail()
             continue
-        expected_header = "Date Description Reference Credits" if state == "DEPOSITS" else "Date Description Debits"
-        if line == expected_header:
+        if (line == headers.get(state) or (state == 'CHECKS PAID' and re.fullmatch(r"Number Date Amount(?: Number Date Amount)*",line))):
             if header:
                 fail()
             header = True
             continue
-        match = re.fullmatch(rf"(\d{{1,2}})-(\d{{2}}) (.+) ({money})", line)
-        if not match or not header:
+        if not header:
             fail()
-        month, day, description, value = match.groups()
-        when = datetime(end.year, int(month), int(day)).date()
-        if not start <= when <= end or re.search(r"[+-]\s*$", description):
-            fail()
-        if state == "DEPOSITS" and not re.search(r"\s\d{8}$", description):
-            fail()
-        magnitude = amount(value)
-        if magnitude <= 0:
-            fail()
-        rows.append([when.isoformat(), description, str(magnitude if state == "DEPOSITS" else -magnitude), "USD", "CNB statement"])
-        counts[state] += 1
-        sums[state] += magnitude
-    if seen != ["DEPOSITS", "ELECTRONIC DEBITS", "DAILY BALANCES"]:
+        if state == 'CHECKS PAID':
+            # Number/date/amount triples are explicit check activity, not daily balances.
+            matches = re.findall(rf"(\d+) (\d{{1,2}})-(\d{{1,2}}) ({money})", line)
+            if not matches or ' '.join(f'{n} {m}-{d} {v}' for n,m,d,v in matches) != line:
+                fail()
+            movements = [(m,d,'Check '+n,v) for n,m,d,v in matches]
+        else:
+            match = re.fullmatch(rf"(\d{{1,2}})-(\d{{1,2}}) (.+) ({money})",line)
+            if not match:
+                fail()
+            movements = [match.groups()]
+        for month, day, description, value in movements:
+            when = datetime(end.year,int(month),int(day)).date()
+            if not start <= when <= end or re.search(r"[+-]\s*$",description):
+                fail()
+            if state == 'DEPOSITS' and not re.search(r"\s\d{8}$",description):
+                fail()
+            magnitude = amount(value)
+            if magnitude <= 0:
+                fail()
+            direction = labels[state][2]
+            rows.append([when.isoformat(),description,str(magnitude*direction),'USD','CNB statement'])
+            counts[state] += 1
+            sums[state] += magnitude
+    present = [key for key in labels if expected[key][0] > 0]
+    if seen != present + ['DAILY BALANCES']:
         fail()
-    if (counts["DEPOSITS"] != int(deposit_count) or counts["ELECTRONIC DEBITS"] != int(debit_count)
-            or sums["DEPOSITS"] != credits or credits != amount(deposit_total)
-            or sums["ELECTRONIC DEBITS"] != debits or debits != amount(debit_total)
+    if any((counts[key],sums[key]) != expected[key] for key in labels):
+        fail()
+    if (sum((sums[key] for key in labels if labels[key][2] == 1),Decimal(0)) != credits
+            or sum((sums[key] for key in labels if labels[key][2] == -1),Decimal(0)) != debits
             or amount(opening) + credits - debits != amount(closing)):
         fail()
     result = _frame_from_pdf_rows(rows)

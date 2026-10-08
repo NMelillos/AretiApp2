@@ -750,23 +750,21 @@ def mark_duplicate_transactions(df):
         out["duplicate_source_id"] = ""
         return out
 
+    # Construct only lookup variants that this preview can actually consult.
+    # Every selected variant still reads the full protected historical row set;
+    # matching keys, exclusion/SPLIT rules and commit-time checks are unchanged.
+    scopes = {_transaction_account_match_scope(row) for _, row in out.iterrows()}
+    revolut_scopes = {_transaction_account_match_scope(row) for _, row in out.iterrows()
+                      if _is_revolut_transaction_row(row)}
     conn = get_connection()
     cur = conn.cursor()
     try:
         existing_lookup = _existing_transaction_line_lookup(cur)
-        relaxed_lookup = _existing_transaction_line_lookup(cur, include_account=False)
-        bank_level_lookup = _existing_transaction_line_lookup(cur, include_account=None)
-        revolut_abs_lookup = _existing_transaction_line_lookup(cur, amount_sign="absolute")
-        revolut_relaxed_abs_lookup = _existing_transaction_line_lookup(
-            cur,
-            include_account=False,
-            amount_sign="absolute",
-        )
-        revolut_bank_abs_lookup = _existing_transaction_line_lookup(
-            cur,
-            include_account=None,
-            amount_sign="absolute",
-        )
+        relaxed_lookup = _existing_transaction_line_lookup(cur, include_account=False) if scopes - {"exact_account"} else {}
+        bank_level_lookup = _existing_transaction_line_lookup(cur, include_account=None) if "bank_only" in scopes else {}
+        revolut_abs_lookup = _existing_transaction_line_lookup(cur, amount_sign="absolute") if revolut_scopes else {}
+        revolut_relaxed_abs_lookup = _existing_transaction_line_lookup(cur, include_account=False, amount_sign="absolute") if revolut_scopes - {"exact_account"} else {}
+        revolut_bank_abs_lookup = _existing_transaction_line_lookup(cur, include_account=None, amount_sign="absolute") if "bank_only" in revolut_scopes else {}
     finally:
         conn.close()
 

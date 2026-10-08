@@ -1,3 +1,11 @@
+## Current autonomous package — 2026-10-08 (supersedes older release-hold summaries below)
+
+Baseline live/main 13d7845b703ae8a4c960111d26c241d289624d3d. Isolated codex/areti-autonomous-final-20261008. IMPLEMENTED and TESTED: Citi source-proved refund sign; explicit confirmed BOC metadata-only action; three new CNB source layouts; THIRD section 5 compact approved-monthly-FX USD sum/exclusions; measured duplicate-preview allocation/read reduction with exact live oracle. Final 81 unittest methods and two standalone regression scripts PASS, 0 FAIL; syntax/diff checks PASS. No production SQL, uploads, imports, historical repairs, schema or environment changes.
+
+LOC remains blocked on verified readable/OCR extraction; no new adapter. Safra functional regression PASS; no new functional defect proven. Windows/synthetic SQLite timings and peaks do not establish a live delay/OOM/429 root cause. Invalid profiler results and corrected source-pinning/expectations are retained separately.
+
+Standing exact-SHA deployment authority applies to this safe independent package. Auto-Deploy OFF, allowed service/workspace/repository and retained f3ea9ce recovery target verified. DEPLOYED status at source snapshot: not yet requested. Actual exact commit/deploy/live SHA, HTTP/startup and operator verification status are captured in the private autonomous-20261008/deployment-receipt.json. DATA-REPAIRED NO; USER-ACCEPTED pending. Read AUTONOMOUS_FINAL_HANDOVER_20261008.md for complete final evidence, limitations and release boundary. Earlier candidates/worktrees and unexpected handover edit preserved.
+
 # Final open items checkpoint — 2026-10-07
 
 Baseline 34b92af1a883e1af991322d665ac6144971a0359 is deployed LIVE (HTTP 200, Auto-Deploy OFF); authenticated new-release smoke and business UAT remain pending. This separate codex/areti-final-open-items worktree preserves all earlier candidates.

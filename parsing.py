@@ -8,6 +8,7 @@ from boc_import import BOCParseError
 from cnb_import import CNBParseError, is_cnb, parse_cnb
 from comerica_checks import ComericaChecksError, parse_checks_only
 from comerica_balances import withdrawals_only_balance
+from citi_refund import CitiSourceError, verified_refund
 
 from utils import extract_beneficiary, infer_transaction_type, normalize_description, simplify_merchant
 
@@ -1641,6 +1642,12 @@ def parse_pdf(uploaded_file):
                     or "Account Ending" in text
                 ):
                     rows = _parse_credit_card_pdf_text(text)
+                    verified = verified_refund(text, rows)
+                    if verified is not None:
+                        rows, balance = verified
+                        frame = _frame_from_pdf_rows(rows)
+                        frame.attrs['statement_balance'] = balance
+                        return frame
                 if not rows:
                     rows = _parse_generic_pdf_text(text)
             if rows:
@@ -1649,7 +1656,7 @@ def parse_pdf(uploaded_file):
                     diagnostics["completed_rows"] = len(frame)
                     frame.attrs["parse_diagnostics"] = diagnostics
                 return frame
-        except (RevolutBusinessParseError, SafraParseError, CNBParseError, ComericaChecksError, BOCParseError):
+        except (RevolutBusinessParseError, SafraParseError, CNBParseError, ComericaChecksError, BOCParseError, CitiSourceError):
             raise
         except Exception:
             rows = []

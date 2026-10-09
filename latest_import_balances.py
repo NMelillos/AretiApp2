@@ -287,7 +287,7 @@ def fresh_closing(value, generated_at):
     except (TypeError, ValueError):
         return False
     today = generated_at.astimezone(ZoneInfo('Europe/Nicosia')).date()
-    return 0 <= (today - closed).days < 40
+    return 0 <= (today - closed).days <= 30
 
 
 def fresh_import(value, generated_at):
@@ -397,7 +397,7 @@ button {{ margin: 14px 0; padding: 8px 14px; cursor: pointer; }}
 <h1>Latest Import Balances</h1>
 <p>As of: {escape(generated_at.strftime('%Y-%m-%d %H:%M:%S %Z'))}</p>
 <p>{NOTE}</p>
-<p>Status: IMPORTED / INCOMPLETE / NO IMPORT. Closing dates under 40 days old are green; older, unknown or future closing dates are red. Import dates are always black.
+<p>Status: IMPORTED / INCOMPLETE / NO IMPORT. Closing dates 30 days old or less are green; older, unknown or future closing dates are red. Import dates are always black.
 Legacy timezone uncertainty is preserved. Binary storage and decimal tails are unverified, displayed at currency precision and excluded from totals.
 Card/liability balances are shown in their stored statement convention and excluded pending an approved net-value convention.</p>
 <p>Non-USD values use Setup &gt; Rates as of each statement end date: the latest configured rate at or before that month,

@@ -1,8 +1,8 @@
 """Executive balance list using the existing latest/approved-monthly-FX snapshot."""
 from html import escape
-from financial_decimal import optional_decimal, exact_sum
+from financial_decimal import optional_decimal, exact_sum, cents
 from latest_import_balances import snapshot, fresh_closing
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 
@@ -17,7 +17,10 @@ def currency_totals(rows):
 
 def compact_model(rows):
     visible=[]; included=[]; missing_rate=unverified=0
-    for row in sorted(rows, key=lambda r: (str(r.get('Bank') or '').casefold(), str(r.get('Import date') or ''), str(r.get('Account number') or ''))):
+    def closing_order(row):
+        try:return date.fromisoformat(str(row.get('Statement end date') or ''))
+        except ValueError:return date.max  # Unknown dates last; freshness remains red.
+    for row in sorted(rows, key=lambda r: (str(r.get('Bank') or '').casefold(), str(r.get('Account name') or '').casefold(), closing_order(r), str(r.get('Account number') or ''))):
         native=optional_decimal(row.get('Closing balance'))
         eligible=(row.get('Status')=='IMPORTED' and row.get('Verification')=='SOURCE RECONCILIATION NOT VERIFIED')
         usd=optional_decimal(row.get('Closing balance converted to USD')) if eligible else None
@@ -38,20 +41,19 @@ def compact_html(rows, generated_at=None):
     visible,total,_,_=compact_model(rows)
     def money(value):
         if value is None:return '—'
-        text=format(value,',f')
-        return text.rstrip('0').rstrip('.') if '.' in text else text
-    labels=('Bank name','Import date','Account number','Statement closing date','Account','Currency','Closing balance','Closing balance USD')
-    table='<div style="overflow-x:auto"><table class="compact-balances" style="font-size:10px;line-height:1.15;border-collapse:collapse;width:auto;table-layout:fixed"><thead><tr>'
-    table+=''.join('<th style="padding:2px 5px;white-space:nowrap;text-align:left">'+label+'</th>' for label in labels)
+        return format(cents(value),',.2f')
+    labels=('Bank','Account','Account Number','Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
+    table='<div style="overflow-x:auto"><table class="compact-balances" style="font-size:10px;line-height:1.15;border-collapse:collapse;width:max-content;table-layout:auto"><thead><tr>'
+    table+=''.join('<th style="padding:1px 3px;white-space:nowrap;text-align:left">'+label+'</th>' for label in labels)
     table+='</tr></thead><tbody>'
     for row in visible:
         table+='<tr>'
-        values=(row['bank'],row['import_date'],row['account_number'],row['closing_date'],row['account'],row['currency'],money(row['closing']),money(row['usd']))
+        values=(row['bank'],row['account'],row['account_number'],row['import_date'],row['closing_date'],row['currency'],money(row['closing']),money(row['usd']))
         for index,value in enumerate(values):
-            style='padding:2px 5px;white-space:nowrap;'
-            if index==1:style+='color:#000000;'
-            if index==3:style+='color:'+('#146b36' if fresh_closing(value,generated_at) else '#b42318')+';'
-            if index==4:style+='max-width:210px;overflow:hidden;text-overflow:ellipsis;'
+            style='padding:1px 3px;white-space:nowrap;'
+            if index==1:style+='max-width:210px;overflow:hidden;text-overflow:ellipsis;'
+            if index==3:style+='color:#000000;'
+            if index==4:style+='color:'+('#146b36' if fresh_closing(value,generated_at) else '#b42318')+';'
             if index>=6:style+='text-align:right;'
             table+='<td title="'+escape(str(value),quote=True)+'" style="'+style+'">'+escape(str(value))+'</td>'
         table+='</tr>'

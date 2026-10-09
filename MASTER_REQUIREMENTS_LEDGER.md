@@ -31,3 +31,8 @@ Citi / BOC confirmed balance-only / three new CNB / THIRD compact USD sum and wa
 ## Selected local UAT scope - 2026-10-09
 
 Only open items3,4,6,7 on codex/areti-uat-3467-release-20261009, directly above deployedc68b397. See UAT_ITEMS_3467_HANDOVER_20261009.md. IMPLEMENTED: compact columns/sort/style; shared closing-date40-day freshness; strict Fifth Third support retaining existing exact Comerica/USD identities. Item7 verified without application changes. TESTED:46 focused unittest methods PASS, full SQLite/PostgreSQL integrity script PASS, read-only isolated PostgreSQL boundary/fixture cleanup PASS, syntax/diff PASS. Original missing-column fixture failure retained and corrected only in test DDL. Owned localhost test cluster cleanly stopped. DEPLOYED:NO; DATA-REPAIRED:NONE; UAT:PENDING. No push/deploy/production/configuration action. Other open-item changes excluded; complete59822eb and all protected worktrees preserved. Exact commit/source hashes and complete patch in private uat-3467-20261009 evidence.
+
+
+## UAT addendum 2026-10-09 — local only
+
+See UAT_ADDENDUM_HANDOVER_20261009.md. Items 1–4, 6 and 7 implemented/tested locally; 21 targeted tests and SQLite storage/export integrity PASS; final display regression PASS. Item 5 exact live account-5055 Status/Verification/Applied FX remain UNAVAILABLE because the connected read-only report session is signed out. USD identity conversion needs no configured rate; do not invent a row-specific exclusion reason. Existing FX/storage/ownership/duplicate safeguards preserved. No push, deployment or production data actions. Business UAT pending.

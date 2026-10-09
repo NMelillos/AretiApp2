@@ -89,7 +89,7 @@ def validate_preview(frame,balance,account):
     # This does not rename accounts or rewrite historical bank identities.
     def fail():raise FifthThirdParseError('Fifth Third preview differs from validated source/account.')
     if (str(account.get('account_number','')).strip()!=balance['account_number'] or account.get('currency')!='USD'
-            or re.sub(r'[^A-Z0-9]','',str(account.get('bank','')).upper()) not in ('FIFTHTHIRD','FIFTHTHIRDBANK','COMERICA','COMERICABANK')):fail()
+            or re.sub(r'[^A-Z0-9]','',str(account.get('bank','')).upper()) not in ('FIFTHTHIRD','FIFTHTHIRDBANK','FIFTHTHIRDEXCOMERICA','COMERICA','COMERICABANK')):fail()
     actual=[(str(r['Date']),Decimal(str(r['Amount']))) for r in frame.to_dict('records')]
     if actual!=balance['source_movements'] or len(actual)!=balance['transaction_count']:fail()
     if any(str(r.get('account_number'))!=balance['account_number'] or r.get('currency')!='USD' for r in frame.to_dict('records')):fail()

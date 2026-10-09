@@ -50,15 +50,15 @@ def main():
         assert 'timezone unverified' in by_account['QA-8']['Import date']
         assert by_account['QA-NONE']['Status']=='NO IMPORT'
         generated=datetime.fromisoformat('2026-10-05T12:00:00+03:00')
-        for days in (0,29,39,40,41,-1):
+        for days in (0,29,30,31,40,-1):
             stamp=(generated-timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S EEST')
             assert not fresh_import(stamp,generated)
-            assert fresh_closing((generated-timedelta(days=days)).date().isoformat(),generated)==(0<=days<40)
+            assert fresh_closing((generated-timedelta(days=days)).date().isoformat(),generated)==(0<=days<=30)
         for stamp in ('','invalid','2026-10-05 11:00:00 (timezone unverified)'):
             assert not fresh_import(stamp,generated)
         for date_value in ('2027-01-01T01:00:00+02:00','2026-03-30T01:00:00+03:00','2026-10-26T01:00:00+02:00'):
             current=datetime.fromisoformat(date_value)
-            assert fresh_closing((current-timedelta(days=39)).date().isoformat(),current)
+            assert fresh_closing((current-timedelta(days=30)).date().isoformat(),current)
             assert not fresh_import((current-timedelta(days=29)).strftime('%Y-%m-%d %H:%M:%S EET'),current)
         rows[0]['Account name']='=HYPERLINK("https://example.invalid","unsafe")'
         rows[0]['Bank']='<script>unsafe</script>'

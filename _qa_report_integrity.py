@@ -11,7 +11,7 @@ import uuid
 
 from openpyxl import load_workbook
 import db
-from latest_import_balances import snapshot, print_document, workbook_bytes, fresh_import
+from latest_import_balances import snapshot, print_document, workbook_bytes, fresh_import, fresh_closing
 
 
 def main():
@@ -50,14 +50,16 @@ def main():
         assert 'timezone unverified' in by_account['QA-8']['Import date']
         assert by_account['QA-NONE']['Status']=='NO IMPORT'
         generated=datetime.fromisoformat('2026-10-05T12:00:00+03:00')
-        for days in (0,29,30,31,-1):
+        for days in (0,29,39,40,41,-1):
             stamp=(generated-timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S EEST')
-            assert fresh_import(stamp,generated)==(0<=days<30)
+            assert not fresh_import(stamp,generated)
+            assert fresh_closing((generated-timedelta(days=days)).date().isoformat(),generated)==(0<=days<40)
         for stamp in ('','invalid','2026-10-05 11:00:00 (timezone unverified)'):
             assert not fresh_import(stamp,generated)
         for date_value in ('2027-01-01T01:00:00+02:00','2026-03-30T01:00:00+03:00','2026-10-26T01:00:00+02:00'):
             current=datetime.fromisoformat(date_value)
-            assert fresh_import((current-timedelta(days=29)).strftime('%Y-%m-%d %H:%M:%S EET'),current)
+            assert fresh_closing((current-timedelta(days=39)).date().isoformat(),current)
+            assert not fresh_import((current-timedelta(days=29)).strftime('%Y-%m-%d %H:%M:%S EET'),current)
         rows[0]['Account name']='=HYPERLINK("https://example.invalid","unsafe")'
         rows[0]['Bank']='<script>unsafe</script>'
         html=print_document(rows,total,warnings,generated)
@@ -103,6 +105,8 @@ def postgres():
             cursor.execute('SHOW data_directory')
             assert Path(cursor.fetchone()[0]).resolve()==Path(os.environ['ARETI_QA_PG_DATA']).resolve()
             cursor.execute('CREATE DATABASE '+database);created=True
+        # Match the current report's existing source/notes/flow columns. This is
+        # disposable fixture DDL only; no application/schema change.
         def connect():
             raw=psycopg2.connect(dbname=database,**options)
             raw.set_session(readonly=True)
@@ -111,12 +115,12 @@ def postgres():
             with raw.cursor() as cursor:
                 cursor.execute('CREATE TABLE account_list(id integer,account_name text,bank text,account_number text,currency text,rate_type text)')
                 cursor.execute('CREATE TABLE statement_imports(id integer,statement_hash text,imported_at text,transaction_count integer)')
-                cursor.execute('CREATE TABLE statement_balances(statement_hash text,account_name text,bank text,account_number text,currency text,period_start text,period_end text,opening_balance numeric,closing_balance numeric)')
+                cursor.execute("CREATE TABLE statement_balances(statement_hash text,account_name text,bank text,account_number text,currency text,period_start text,period_end text,opening_balance numeric,closing_balance numeric, source text DEFAULT '', notes text DEFAULT '', money_in numeric, money_out numeric)")
                 cursor.execute('CREATE TABLE classified_transactions(id integer,statement_hash text,split_parent_id integer,account_name text,bank text,account_number text,currency text)')
                 cursor.execute('CREATE TABLE rates(rate_month text,rate_type text,rate_value numeric)')
                 cursor.execute("INSERT INTO account_list VALUES(1,'QA','Deposit','QA-1','USD','USD/USD')")
                 cursor.execute("INSERT INTO statement_imports VALUES(1,'qa','invalid legacy date',0)")
-                cursor.execute("INSERT INTO statement_balances VALUES('qa','QA','Deposit','QA-1','USD','2026-09-01','2026-09-30',17.43,17.43)")
+                cursor.execute("INSERT INTO statement_balances(statement_hash,account_name,bank,account_number,currency,period_start,period_end,opening_balance,closing_balance) VALUES('qa','QA','Deposit','QA-1','USD','2026-09-01','2026-09-30',17.43,17.43)")
         with patch.object(db,'USING_POSTGRES',True),patch.object(db,'get_connection',side_effect=connect):
             exact,total,warnings=snapshot(db)
         assert total==Decimal('17.43') and exact[0]['Verification']=='SOURCE RECONCILIATION NOT VERIFIED'

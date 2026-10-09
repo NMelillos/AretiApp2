@@ -1,3 +1,4 @@
+from fifth_third_import import FifthThirdParseError
 import re
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
@@ -1148,6 +1149,9 @@ def extract_statement_balance(uploaded_file, file_name=""):
     with pdfplumber.open(uploaded_file) as pdf:
         pages = [page.extract_text() or "" for page in pdf.pages]
         text = "\n".join(pages)
+        from fifth_third_import import recognized, parse as parse_fifth
+        if recognized(text):
+            return parse_fifth(pages).attrs['statement_balance']
         if is_cnb(text):
             return parse_cnb(pages, pdf.metadata).attrs['statement_balance']
         if "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
@@ -1585,6 +1589,9 @@ def parse_pdf(uploaded_file):
                 text = "\n".join(pages)
                 text_upper = text.upper()
                 text_compact = re.sub(r"[^A-Z0-9]", "", text_upper)
+                from fifth_third_import import recognized, parse as parse_fifth
+                if recognized(text):
+                    return parse_fifth(pages)
                 if is_cnb(text):
                     try:
                         return parse_cnb(pages, pdf.metadata)
@@ -1656,7 +1663,7 @@ def parse_pdf(uploaded_file):
                     diagnostics["completed_rows"] = len(frame)
                     frame.attrs["parse_diagnostics"] = diagnostics
                 return frame
-        except (RevolutBusinessParseError, SafraParseError, CNBParseError, ComericaChecksError, BOCParseError, CitiSourceError):
+        except (FifthThirdParseError, RevolutBusinessParseError, SafraParseError, CNBParseError, ComericaChecksError, BOCParseError, CitiSourceError):
             raise
         except Exception:
             rows = []

@@ -140,7 +140,7 @@ class CompactTests(CompletionTests):
         with patch.object(db,'backfill_missing_usd_amounts',side_effect=AssertionError('Compact route must not write')):
             app.button(key='third_latest_import_balances').click().run()
         self.assertFalse(app.exception);self.assertFalse(app.warning);self.assertEqual(self.snapshot(),before)
-        self.assertIn('5. Latest Import Balances',[e.value for e in app.subheader])
+        self.assertTrue(any('executive-section-title' in e.value and '5. Latest Import Balances' in e.value for e in app.markdown))
         app.button(key='third_latest_balances_return').click().run();self.assertFalse(app.exception);self.assertEqual(self.snapshot(),before)
 
 if __name__=='__main__':unittest.main()

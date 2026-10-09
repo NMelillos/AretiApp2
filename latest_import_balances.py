@@ -270,23 +270,27 @@ def _iso_time(value):
         return False
 
 
-def fresh_import(value, generated_at):
-    """Verified timezone-aware import dates only; local calendar age 0..29."""
-    if not value or 'unverified' in str(value).lower():
-        return False
-    # cyprus_time's explicit EET/EEST suffix is verified by its timezone adapter.
+def fresh_closing(value, generated_at):
+    """Closing-date calendar age in Cyprus; unknown/future dates fail closed."""
     try:
-        parsed = datetime.strptime(value, '%Y-%m-%d %H:%M:%S EEST') if value.endswith(' EEST') else datetime.strptime(value, '%Y-%m-%d %H:%M:%S EET')
-    except ValueError:
+        closed = date.fromisoformat(str(value))
+    except (TypeError, ValueError):
         return False
     today = generated_at.astimezone(ZoneInfo('Europe/Nicosia')).date()
-    return 0 <= (today - parsed.date()).days < 30
+    return 0 <= (today - closed).days < 40
+
+
+def fresh_import(value, generated_at):
+    """Compatibility helper: import timestamps no longer determine freshness."""
+    return False
 
 
 def workbook_bytes(rows, total, warnings, generated_at=None):
     """Same authoritative dataset; Excel precision limits are explicit."""
     from io import BytesIO
     from openpyxl import Workbook
+    from openpyxl.styles import Font
+    generated_at = generated_at or datetime.now(ZoneInfo('Europe/Nicosia'))
     book = Workbook()
     sheet = book.active
     sheet.title = 'Latest Import Balances'
@@ -300,6 +304,8 @@ def workbook_bytes(rows, total, warnings, generated_at=None):
                 value = float(value) if len(value.as_tuple().digits) <= 15 else str(value)
             values.append(value)
         sheet.append(values)
+        sheet.cell(sheet.max_row, COLUMNS.index('Import date')+1).font = Font(color='000000')
+        sheet.cell(sheet.max_row, COLUMNS.index('Statement end date')+1).font = Font(color='146B36' if fresh_closing(row['Statement end date'], generated_at) else 'B42318')
         for cell in sheet[sheet.max_row]:
             if isinstance(cell.value, str):
                 cell.data_type = 's'
@@ -349,9 +355,9 @@ def print_document(rows, total, warnings, generated_at=None):
             body_parts.append(f'<tr class="group"><th colspan="{len(COLUMNS)}">{escape(current[0])} / {escape(current[1])}</th></tr>')
             group = current
         body_parts.append('<tr>' + ''.join(
-            f'<td class="fresh">{cell(row[column])}<br>Under 30 days</td>'
-            if column == 'Import date' and fresh_import(row[column], generated_at)
-            else f'<td>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
+            f'<td class="{"fresh" if fresh_closing(row[column], generated_at) else "stale"}">{cell(row[column])}</td>'
+            if column == 'Statement end date'
+            else f'<td' + (' style="color:#000000"' if column == 'Import date' else '') + f'>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
     body = ''.join(body_parts)
     warning_html = ''.join(f'<li>{escape(warning)}</li>' for warning in warnings)
     return f'''<!doctype html>
@@ -368,6 +374,7 @@ th, td {{ padding: 7px 5px; border-bottom: 1px solid #ccd4df; vertical-align: to
            overflow-wrap: anywhere; text-align: left; }}
 th {{ background: #eaf0f6; font-size: 10px; }}
 .fresh {{ color: #146b36; font-weight: bold; }}
+.stale {{ color: #b42318; font-weight: bold; }}
 .group th {{ background: #dce7ef; break-after: avoid; }}
 td:nth-child(7), td:nth-child(8), td:nth-child(10) {{ text-align: right; }}
 tr {{ break-inside: avoid; }} thead {{ display: table-header-group; }}
@@ -380,7 +387,7 @@ button {{ margin: 14px 0; padding: 8px 14px; cursor: pointer; }}
 <h1>Latest Import Balances</h1>
 <p>As of: {escape(generated_at.strftime('%Y-%m-%d %H:%M:%S %Z'))}</p>
 <p>{NOTE}</p>
-<p>Status: IMPORTED / INCOMPLETE / NO IMPORT. Green import dates are verified local dates under 30 days old.
+<p>Status: IMPORTED / INCOMPLETE / NO IMPORT. Closing dates under 40 days old are green; older, unknown or future closing dates are red. Import dates are always black.
 Legacy timezone uncertainty is preserved. Binary storage and decimal tails are unverified, displayed at currency precision and excluded from totals.
 Card/liability balances are shown in their stored statement convention and excluded pending an approved net-value convention.</p>
 <p>Non-USD values use Setup &gt; Rates as of each statement end date: the latest configured rate at or before that month,

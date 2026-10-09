@@ -26,3 +26,8 @@ Latest technical QA: 62/85 applicable script outcomes PASS, 23 FAIL after one fu
 ## Bounded autonomous package 2026-10-08
 
 Citi / BOC confirmed balance-only / three new CNB / THIRD compact USD sum and warning placement: IMPLEMENTED, TESTED (81 unittest methods + 2 regression scripts PASS; 0 FAIL), deployment pending exact source receipt. No historical repairs. Safra unchanged passing; bounded local performance improvement measured only for duplicate preview and synthetic import; live 7–10 minute delay/429/OOM unresolved. LOC BLOCKED on source/OCR; full reporting/liability convention and user business acceptance remain OPEN. See AUTONOMOUS_FINAL_HANDOVER_20261008.md and private deployment-receipt.json for actual deployed and accepted status.
+
+
+## Selected local UAT scope - 2026-10-09
+
+Only open items3,4,6,7 on codex/areti-uat-3467-release-20261009, directly above deployedc68b397. See UAT_ITEMS_3467_HANDOVER_20261009.md. IMPLEMENTED: compact columns/sort/style; shared closing-date40-day freshness; strict Fifth Third support retaining existing exact Comerica/USD identities. Item7 verified without application changes. TESTED:46 focused unittest methods PASS, full SQLite/PostgreSQL integrity script PASS, read-only isolated PostgreSQL boundary/fixture cleanup PASS, syntax/diff PASS. Original missing-column fixture failure retained and corrected only in test DDL. Owned localhost test cluster cleanly stopped. DEPLOYED:NO; DATA-REPAIRED:NONE; UAT:PENDING. No push/deploy/production/configuration action. Other open-item changes excluded; complete59822eb and all protected worktrees preserved. Exact commit/source hashes and complete patch in private uat-3467-20261009 evidence.

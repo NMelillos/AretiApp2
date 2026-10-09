@@ -6509,6 +6509,17 @@ elif page == "Memory":
 
 
 elif page == "Reports":
+    if st.session_state.get('reports_latest_balances_open'):
+        if st.button('Return to Reports', key='reports_latest_balances_return'):
+            st.session_state['reports_latest_balances_open'] = False
+            st.rerun()
+        from latest_balances_compact import render as render_compact_balances
+        import db as compact_db
+        render_compact_balances(st, compact_db)
+        st.stop()
+    if st.button('5. Latest Import Balances', key='reports_latest_import_balances'):
+        st.session_state['reports_latest_balances_open'] = True
+        st.rerun()
     from reporting import (
         build_pdf_report,
         build_report_verification,

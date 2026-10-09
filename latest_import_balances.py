@@ -20,7 +20,17 @@ COLUMNS = ('Account number', 'Account name', 'Bank', 'Import date',
 
 BANK_ALIASES = {'BOC':'BANKOFCYPRUS','CITIBANK':'CITI','CITIBANKCREDITCARD':'CITI',
                 'CNB':'CITYNATIONALBANK','AMEX':'AMERICANEXPRESS',
-                'JPMORGANCHASE':'CHASE','SAPPHIRECHASE':'CHASE'}
+                'JPMORGANCHASE':'CHASE','SAPPHIRECHASE':'CHASE',
+                'FIFTHTHIRD(EXCOMERICA)':'COMERICA'}
+
+
+def _report_bank_equal(left, right):
+    # Explicit successor label only: report matching, never stored identity remapping.
+    if left == right:
+        return True
+    legacy = {'COMERICA', 'FIFTHTHIRD(EXCOMERICA)'}
+    normalize = lambda value: re.sub(r'[\s.\-/]', '', str(value or '')).upper()
+    return normalize(left) in legacy and normalize(right) in legacy
 
 
 def _sql_compact(field, postgres):
@@ -165,7 +175,7 @@ def snapshot(db):
         ambiguous = row.get('_ambiguous_aliases')
         imported = pd.notna(row['import_id'])
         label_mismatch = imported and pd.notna(row['statement_account_name']) and (
-            row['statement_account_name'] != row['account_name'] or row['statement_bank'] != row['bank'])
+            row['statement_account_name'] != row['account_name'] or not _report_bank_equal(row['statement_bank'], row['bank']))
         currency = (row['statement_currency'] if imported and pd.notna(row['statement_currency'])
                     and str(row['statement_currency']).strip() else row['currency']) or ''
         opening = optional_decimal(row['opening_balance']) if imported else None
@@ -179,7 +189,7 @@ def snapshot(db):
             return compact.replace('CURRENTACCOUNT' + str(currency).upper() + '/IBAN', '') if 'safra' in str(row['bank']).lower() else str(value)
         complete = complete and str(row['statement_currency']).upper() == str(row['currency']).upper()
         complete = complete and identity_number(row['statement_account_number']) == identity_number(row['account_number'])
-        complete = complete and row['statement_bank'] == row['bank'] and row['statement_account_name'] == row['account_name']
+        complete = complete and _report_bank_equal(row['statement_bank'], row['bank']) and row['statement_account_name'] == row['account_name']
         complete = complete and row['transaction_count'] == row['source_rows']
         if complete:
             try:

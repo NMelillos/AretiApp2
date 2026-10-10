@@ -19,6 +19,9 @@ def commit_statement(db, frame, name, fingerprint, balance, account):
         from cnb_import import cnb_account, validate_preview as validate_cnb
         account = cnb_account(frame, db.get_accounts())
         validate_cnb(frame, balance, account)
+    if balance.get('source') == 'Russian Revolut Business':
+        from revolut_localized import validate_preview as validate_revolut
+        validate_revolut(frame, balance, account)
     if balance.get('source') == 'Fifth Third labelled sections':
         from fifth_third_import import validate_preview as validate_fifth
         validate_fifth(frame, balance, account)

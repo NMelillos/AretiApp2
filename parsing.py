@@ -1152,6 +1152,9 @@ def extract_statement_balance(uploaded_file, file_name=""):
         from fifth_third_import import recognized, parse as parse_fifth
         if recognized(text):
             return parse_fifth(pages).attrs['statement_balance']
+        if "Revolut Bank UAB" in text and "Выписка со счета" in text:
+            from revolut_localized import parse
+            return parse(pages).attrs["statement_balance"]
         if is_cnb(text):
             return parse_cnb(pages, pdf.metadata).attrs['statement_balance']
         if "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
@@ -1613,6 +1616,9 @@ def parse_pdf(uploaded_file):
                         raise
                     except Exception as exc:
                         raise SafraParseError("Safra statement could not be validated; no rows imported.") from exc
+                elif "Revolut Bank UAB" in text and "Выписка со счета" in text:
+                    from revolut_localized import parse
+                    return parse(pages)
                 elif "Revolut Bank" in text or "Account transactions from" in text:
                     rows = _parse_revolut_pdf_text(text)
                     diagnostics = _revolut_status_counts(text)

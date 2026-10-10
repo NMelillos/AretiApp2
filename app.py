@@ -5492,6 +5492,9 @@ if page == "Import":
                         )
                 parse_diagnostics = dict(getattr(parsed, "attrs", {}).get("parse_diagnostics", {}) or {})
                 parsed = apply_account_and_rates(parsed, selected_account)
+                if balance_info.get("source") == "Russian Revolut Business":
+                    from revolut_localized import validate_preview as validate_revolut
+                    validate_revolut(parsed, balance_info, selected_account)
                 parsed = flag_duplicates(parsed)
                 classified = classify_statement_rows(parsed, get_memory())
                 if "safra_sections" in parsed.attrs:

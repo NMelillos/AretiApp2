@@ -3886,12 +3886,6 @@ def _plain_ai_analysis_html(analysis):
     return "<div class=\"ai-analysis-box\">" + "<br>".join(lines) + "</div>"
 
 
-def _default_reporting_group_prompt():
-    return (
-        "Prepare a professional financial analysis for the selected reporting group using the report data provided. "
-        "Cover signed total, current month, previous month, main drivers, what to notice, and follow-up points. "
-        "Use only the supplied report data and do not invent transactions or explanations."
-    )
 
 
 def _analysis_rows_as_text(frame, columns, max_rows=60):
@@ -6741,15 +6735,7 @@ elif page == "Setup":
                 "Income and Charity is shown automatically as a separate THIRD Report section. "
                 "Its dedicated setup groups are excluded from THIRD Reporting Group totals."
             )
-        with st.expander("Default AI prompt used when the group prompt is empty", expanded=False):
-            st.text_area(
-                "Default prompt",
-                value=_default_reporting_group_prompt(),
-                height=120,
-                disabled=True,
-                help="When a reporting group has its own AI prompt, only that prompt is used for the AI report.",
-                key="setup_default_ai_prompt_preview",
-            )
+        st.caption("AI reports use only the saved reporting-group prompt. If it is blank, no AI report is generated.")
         settings_lookup = {}
         if not group_settings.empty:
             settings_lookup = {

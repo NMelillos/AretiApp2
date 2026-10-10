@@ -102,10 +102,6 @@ class OriginalTests(unittest.TestCase):
         for source in baseline:
             path=Path(source['file'])
             with self.subTest(source=path.name):
-                if source.get('error') and not source['error'].endswith('missing account on section page'):
-                    with self.assertRaisesRegex(boc_import.BOCParseError,'unparsed transaction date columns'):
-                        parsing.parse_pdf(BytesIO(path.read_bytes()))
-                    continue
                 frame=parsing.parse_pdf(BytesIO(path.read_bytes()))
                 actual=json.loads(json.dumps(dict(rows=frame.to_dict('records'),attrs=frame.attrs),default=str))
                 expected=source if 'error' not in source else next(s for s in previous if Path(s['file']).name==path.name)

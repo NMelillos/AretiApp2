@@ -50,6 +50,7 @@ def parse_pages(pages, texts):
     meta = metadata('\n'.join(texts))
     rows, previous, opening, totals = [], None, None, None
     debit_total = credit_total = Decimal(0)
+    last_header = None
     for number, (page, text) in enumerate(zip(pages, texts), 1):
         account = re.search(r'Account Number\s+(?:CYPRUS\s+)?(\d+)', re.sub(r'\s+', ' ', text))
         if not account or account[1] != meta['account_number']:
@@ -66,15 +67,30 @@ def parse_pages(pages, texts):
             lines[-1][1].append(word)
         headers = [(y, ws) for y, ws in lines if {'Debit', 'Credit', 'Balance'}.issubset({w['text'] for w in ws})
                    and any('Transaction' in w['text'] for w in ws)]
-        if len(headers) != 1:
-            _fail('missing or ambiguous transaction column header')
-        top, words = headers[0]
+        summary_only = False
+        if len(headers) == 1:
+            top, words = headers[0]
+            last_header = words
+        else:
+            closing_lines = [(y, ws) for y, ws in lines
+                             if re.sub(r'\s+', '', ' '.join(w['text'] for w in sorted(ws, key=lambda w: w['x0']))).lower().startswith('total/balancecarriedforward')]
+            if headers or number != len(pages) or len(closing_lines) != 1 or last_header is None or previous is None:
+                _fail('missing or ambiguous transaction column header')
+            closing_top, _ = closing_lines[0]
+            # This source-proven final page contains no activity table. Never
+            # skip dates or financial values preceding its single closing total.
+            if re.search(r'\d{1,2}/\d{1,2}/\d{2,4}', text) or any(
+                    re.fullmatch(r'[+-]?\d[\d,]*\.\d{2}', w['text'])
+                    for y, ws in lines if y < closing_top for w in ws):
+                _fail('unexpected activity before summary-only closing total')
+            top, words = closing_top - 1, last_header
+            summary_only = True
         positions = {w['text']: w for w in words}
         debit, credit, balance = [positions[k] for k in ('Debit', 'Credit', 'Balance')]
         financial_left = debit['x0'] - 55
         boundaries = ((debit['x1'] + credit['x1']) / 2, (credit['x1'] + balance['x1']) / 2)
         description_left = next(w['x0'] for w in words if 'Details' in w['text'])
-        active, ended = False, False
+        active, ended = summary_only, False
         for y, ws in lines:
             if y <= top:
                 continue
@@ -83,6 +99,15 @@ def parse_pages(pages, texts):
             compact = re.sub(r'\s+', '', line).lower()
             if compact.startswith('date'):
                 continue
+            if (compact.startswith('pleasereviewthepresentstatement')
+                    and number == len(pages) - 1 and active
+                    and 'Total / Balance Carried Forward' in texts[-1]
+                    and 'TransactionDetails' not in texts[-1]
+                    and 'Transaction Details' not in texts[-1]):
+                # The penultimate activity page can end at the bank footer
+                # when the next numbered, same-account page is summary-only.
+                ended = True
+                break
             if line.startswith('Continue on next Page'):
                 ended = True
                 break

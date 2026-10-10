@@ -148,3 +148,12 @@ Baseline de8c6c7 on independent codex/areti-performance-measured. See PERFORMANC
 - Command: isolated credential-free runner with unittest names _qa_boc_header, _qa_boc_package.ColumnTests, _qa_boc_package.SourceTests.test_all_original_rows_source_columns_and_metadata. Original evidence and logs remain outside Git in the existing private boc6128-validation folder.
 - Network/credential access blocked in child; any test database is disposable local SQLite. No production writes, repair, push or deployment. Original baseline worktree unchanged.
 - IMPLEMENTED / TESTED locally; NOT DEPLOYED; NOT DATA-REPAIRED; USER ACCEPTANCE pending. Prior atomic repair remains suspended and requires its complete rehearsal/preconditions in a separately authorised continuation.
+
+
+## Final BOC source-layout closure — 2026-10-10
+
+Baseline bd7bdcf; isolated codex/areti-boc-final-closure. The original ending3804 penultimate activity page ends at the bank footer without its continuation caption; the final numbered same-account page contains closing totals only. Accept this bounded sequence using the preceding verified column positions, rejecting activity before the final total. Account, page, date, running-balance, column-direction and final-reconciliation checks remain active. No unrelated parser or financial modules changed.
+
+Source gate: exact three original hashes and all 143 dated/described native movements PASS, with counts68/60/15 and source opening/credit/debit/closing/period/currency facts. Final isolated regression17/17 PASS in24.034s; all eight available original BOC PDFs match recorded exact outputs, including the shared summary-page layout. Supported atomic import/history/pending/duplicate/rollback and zero-row paths PASS on disposable local SQLite. Original fixture failures retained privately; fixture correction mutates word evidence as well as text and compares newly supported originals against exact source expectations.
+
+IMPLEMENTED / TESTED locally. Parser release separately authorised; production repair NOT EXECUTED at this checkpoint and requires disposable PostgreSQL rehearsal and exact forensic preconditions. Original source evidence and private logs remain outside Git. No schema/data migration, account rewrite or guard removal included.

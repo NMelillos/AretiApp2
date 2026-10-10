@@ -32,7 +32,7 @@ def metadata(text):
         if len(set(matches)) != 1:
             _fail('missing or conflicting account/period header')
         return matches[0]
-    account = required(r'Account Number\s+(\d+)')
+    account = required(r'Account Number\s+(?:CYPRUS\s+)?(\d+)')
     iban = required(r'IBAN\s+(CY\d{26})')
     numeric = iban[4:] + '1234' + iban[2:4]  # C=12, Y=34
     if int(numeric) % 97 != 1:
@@ -51,7 +51,7 @@ def parse_pages(pages, texts):
     rows, previous, opening, totals = [], None, None, None
     debit_total = credit_total = Decimal(0)
     for number, (page, text) in enumerate(zip(pages, texts), 1):
-        account = re.search(r'Account Number\s+(\d+)', re.sub(r'\s+', ' ', text))
+        account = re.search(r'Account Number\s+(?:CYPRUS\s+)?(\d+)', re.sub(r'\s+', ' ', text))
         if not account or account[1] != meta['account_number']:
             _fail('continuation page account mismatch')
         footer = re.search(r'^Page[ \t]+(\d+)[ \t]*/[ \t]*(\d+)[ \t]*$', text, re.MULTILINE)
@@ -194,7 +194,7 @@ def parse_document(pages, texts):
             _fail('missing section page numbering')
         page_number, count = map(int, footer.groups())
         flat = re.sub(r'\s+', ' ', text)
-        account = re.search(r'Account Number\s+(\d+)', flat)
+        account = re.search(r'Account Number\s+(?:CYPRUS\s+)?(\d+)', flat)
         if not account:
             _fail('missing account on section page')
         if page_number == 1:

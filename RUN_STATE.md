@@ -136,3 +136,15 @@ See UAT_ADDENDUM_HANDOVER_20261009.md. Items 1–4, 6 and 7 implemented/tested l
 ## Measured performance correction — 2026-10-10
 
 Baseline de8c6c7 on independent codex/areti-performance-measured. See PERFORMANCE_MEASURED_HANDOVER_20261010.md for measured eager export costs, before/after timings, 21 resolved targeted tests and preserved failures. Only idle export generation deferred; financial/parser/schema/query/backfill/SPLIT behavior unchanged. LOCAL candidate only, no production access/writes/push/deployment. Live incident shows resource pressure but no per-operation timings: exact ten-minute causal chain remains unproven. Ready for controlled checking of the demonstrated local correction; complete live performance resolution and business acceptance remain pending. Other open items untouched.
+
+
+## BOC 6128 header-only candidate — 2026-10-10
+
+- Baseline: 3f2435f7b7e2b1894abea7d2f125fde0b195e7e4; separate branch codex/areti-boc-6128-header.
+- Reproduced the original second-page header failure on pinned baseline modules.
+- PDF reading order interleaves the literal address word CYPRUS between Account Number and its digits. Only that optional literal is accepted in the three existing account-header expressions.
+- Original source hash and all 15 dated/described native movements match the previously recorded private source evidence; opening/credits/debits/closing reconcile exactly. Balance-only prepare also passes without persistence.
+- TESTED: 13/13 targeted checks; syntax and git diff --check pass. Eight distinct known original PDFs examined: all four baseline-success outputs unchanged, two interleaved-header sources validate against existing exact source evidence, and two unrelated date-column failures remain rejected. No claim that all BOC blockers are resolved.
+- Command: isolated credential-free runner with unittest names _qa_boc_header, _qa_boc_package.ColumnTests, _qa_boc_package.SourceTests.test_all_original_rows_source_columns_and_metadata. Original evidence and logs remain outside Git in the existing private boc6128-validation folder.
+- Network/credential access blocked in child; any test database is disposable local SQLite. No production writes, repair, push or deployment. Original baseline worktree unchanged.
+- IMPLEMENTED / TESTED locally; NOT DEPLOYED; NOT DATA-REPAIRED; USER ACCEPTANCE pending. Prior atomic repair remains suspended and requires its complete rehearsal/preconditions in a separately authorised continuation.

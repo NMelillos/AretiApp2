@@ -1,3 +1,4 @@
+from functools import partial
 from datetime import datetime, timedelta, timezone
 import copy
 import hashlib
@@ -6353,7 +6354,7 @@ elif page == "Database":
 
         st.download_button(
             "Download filtered database Excel",
-            data=dataframe_to_excel_bytes({"Transactions": db_view}),
+            data=partial(dataframe_to_excel_bytes, {"Transactions": db_view}),
             file_name="transactions_database_filtered.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
@@ -6365,7 +6366,7 @@ elif page == "Database":
                 st.dataframe(change_log, use_container_width=True, hide_index=True, height=360)
                 st.download_button(
                     "Download change log Excel",
-                    data=dataframe_to_excel_bytes({"Change log": change_log}),
+                    data=partial(dataframe_to_excel_bytes, {"Change log": change_log}),
                     file_name="transaction_change_log.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
@@ -6560,7 +6561,7 @@ elif page == "Reports":
         else:
             st.success("Report verification is OK for the selected filters.")
 
-        report_bytes = build_sample_expenses_report(filtered_reviewed, categories_df)
+        report_bytes = partial(build_sample_expenses_report, filtered_reviewed, categories_df)
         st.download_button(
             "Download sample expenses report",
             data=report_bytes,
@@ -6570,13 +6571,13 @@ elif page == "Reports":
         )
         st.download_button(
             "Download complete PDF report",
-            data=build_pdf_report(filtered_reviewed, categories_df),
+            data=partial(build_pdf_report, filtered_reviewed, categories_df),
             file_name="all_categories_expenses_report.pdf",
             mime="application/pdf",
         )
         st.download_button(
             "Download report verification Excel",
-            data=dataframe_to_excel_bytes({
+            data=partial(dataframe_to_excel_bytes, {
                 "Report check": pd.DataFrame([
                     {"Metric": "Database rows checked", "Value": verification_summary["database_rows"]},
                     {"Metric": "Rows represented in workbook", "Value": verification_summary["represented_rows"]},
@@ -6596,20 +6597,22 @@ elif page == "Reports":
         )
         report_groups = get_report_groups(categories_df)
         if report_groups:
-            pdf_zip = BytesIO()
-            with zipfile.ZipFile(pdf_zip, "w", zipfile.ZIP_DEFLATED) as archive:
-                archive.writestr(
-                    "all_categories_expenses_report.pdf",
-                    build_pdf_report(filtered_reviewed, categories_df),
-                )
-                for group in report_groups:
+            def report_pdf_zip(transactions=filtered_reviewed, categories=categories_df, groups=tuple(report_groups)):
+                pdf_zip = BytesIO()
+                with zipfile.ZipFile(pdf_zip, "w", zipfile.ZIP_DEFLATED) as archive:
                     archive.writestr(
-                        f"{safe_filename(group)}_expenses_report.pdf",
-                        build_pdf_report(filtered_reviewed, categories_df, group),
+                        "all_categories_expenses_report.pdf",
+                        build_pdf_report(transactions, categories),
                     )
+                    for group in groups:
+                        archive.writestr(
+                            f"{safe_filename(group)}_expenses_report.pdf",
+                            build_pdf_report(transactions, categories, group),
+                        )
+                return pdf_zip.getvalue()
             st.download_button(
                 "Download all PDF reports",
-                data=pdf_zip.getvalue(),
+                data=report_pdf_zip,
                 file_name="expense_reports_by_group.zip",
                 mime="application/zip",
             )
@@ -6617,14 +6620,14 @@ elif page == "Reports":
                 for group in report_groups:
                     st.download_button(
                         f"Download {group} PDF",
-                        data=build_pdf_report(filtered_reviewed, categories_df, group),
+                        data=partial(build_pdf_report, filtered_reviewed, categories_df, group),
                         file_name=f"{safe_filename(group)}_expenses_report.pdf",
                         mime="application/pdf",
                         key=f"pdf_report_{safe_filename(group)}",
                     )
         st.download_button(
             "Download filtered reviewed transactions Excel",
-            data=dataframe_to_excel_bytes({"Reviewed transactions": filtered_reviewed}),
+            data=partial(dataframe_to_excel_bytes, {"Reviewed transactions": filtered_reviewed}),
             file_name="reviewed_transactions_filtered.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
@@ -6855,7 +6858,7 @@ elif page == "Setup":
 
     st.download_button(
         "Download full backup Excel",
-        data=dataframe_to_excel_bytes({
+        data=partial(dataframe_to_excel_bytes, {
             "Transactions": setup_transactions,
             "Statement balances": get_statement_balances(),
             "Import history": get_import_history(),

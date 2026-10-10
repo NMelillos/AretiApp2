@@ -131,3 +131,8 @@ Only open items3,4,6,7 on codex/areti-uat-3467-release-20261009, directly above 
 ## UAT addendum 2026-10-09 — local only
 
 See UAT_ADDENDUM_HANDOVER_20261009.md. Items 1–4, 6 and 7 implemented/tested locally; 21 targeted tests and SQLite storage/export integrity PASS; final display regression PASS. Item 5 exact live account-5055 Status/Verification/Applied FX remain UNAVAILABLE because the connected read-only report session is signed out. USD identity conversion needs no configured rate; do not invent a row-specific exclusion reason. Existing FX/storage/ownership/duplicate safeguards preserved. No push, deployment or production data actions. Business UAT pending.
+
+
+## Measured performance correction — 2026-10-10
+
+Baseline de8c6c7 on independent codex/areti-performance-measured. See PERFORMANCE_MEASURED_HANDOVER_20261010.md for measured eager export costs, before/after timings, 21 resolved targeted tests and preserved failures. Only idle export generation deferred; financial/parser/schema/query/backfill/SPLIT behavior unchanged. LOCAL candidate only, no production access/writes/push/deployment. Live incident shows resource pressure but no per-operation timings: exact ten-minute causal chain remains unproven. Ready for controlled checking of the demonstrated local correction; complete live performance resolution and business acceptance remain pending. Other open items untouched.

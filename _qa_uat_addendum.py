@@ -88,11 +88,11 @@ class USDExclusionTests(MatchTests):
 
 class PresentationTests(unittest.TestCase):
     def rows(self):
-        base={'Status':'IMPORTED','Verification':'SOURCE RECONCILIATION NOT VERIFIED','Bank':'Bank A','Account name':'Owner','Account number':'0001','Import date':'2026-10-09','Statement end date':'2026-09-30','Currency':'USD','Closing balance':Decimal('962.5999755859375'),'Closing balance converted to USD':Decimal('962.5999755859375')}
+        base={'Status':'IMPORTED','Verification':'SOURCE RECONCILIATION NOT VERIFIED','Bank':'Bank A','Account name':'Owner','Account number':'0001','Transaction Import Date':'2026-10-09','Statement end date':'2026-09-30','Currency':'USD','Closing balance':Decimal('962.5999755859375'),'Closing balance converted to USD':Decimal('962.5999755859375')}
         return [base,dict(base,**{'Account name':'AAA','Statement end date':'2026-09-30','Closing balance':Decimal('2.10'),'Closing balance converted to USD':Decimal('2.10')}),dict(base,**{'Account name':'AAA','Statement end date':'2026-09-01','Closing balance':Decimal('3.20'),'Closing balance converted to USD':Decimal('3.20')})]
     def test_columns_compact_width_two_decimals_sort_and_exact_total(self):
         rows=self.rows();before=repr(rows);html=compact_html(rows)
-        labels=('Bank','Account','Account Number','Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
+        labels=('Bank','Account','Account Number','Transaction Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
         self.assertEqual([html.index('>'+label+'</th>') for label in labels],sorted(html.index('>'+label+'</th>') for label in labels))
         self.assertIn('table-layout:auto',html);self.assertIn('width:max-content',html);self.assertIn('white-space:nowrap',html)
         self.assertNotIn('962.5999755859375',html);self.assertIn('962.60',html);self.assertIn('2.10',html)

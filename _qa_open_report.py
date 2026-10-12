@@ -20,8 +20,8 @@ class ReportTests(unittest.TestCase):
  def test_exact_visible_total_columns_sort_and_no_grouping(self):
   rows=[]
   for bank,stamp,end,value in [('Z Bank','2026-10-09 10:00:00 EEST','2026-08-01','12.340000'),('A Bank','2026-10-08 10:00:00 EEST','2026-09-30','2.10'),('A Bank','2026-10-07 10:00:00 EEST','2026-09-30','3.20')]:
-   row={k:'' for k in COLUMNS};row.update({'Bank':bank,'Import date':stamp,'Statement end date':end,'Account number':'0001','Account name':'<source>','Currency':'USD','Closing balance':Decimal(value),'Closing balance converted to USD':Decimal(value),'Status':'IMPORTED','Verification':'SOURCE RECONCILIATION NOT VERIFIED'});rows.append(row)
-  visible,total,*_=compact_model(rows);self.assertEqual(total,Decimal('17.64'));self.assertEqual([r['import_date'] for r in visible[:2]],[rows[1]['Import date'],rows[2]['Import date']])
+   row={k:'' for k in COLUMNS};row.update({'Bank':bank,'Transaction Import Date':stamp,'Statement end date':end,'Account number':'0001','Account name':'<source>','Currency':'USD','Closing balance':Decimal(value),'Closing balance converted to USD':Decimal(value),'Status':'IMPORTED','Verification':'SOURCE RECONCILIATION NOT VERIFIED'});rows.append(row)
+  visible,total,*_=compact_model(rows);self.assertEqual(total,Decimal('17.64'));self.assertEqual([r['import_date'] for r in visible[:2]],[rows[1]['Transaction Import Date'],rows[2]['Transaction Import Date']])
   now=datetime(2026,10,9,tzinfo=ZoneInfo('Europe/Nicosia'));html=compact_html(rows,now)
   self.assertIn('colspan="7"',html);self.assertIn('17.64',html);self.assertNotIn('12.340000',html);self.assertIn('&lt;source&gt;',html);self.assertEqual(html.count('<tr>'),5);self.assertIn('color:#b42318',html);self.assertIn('color:#146b36',html);self.assertIn('color:#000000',html)
   doc=print_document(rows,total,[],now);self.assertNotIn('Under 30 days',doc)

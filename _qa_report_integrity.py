@@ -14,7 +14,7 @@ import db
 from latest_import_balances import snapshot, print_document, workbook_bytes, fresh_import, fresh_closing
 
 
-def main():
+def sqlite_checks():
     assert not db.USING_POSTGRES
     with tempfile.TemporaryDirectory(dir=os.environ['TEMP']) as root, patch.object(db,'DB_PATH',str(Path(root)/'report.sqlite')):
         db.init_db()
@@ -47,7 +47,7 @@ def main():
         assert by_account['QA-6']['Status']=='INCOMPLETE'
         assert by_account['QA-7']['Closing balance']==Decimal('3.03')
         assert any('ordering is unverified' in value for value in warnings)
-        assert 'timezone unverified' in by_account['QA-8']['Import date']
+        assert by_account['QA-8']['Transaction Import Date']=='—'  # No source transactions in this balance-only fixture.
         assert by_account['QA-NONE']['Status']=='NO IMPORT'
         generated=datetime.fromisoformat('2026-10-05T12:00:00+03:00')
         for days in (0,29,30,31,40,-1):
@@ -92,6 +92,10 @@ def main():
         print('PASS SQLite exact text, incomplete/no-import, liabilities, legacy timestamps, green boundaries, safe literal Excel, shared totals and zero writes')
         with closing(db.get_connection()) as conn:
             duplicate_accounts(conn, lambda: snapshot(db), 'SQLite')
+
+
+def main():
+    sqlite_checks()
     postgres()
 
 
@@ -124,7 +128,7 @@ def postgres():
         with patch.object(db,'USING_POSTGRES',True),patch.object(db,'get_connection',side_effect=connect):
             exact,total,warnings=snapshot(db)
         assert total==Decimal('17.43') and exact[0]['Verification']=='SOURCE RECONCILIATION NOT VERIFIED'
-        assert 'timezone unverified' in exact[0]['Import date'] and any('ordering is unverified' in warning for warning in warnings)
+        assert exact[0]['Transaction Import Date']=='—' and any('ordering is unverified' in warning for warning in warnings)
         with closing(psycopg2.connect(dbname=database,**options)) as raw:
             with patch.object(db,'USING_POSTGRES',True),patch.object(db,'get_connection',side_effect=connect):
                 duplicate_accounts(db.PostgresConnection(raw), lambda: snapshot(db), 'PostgreSQL')
@@ -172,9 +176,9 @@ def duplicate_accounts(conn, read, backend):
         assert len(dup)==2 and all(r['Closing balance converted to USD']=='NOT AVAILABLE' for r in dup)
         ordinary=next(r for r in dup if r['Account number']=='QA-SAME')
         safra=next(r for r in dup if r['Bank']=='Safra')
-        assert ordinary['Closing balance']==Decimal('10.00') and ordinary['Import date'].startswith('2026-10-04')
+        assert ordinary['Closing balance']==Decimal('10.00') and ordinary['Transaction Import Date']=='—'
         assert ordinary['Account name']=='Old label (USD/USD); New label (EUR/USD)'
-        assert safra['Import date'].startswith('2026-10-04') and 'Safra alias label' in safra['Account name'] and 'Safra direct label' in safra['Account name']
+        assert safra['Transaction Import Date']=='—' and 'Safra alias label' in safra['Account name'] and 'Safra direct label' in safra['Account name']
         assert safra['Account number']=='Current account USD / IBAN CH000000000000000000001'
         assert sum('AMBIGUOUS SETUP IDENTITY' in warning for warning in warnings)==2
         assert next(r for r in rows if r['Account number']=='CH000000000000000000002')['Closing balance converted to USD']==Decimal('12.00')

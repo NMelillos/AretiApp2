@@ -12,8 +12,10 @@ NOTE = ('INTERIM PARTIAL REPORT: current Setup accounts only. Accounts absent fr
         'this report and are not enumerated. This is not a complete reconciled total of all accounts. '
         'One row per account/currency. Latest normally means committed import time; a verified older '
         'BOC/CNB statement cannot displace a newer complete statement. '
-        'Newer incomplete imports remain visible; older balances are never substituted.')
-COLUMNS = ('Account number', 'Account name', 'Bank', 'Import date',
+        'Newer incomplete imports remain visible; older balances are never substituted. '
+        'Transaction Import Date is the latest transaction-bearing history timestamp for the '
+        'bank/account/currency; balance-only import and update times are never used.')
+COLUMNS = ('Account number', 'Account name', 'Bank', 'Transaction Import Date',
            'Statement start date', 'Statement end date', 'Opening balance',
            'Closing balance', 'Currency', 'Closing balance converted to USD', 'Status',
            'Verification', 'Applied FX', 'Credits / money in', 'Debits / money out')
@@ -57,8 +59,9 @@ def snapshot(db):
 
     Full bank/account/currency identities define the account population. Safra's exact IBAN normalization
     mirrors _safra_page_accounts; no currency-only or name-only matching.
-    All statement fields come from the single ranked balance/import join.
-    Only counts are read from transactions, never transaction bodies.
+    Balance fields retain the existing balance/import selection. The displayed
+    transaction date is independently selected from transaction-bearing history.
+    Only existence/counts are read from transactions, never transaction bodies.
     """
     storage_type = (lambda field: f'pg_typeof(b.{field})::text' if db.USING_POSTGRES
                     else f'typeof(b.{field})')
@@ -77,6 +80,12 @@ def snapshot(db):
             FROM account_list
         ), candidates AS (
             SELECT a.id AS account_id, i.id AS import_id, i.imported_at, i.transaction_count,
+                   EXISTS (SELECT 1 FROM classified_transactions matched
+                           WHERE matched.statement_hash = i.statement_hash
+                             AND matched.split_parent_id IS NULL
+                             AND {bank_match}
+                             AND UPPER(matched.currency) = UPPER(a.currency)
+                             AND {number_match}) AS has_transaction_rows,
                    b.period_start, b.period_end,
                    b.notes, b.source,
                    CAST(b.money_in AS TEXT) AS money_in, CAST(b.money_out AS TEXT) AS money_out,
@@ -107,7 +116,7 @@ def snapshot(db):
         )
         SELECT a.id AS account_id, a.account_number, a.account_name, a.bank,
                a.currency, a.rate_type, r.import_id, r.imported_at,
-               r.period_start, r.period_end, r.opening_balance, r.closing_balance,
+               r.has_transaction_rows, r.period_start, r.period_end, r.opening_balance, r.closing_balance,
                r.notes, r.source, r.money_in, r.money_out,
                r.statement_currency, r.statement_account_number, r.transaction_count,
                r.statement_bank, r.statement_account_name,
@@ -163,7 +172,20 @@ def snapshot(db):
             if newer:
                 warnings.append(f"{selected['account_number']}: older verified statement recorded in history; a newer complete statement remains displayed.")
                 selected = max(newer, key=lambda row: (complete_period(row), row['import_id']))
+        # The transaction history event is independent of latest balance selection.
+        transaction_rows = [row for row in imported_rows
+                            if pd.notna(row['transaction_count']) and row['transaction_count'] > 0
+                            and row['has_transaction_rows'] == 1]
+        transaction_date = '—'
+        if transaction_rows:
+            if all(_verified_time(row['imported_at']) is not None for row in transaction_rows):
+                transaction = max(transaction_rows, key=lambda row: (_verified_time(row['imported_at']), row['import_id']))
+            else:
+                transaction = max(transaction_rows, key=lambda row: row['import_id'])
+                warnings.append(f"{selected['account_number']}: transaction import ordering is unverified; latest transaction-bearing import ID selected. No balance timestamp substituted.")
+            transaction_date = cyprus_time(transaction['imported_at']) or '—'
         selected = dict(selected)
+        selected['_transaction_import_date'] = transaction_date
         if len(aliases) > 1:
             representative = min(population, key=lambda row: row['account_id'])
             selected['_display_number'] = representative['account_number']
@@ -237,7 +259,7 @@ def snapshot(db):
             eligible.append(usd)
         result.append(dict(zip(COLUMNS, (
             row.get('_display_number', row['account_number']) or '', '; '.join(ambiguous) if ambiguous else (str(row['account_name']) + '; source label: ' + str(row['statement_account_name']) if label_mismatch else row['account_name'] or ''), row.get('_display_bank', row['bank']) or '',
-            cyprus_time(row['imported_at']) if imported else '',
+            row['_transaction_import_date'],
             row['period_start'] if imported and pd.notna(row['period_start']) else '',
             row['period_end'] if imported and pd.notna(row['period_end']) else '',
             opening, closing,
@@ -245,9 +267,13 @@ def snapshot(db):
             'AMBIGUOUS SETUP IDENTITY' if ambiguous else ('IMPORTED' if complete else 'INCOMPLETE') if imported else 'NO IMPORT',
             verification, applied_fx, optional_decimal(row['money_in']) if imported else None, optional_decimal(row['money_out']) if imported else None,
         ))))
+        result[-1]['_balance_import_order'] = cyprus_time(row['imported_at']) if imported else ''
+    # Preserve existing balance-order semantics despite the independent display date.
     result.sort(key=lambda row: (row['Bank'], row['Account name'],
-                                -(datetime.fromisoformat(row['Import date'][:19]).timestamp()
-                                  if _iso_time(row['Import date']) else 0), row['Account number']))
+                                -(datetime.fromisoformat(row['_balance_import_order'][:19]).timestamp()
+                                  if _iso_time(row['_balance_import_order']) else 0), row['Account number']))
+    for row in result:
+        row.pop('_balance_import_order')
     return result, exact_sum(eligible), warnings
 
 
@@ -314,7 +340,7 @@ def workbook_bytes(rows, total, warnings, generated_at=None):
                 value = float(value) if len(value.as_tuple().digits) <= 15 else str(value)
             values.append(value)
         sheet.append(values)
-        sheet.cell(sheet.max_row, COLUMNS.index('Import date')+1).font = Font(color='000000')
+        sheet.cell(sheet.max_row, COLUMNS.index('Transaction Import Date')+1).font = Font(color='000000')
         sheet.cell(sheet.max_row, COLUMNS.index('Statement end date')+1).font = Font(color='146B36' if fresh_closing(row['Statement end date'], generated_at) else 'B42318')
         for cell in sheet[sheet.max_row]:
             if isinstance(cell.value, str):
@@ -367,7 +393,7 @@ def print_document(rows, total, warnings, generated_at=None):
         body_parts.append('<tr>' + ''.join(
             f'<td class="{"fresh" if fresh_closing(row[column], generated_at) else "stale"}">{cell(row[column])}</td>'
             if column == 'Statement end date'
-            else f'<td' + (' style="color:#000000"' if column == 'Import date' else '') + f'>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
+            else f'<td' + (' style="color:#000000"' if column == 'Transaction Import Date' else '') + f'>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
     body = ''.join(body_parts)
     warning_html = ''.join(f'<li>{escape(warning)}</li>' for warning in warnings)
     return f'''<!doctype html>
@@ -397,7 +423,7 @@ button {{ margin: 14px 0; padding: 8px 14px; cursor: pointer; }}
 <h1>Latest Import Balances</h1>
 <p>As of: {escape(generated_at.strftime('%Y-%m-%d %H:%M:%S %Z'))}</p>
 <p>{NOTE}</p>
-<p>Status: IMPORTED / INCOMPLETE / NO IMPORT. Closing dates 30 days old or less are green; older, unknown or future closing dates are red. Import dates are always black.
+<p>Status: IMPORTED / INCOMPLETE / NO IMPORT. Closing dates 30 days old or less are green; older, unknown or future closing dates are red. Transaction Import Dates are always black and never use balance-only import/update timestamps.
 Legacy timezone uncertainty is preserved. Binary storage and decimal tails are unverified, displayed at currency precision and excluded from totals.
 Card/liability balances are shown in their stored statement convention and excluded pending an approved net-value convention.</p>
 <p>Non-USD values use Setup &gt; Rates as of each statement end date: the latest configured rate at or before that month,

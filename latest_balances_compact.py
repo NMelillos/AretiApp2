@@ -31,7 +31,7 @@ def compact_model(rows):
         if usd is not None: included.append(usd)
         visible.append(dict(account=str(row.get('Account name') or row.get('Account number') or 'Unknown account'),
             currency=str(row.get('Currency') or ''),closing=native,usd=usd,
-            bank=str(row.get('Bank') or ''),import_date=str(row.get('Import date') or ''),
+            bank=str(row.get('Bank') or ''),import_date=str(row.get('Transaction Import Date') or ''),
             account_number=str(row.get('Account number') or ''),closing_date=str(row.get('Statement end date') or '')))
     return visible,exact_sum(included),missing_rate,unverified
 
@@ -42,7 +42,7 @@ def compact_html(rows, generated_at=None):
     def money(value):
         if value is None:return '—'
         return format(cents(value),',.2f')
-    labels=('Bank','Account','Account Number','Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
+    labels=('Bank','Account','Account Number','Transaction Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
     table='<div style="overflow-x:auto"><table class="compact-balances" style="font-size:10px;line-height:1.15;border-collapse:collapse;width:max-content;table-layout:auto"><thead><tr>'
     table+=''.join('<th style="padding:1px 3px;white-space:nowrap;text-align:left">'+label+'</th>' for label in labels)
     table+='</tr></thead><tbody>'

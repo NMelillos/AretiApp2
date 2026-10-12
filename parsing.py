@@ -1622,6 +1622,13 @@ def parse_pdf(uploaded_file):
                 elif "Revolut Bank" in text or "Account transactions from" in text:
                     rows = _parse_revolut_pdf_text(text)
                     diagnostics = _revolut_status_counts(text)
+                    from revolut_account_context import recognized, source_context
+                    if recognized(text):
+                        frame = _frame_from_pdf_rows(rows)
+                        frame.attrs["revolut_source_account"] = source_context(pages, frame)
+                        diagnostics["completed_rows"] = len(frame)
+                        frame.attrs["parse_diagnostics"] = diagnostics
+                        return frame
                 elif "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
                     from boc_import import parse_document
                     sections = parse_document(pdf.pages, pages)

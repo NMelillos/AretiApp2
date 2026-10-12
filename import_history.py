@@ -15,6 +15,9 @@ def commit_statement(db, frame, name, fingerprint, balance, account):
     if frame.attrs.get('safra_sections'):
         return db.save_pending_transactions(frame, name, fingerprint)
     account, balance = dict(account or {}), dict(balance or {})
+    if frame.attrs.get("revolut_source_account"):
+        from revolut_account_context import effective_account
+        account = effective_account(frame, balance, account)
     if frame.attrs.get('cnb_account'):
         from cnb_import import cnb_account, validate_preview as validate_cnb
         account = cnb_account(frame, db.get_accounts())

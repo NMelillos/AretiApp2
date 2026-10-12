@@ -5491,6 +5491,9 @@ if page == "Import":
                             "the cardholder name from the CSV to each imported AMEX account number."
                         )
                 parse_diagnostics = dict(getattr(parsed, "attrs", {}).get("parse_diagnostics", {}) or {})
+                if parsed.attrs.get("revolut_source_account"):
+                    from revolut_account_context import effective_account
+                    selected_account = effective_account(parsed, balance_info, selected_account)
                 parsed = apply_account_and_rates(parsed, selected_account)
                 if balance_info.get("source") == "Russian Revolut Business":
                     from revolut_localized import validate_preview as validate_revolut

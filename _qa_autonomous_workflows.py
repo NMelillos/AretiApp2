@@ -132,15 +132,14 @@ class CompactTests(CompletionTests):
         with patch('latest_balances_compact.snapshot',return_value=(rows,Decimal('34.00'),['DO NOT SHOW legacy timestamp diagnostic'])):render(ui,db)
         ui.warning.assert_not_called();ui.info.assert_not_called();self.assertNotIn('DO NOT SHOW',str(ui.mock_calls));self.assertIn('no approved FX rate',str(ui.caption.call_args))
 
-    def test_actual_section_five_button_auth_read_only_and_return(self):
-        app=AppTest.from_file('app.py',default_timeout=45);app.query_params['page']='TB & NF Family Office Report';app.session_state['third_report_authenticated']=True;app.session_state['third_report_user']='Synthetic report operator'
-        app.run();self.assertFalse(app.exception)
-        self.assertEqual(app.button(key='third_latest_import_balances').label,'5. Latest Import Balances')
+    def test_actual_section_five_hidden_from_third_and_stale_route_ignored(self):
+        app=AppTest.from_file('app.py',default_timeout=45)
+        app.query_params['page']='TB & NF Family Office Report'
+        app.session_state['third_report_authenticated']=True
+        app.session_state['third_report_user']='Synthetic report operator'
+        app.session_state['third_latest_balances_open']=True
         before=self.snapshot()
-        with patch.object(db,'backfill_missing_usd_amounts',side_effect=AssertionError('Compact route must not write')):
-            app.button(key='third_latest_import_balances').click().run()
-        self.assertFalse(app.exception);self.assertFalse(app.warning);self.assertEqual(self.snapshot(),before)
-        self.assertTrue(any('executive-section-title' in e.value and '5. Latest Import Balances' in e.value for e in app.markdown))
-        app.button(key='third_latest_balances_return').click().run();self.assertFalse(app.exception);self.assertEqual(self.snapshot(),before)
-
-if __name__=='__main__':unittest.main()
+        app.run();self.assertFalse(app.exception)
+        self.assertFalse(any(b.key in ('third_latest_import_balances','third_latest_balances_return') for b in app.button))
+        self.assertFalse(any('5. Latest Import Balances' in e.value for e in app.markdown))
+        self.assertEqual(self.snapshot(),before)

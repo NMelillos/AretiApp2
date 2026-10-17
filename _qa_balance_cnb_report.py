@@ -149,25 +149,20 @@ class ReportTests(CompletionTests):
         self.assertEqual(currency_totals(rows),{'EUR':Decimal('20.20'),'USD':Decimal('10.00')})
         html=compact_html(rows);self.assertIn('font-size:12px',html);self.assertNotIn('<script>',html);self.assertIn('&lt;script&gt;',html)
 
-    def test_third_report_button_read_only_and_no_backfill(self):
-        import streamlit as st
+    def test_third_report_hides_balance_entry_and_never_reads_compact_snapshot(self):
         from streamlit.testing.v1 import AppTest
         app=AppTest.from_file('app.py',default_timeout=45)
         app.session_state['third_report_authenticated']=True
         app.session_state['third_report_user']='Synthetic report operator'
+        app.session_state['third_latest_balances_open']=True
         app.query_params['page']='TB & NF Family Office Report'
-        app.run();self.assertFalse(app.exception)
         before=self.snapshot()
-        # ensure_usd_backfilled is an app wrapper; intercept its actual DB writer.
-        with patch.object(db,'backfill_missing_usd_amounts',side_effect=AssertionError('Compact route attempted backfill')) as writer:
-            app.button(key='third_latest_import_balances').click().run()
-            writer.assert_not_called()
-        self.assertFalse(app.exception,[e.message for e in app.exception]);self.assertFalse(app.error)
-        self.assertIn('Latest Import Balances — compact list',[e.value for e in app.subheader])
-        self.assertTrue(any('INTERIM PARTIAL REPORT' in e.value for e in app.info))
+        with patch('latest_balances_compact.snapshot',side_effect=AssertionError('Hidden THIRD balance view must not be read')) as reader:
+            app.run()
+            reader.assert_not_called()
+        self.assertFalse(app.exception,[e.message for e in app.exception])
+        self.assertFalse(any(b.key in ('third_latest_import_balances','third_latest_balances_return') for b in app.button))
         self.assertEqual(self.snapshot(),before)
-        app.button(key='third_latest_balances_return').click().run()
-        self.assertFalse(app.exception);self.assertEqual(self.snapshot(),before)
 
     def test_unauthenticated_third_cannot_read_compact_balances(self):
         from streamlit.testing.v1 import AppTest

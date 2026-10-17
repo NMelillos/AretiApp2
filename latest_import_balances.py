@@ -14,7 +14,14 @@ NOTE = ('INTERIM PARTIAL REPORT: current Setup accounts only. Accounts absent fr
         'BOC/CNB statement cannot displace a newer complete statement. '
         'Newer incomplete imports remain visible; older balances are never substituted. '
         'Transaction Import Date is the latest transaction-bearing history timestamp for the '
-        'bank/account/currency; balance-only import and update times are never used.')
+        'bank/account/currency; balance-only import and update times are never used. '
+        'Statement Closing Date is the source statement period end. Balance Import Date is '
+        'the first committed balance record time; later balance edits have a separate update time. '
+        'General Report Date is the configured transaction reporting cutoff, not an import time. '
+        'The report generation time is shown separately. '
+        'An older Transaction Import Date, including one before Statement Closing Date, is not '
+        'by itself an error: a later statement may add no new transactions. A zero history count '
+        'alone does not prove zero source activity. Closing-date freshness remains separate.')
 COLUMNS = ('Account number', 'Account name', 'Bank', 'Transaction Import Date',
            'Statement start date', 'Statement end date', 'Opening balance',
            'Closing balance', 'Currency', 'Closing balance converted to USD', 'Status',

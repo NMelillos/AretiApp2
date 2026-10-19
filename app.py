@@ -4780,15 +4780,22 @@ def _save_income_charity_edits(baseline, edited, categories_df):
         if label not in allowed:
             raise ValueError("Choose a valid Category / Subcategory pair from Setup.")
         category, subcategory = _parse_category_pair_label(label)
-        from reporting import _assign_report_groups, is_income
-        if is_income(before["category"], before["subcategory"], before.get("report_group", "")):
-            original_group = _assign_report_groups(pd.DataFrame([before]), categories_df).iloc[0]["report_group"]
-            expected_group = before.get("report_group", original_group)
-            target_group = _assign_report_groups(pd.DataFrame([{
-                "category": category, "subcategory": subcategory,
-            }]), categories_df).iloc[0]["report_group"]
-            if target_group != expected_group or original_group != expected_group:
-                raise ValueError("Income edits must preserve Reporting Group. Choose a Category / Subcategory in the same group.")
+        # An intentional edit follows current Setup, not the old Income row's
+        # group. Reject ambiguous mappings before submitting any batch writes.
+        from reporting import _report_group_subcategory_key
+        if "report_group" not in categories_df.columns:
+            raise ValueError("The Reporting Group mapping is unavailable. Reload Setup and try again.")
+        category_rows = categories_df[
+            categories_df["category"].fillna("").astype(str).str.strip().str.casefold().eq(category.casefold())
+        ]
+        pair_rows = category_rows[
+            category_rows["subcategory"].map(_report_group_subcategory_key).eq(_report_group_subcategory_key(subcategory))
+        ]
+        groups = set(pair_rows["report_group"].fillna("").astype(str).str.strip()) - {""}
+        if not groups:  # Same category fallback used by _assign_report_groups.
+            groups = set(category_rows["report_group"].fillna("").astype(str).str.strip()) - {""}
+        if len(groups) > 1:
+            raise ValueError("The Category / Subcategory has an ambiguous Reporting Group mapping in Setup. Nothing was saved.")
         reviewed = _bool_from_value(before["reviewed"])
         status = _clean(before["status"]).casefold()
         if status != ("reviewed" if reviewed else "pending"):

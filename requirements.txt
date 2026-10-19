@@ -7,4 +7,4 @@ pytesseract
 pdf2image
 Pillow
 psycopg2-binary
-pglast==7.18
+pglast==7.20

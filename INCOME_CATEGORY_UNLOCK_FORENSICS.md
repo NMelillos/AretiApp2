@@ -42,3 +42,12 @@ Only disposable local SQLite is used, in a credential-free child with external n
 ## Release and UAT boundary
 
 User authorizes exact tested code deployment if regression is proven and checks pass, maintaining Auto-Deploy state. Reverify exact allowed service/main/live SHA before pushing and deploying the exact final commit. Verify root/health and bounded startup logs. No real financial row is edited for smoke testing. Production Save success remains **READY FOR ARETI UAT** unless an authorised safe test record is actually available; local simulated writes are not represented as live business acceptance.
+
+
+### Required build compatibility follow-up — 2026-10-19
+
+Initial tested classification commit599822fcdbd11e9d5d33c2d1bd736f76b8f4a0e8 was pushed but Render deployment dep-dbb10uvf3r2c73fsecvg failed during dependency installation, before rollout: the Render package index could not resolve existing pin pglast==7.18. Previous127599f remained LIVE. No application traceback or production write occurred in this build phase.
+
+Bounded deployment correction: requirements.txt changes only pglast==7.18 to pglast==7.20. Official PyPI supplies CPython312 Windows and manylinux x86-64 wheels: https://pypi.org/project/pglast/7.20/. No writer-fence/SQL-classification implementation changes or safeguard removal. New version installed only into a private QA target, preserving shared dependencies. Isolated _qa_pglast_guard_compat.py compares304 static application/known fenced-read/mutation/adversarial SQL decisions against the original7.18 runtime: identical under7.20; unsafe functions, mutation CTEs, row locks, invalid and multi-statement SQL remain guarded. Zero SQL execution in the compatibility test. Known read-only SELECT target-list-empty syntax was initially mislabelled invalid in the new harness; original parser AST proves a plain SelectStmt, so the harness now explicitly expects a read under both versions. The original failed harness log is retained; guard code unchanged.
+
+Final runtime retest justified by the dependency change:27/27 classification methods PASS again (0failed/0skipped), existing Income save-backend exercise PASS again,304/304 SQL guard decisions identical. All other application source and app nodes outside the one save helper still match live. First failed deployment and original evidence remain preserved. Final source adds only the dependency pin and its focused QA to the already-tested classification package. No schema, production data, environment-variable or infrastructure change.

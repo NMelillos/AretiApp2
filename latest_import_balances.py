@@ -391,12 +391,8 @@ def print_document(rows, total, warnings, generated_at=None):
                           else format(value, ',f'))
         return escape(str(value))
     headings = ''.join(f'<th>{escape(column)}</th>' for column in COLUMNS)
-    body_parts, group = [], None
+    body_parts = []
     for row in rows:
-        current = (row['Bank'], row['Account name'])
-        if current != group:
-            body_parts.append(f'<tr class="group"><th colspan="{len(COLUMNS)}">{escape(current[0])} / {escape(current[1])}</th></tr>')
-            group = current
         body_parts.append('<tr>' + ''.join(
             f'<td class="{"fresh" if fresh_closing(row[column], generated_at) else "stale"}">{cell(row[column])}</td>'
             if column == 'Statement end date'
@@ -418,7 +414,6 @@ th, td {{ padding: 7px 5px; border-bottom: 1px solid #ccd4df; vertical-align: to
 th {{ background: #eaf0f6; font-size: 10px; }}
 .fresh {{ color: #146b36; font-weight: bold; }}
 .stale {{ color: #b42318; font-weight: bold; }}
-.group th {{ background: #dce7ef; break-after: avoid; }}
 td:nth-child(7), td:nth-child(8), td:nth-child(10) {{ text-align: right; }}
 tr {{ break-inside: avoid; }} thead {{ display: table-header-group; }}
 .total {{ font-size: 15px; font-weight: bold; border-top: 2px solid #182638; padding-top: 12px; }}

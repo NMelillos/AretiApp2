@@ -357,12 +357,14 @@ def _balance_import_date(row):
     updated = row.get('balance_updated_at')
     first_time, updated_time = _verified_time(first), _verified_time(updated)
     events = []
-    if row.get('source') == 'BOC bank columns':
+    audit_action = {'BOC bank columns':'user-confirmed BOC balances only',
+                    'Russian Revolut Business':'user-confirmed Revolut balances only'}.get(row.get('source'))
+    if audit_action:
         for line in str(row.get('notes') or '').splitlines():
             try:
                 event = json.loads(line)
                 if (not isinstance(event, dict)
-                    or event.get('action') != 'user-confirmed BOC balances only'
+                    or event.get('action') != audit_action
                     or event.get('source_hash') != row['balance_statement_hash']
                     or not event.get('actor') or event.get('transaction_changes') != 0):
                     continue

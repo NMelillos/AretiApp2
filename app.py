@@ -3109,12 +3109,18 @@ def _executive_report_group_options(categories_df, expenses):
 
 
 def _third_report_group_scope(report_rows, categories_df):
-    """Apply the approved Item 19 exclusions to THIRD rows and setup options."""
+    """Keep assigned Family Charity in both hierarchies and in Item 19 analysis."""
     from reporting import third_hierarchy_item19_exclusions
 
-    item19_rows = third_hierarchy_item19_exclusions(report_rows)
+    def hierarchy_exclusions(frame):
+        excluded = third_hierarchy_item19_exclusions(frame)
+        family = excluded.get('report_group', pd.Series('', index=excluded.index)).fillna('').astype(str).str.strip().str.casefold().isin(['family expenses', '1-family'])
+        charity = excluded.get('category', pd.Series('', index=excluded.index)).fillna('').astype(str).str.strip().str.casefold().eq('charity')
+        return excluded.loc[~(family & charity)]
+
+    item19_rows = hierarchy_exclusions(report_rows)
     group_rows = report_rows.drop(index=item19_rows.index).copy()
-    item19_categories = third_hierarchy_item19_exclusions(categories_df)
+    item19_categories = hierarchy_exclusions(categories_df)
     group_categories = categories_df.drop(index=item19_categories.index).copy()
     return group_rows, group_categories
 

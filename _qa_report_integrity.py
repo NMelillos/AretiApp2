@@ -183,7 +183,12 @@ def duplicate_accounts(conn, read, backend):
         assert sum('AMBIGUOUS SETUP IDENTITY' in warning for warning in warnings)==2
         assert next(r for r in rows if r['Account number']=='CH000000000000000000002')['Closing balance converted to USD']==Decimal('12.00')
         html=print_document(rows,total,warnings)
-        assert html.count('QA-SAME')==2 and 'Old label (USD/USD); New label (EUR/USD)' in html
+        # Date-provenance diagnostics may also name the account. Count financial
+        # rows independently, and require each exact diagnostic separately.
+        body=html.split('<tbody>',1)[1].split('</tbody>',1)[0]
+        assert body.count('QA-SAME')==1 and 'Old label (USD/USD); New label (EUR/USD)' in html
+        assert sum('QA-SAME: AMBIGUOUS SETUP IDENTITY' in warning for warning in warnings)==1
+        assert sum('QA-SAME: Balance Import Date unavailable:' in warning for warning in warnings)==1
         book=load_workbook(BytesIO(workbook_bytes(rows,total,warnings)))
         assert sum(row[0].value=='QA-SAME' for row in book.active.iter_rows(min_row=2))==1
         assert book['Verification']['B4'].value==float(total)

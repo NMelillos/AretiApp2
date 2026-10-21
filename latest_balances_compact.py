@@ -31,7 +31,8 @@ def compact_model(rows):
         if usd is not None: included.append(usd)
         visible.append(dict(account=str(row.get('Account name') or row.get('Account number') or 'Unknown account'),
             currency=str(row.get('Currency') or ''),closing=native,usd=usd,
-            bank=str(row.get('Bank') or ''),import_date=str(row.get('Transaction Import Date') or ''),
+            bank=str(row.get('Bank') or ''),import_date=str(row.get('Transaction Import Date') or '—'),
+            balance_import_date=str(row.get('Balance Import Date') or '—'),
             account_number=str(row.get('Account number') or ''),closing_date=str(row.get('Statement end date') or '')))
     return visible,exact_sum(included),missing_rate,unverified
 
@@ -42,22 +43,22 @@ def compact_html(rows, generated_at=None):
     def money(value):
         if value is None:return '—'
         return format(cents(value),',.2f')
-    labels=('Bank','Account','Account Number','Transaction Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
+    labels=('Bank','Account','Account Number','Transaction Import Date','Balance Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
     table='<div style="overflow-x:auto"><table class="compact-balances" style="font-size:10px;line-height:1.15;border-collapse:collapse;width:max-content;table-layout:auto"><thead><tr>'
     table+=''.join('<th style="padding:1px 3px;white-space:nowrap;text-align:left">'+label+'</th>' for label in labels)
     table+='</tr></thead><tbody>'
     for row in visible:
         table+='<tr>'
-        values=(row['bank'],row['account'],row['account_number'],row['import_date'],row['closing_date'],row['currency'],money(row['closing']),money(row['usd']))
+        values=(row['bank'],row['account'],row['account_number'],row['import_date'],row['balance_import_date'],row['closing_date'] or '—',row['currency'],money(row['closing']),money(row['usd']))
         for index,value in enumerate(values):
             style='padding:1px 3px;white-space:nowrap;'
             if index==1:style+='max-width:210px;overflow:hidden;text-overflow:ellipsis;'
-            if index==3:style+='color:#000000;'
-            if index==4:style+='color:'+('#146b36' if fresh_closing(value,generated_at) else '#b42318')+';'
-            if index>=6:style+='text-align:right;'
+            if index in (3,4):style+='color:#000000;'
+            if index==5:style+='color:'+('#146b36' if fresh_closing(value,generated_at) else '#b42318')+';'
+            if index>=7:style+='text-align:right;'
             table+='<td title="'+escape(str(value),quote=True)+'" style="'+style+'">'+escape(str(value))+'</td>'
         table+='</tr>'
-    table+='</tbody><tfoot><tr><th colspan="7" style="padding:3px 5px;text-align:right;white-space:nowrap">USD TOTAL</th><th style="padding:3px 5px;text-align:right;white-space:nowrap">'+format(total,',.2f')+'</th></tr></tfoot></table></div>'
+    table+='</tbody><tfoot><tr><th colspan="8" style="padding:3px 5px;text-align:right;white-space:nowrap">USD TOTAL</th><th style="padding:3px 5px;text-align:right;white-space:nowrap">'+format(total,',.2f')+'</th></tr></tfoot></table></div>'
     return table
 
 

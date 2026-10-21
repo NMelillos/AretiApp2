@@ -3,6 +3,7 @@ from datetime import date, datetime, timezone
 from html import escape
 from zoneinfo import ZoneInfo
 import re
+import json
 
 import pandas as pd
 from financial_decimal import optional_decimal, exact_sum, cents
@@ -14,9 +15,12 @@ NOTE = ('INTERIM PARTIAL REPORT: current Setup accounts only. Accounts absent fr
         'BOC/CNB statement cannot displace a newer complete statement. '
         'Newer incomplete imports remain visible; older balances are never substituted. '
         'Transaction Import Date is the latest transaction-bearing history timestamp for the '
-        'bank/account/currency; balance-only import and update times are never used. '
+        'selected statement when it imported transactions, or the original transaction imports linked '
+        'by a source-verified balance-only overlap. A zero-activity statement retains the account '
+        'transaction event independently. Balance-only import and update times are never used. '
         'Statement Closing Date is the source statement period end. Balance Import Date is '
-        'the first committed balance record time; later balance edits have a separate update time. '
+        'the selected balance record persistence time, or its later source-bound balance-completion audit. '
+        'Generic record updates do not establish a balance import; unresolved current-value timing is —. '
         'General Report Date is the configured transaction reporting cutoff, not an import time. '
         'The report generation time is shown separately. '
         'An older Transaction Import Date, including one before Statement Closing Date, is not '
@@ -25,7 +29,7 @@ NOTE = ('INTERIM PARTIAL REPORT: current Setup accounts only. Accounts absent fr
 COLUMNS = ('Account number', 'Account name', 'Bank', 'Transaction Import Date',
            'Statement start date', 'Statement end date', 'Opening balance',
            'Closing balance', 'Currency', 'Closing balance converted to USD', 'Status',
-           'Verification', 'Applied FX', 'Credits / money in', 'Debits / money out')
+           'Verification', 'Applied FX', 'Credits / money in', 'Debits / money out', 'Balance Import Date')
 
 BANK_ALIASES = {'BOC':'BANKOFCYPRUS','CITIBANK':'CITI','CITIBANKCREDITCARD':'CITI',
                 'CNB':'CITYNATIONALBANK','AMEX':'AMERICANEXPRESS',
@@ -94,7 +98,8 @@ def snapshot(db):
                              AND UPPER(matched.currency) = UPPER(a.currency)
                              AND {number_match}) AS has_transaction_rows,
                    b.period_start, b.period_end,
-                   b.notes, b.source,
+                   b.notes, b.source, b.statement_hash AS balance_statement_hash,
+                   b.imported_at AS balance_imported_at, b.updated_at AS balance_updated_at,
                    CAST(b.money_in AS TEXT) AS money_in, CAST(b.money_out AS TEXT) AS money_out,
                    CAST(b.opening_balance AS TEXT) AS opening_balance,
                    CAST(b.closing_balance AS TEXT) AS closing_balance,
@@ -125,6 +130,7 @@ def snapshot(db):
                a.currency, a.rate_type, r.import_id, r.imported_at,
                r.has_transaction_rows, r.period_start, r.period_end, r.opening_balance, r.closing_balance,
                r.notes, r.source, r.money_in, r.money_out,
+               r.balance_statement_hash, r.balance_imported_at, r.balance_updated_at,
                r.statement_currency, r.statement_account_number, r.transaction_count,
                r.statement_bank, r.statement_account_name,
                r.source_rows, r.opening_storage_type, r.closing_storage_type
@@ -140,6 +146,8 @@ def snapshot(db):
                 connection, row['notes'], row['statement_bank'], row['statement_account_number'],
                 row['statement_currency'], row['opening_balance'], row['money_in'],
                 row['money_out'], row['closing_balance'])
+            if row['_verified_balance_only']:
+                row['_linked_transaction_events'] = _referenced_transaction_events(connection, row)
     finally:
         connection.close()
     rates = db._load_rate_lookup()  # One batch, using the application's approved lookup.
@@ -183,6 +191,15 @@ def snapshot(db):
         transaction_rows = [row for row in imported_rows
                             if pd.notna(row['transaction_count']) and row['transaction_count'] > 0
                             and row['has_transaction_rows'] == 1]
+        # Older verified BOC/CNB imports may be recorded after the selected
+        # statement. Their transaction timestamp must not relabel its balance.
+        if (selected['has_transaction_rows'] == 1 and pd.notna(selected['transaction_count'])
+            and selected['transaction_count'] > 0):
+            transaction_rows = [selected]
+        elif selected['_verified_balance_only']:
+            transaction_rows = selected['_linked_transaction_events']
+            if not transaction_rows:
+                warnings.append(f"{selected['account_number']}: Transaction Import Date unavailable: referenced source transactions have incomplete import history; no unrelated event substituted.")
         transaction_date = '—'
         if transaction_rows:
             if all(_verified_time(row['imported_at']) is not None for row in transaction_rows):
@@ -203,6 +220,9 @@ def snapshot(db):
     for row in selected_rows:
         ambiguous = row.get('_ambiguous_aliases')
         imported = pd.notna(row['import_id'])
+        balance_date, balance_date_reason = _balance_import_date(row)
+        if balance_date_reason:
+            warnings.append(f"{row['account_number']}: {balance_date_reason}")
         label_mismatch = imported and pd.notna(row['statement_account_name']) and (
             row['statement_account_name'] != row['account_name'] or not _report_bank_equal(row['statement_bank'], row['bank']))
         currency = (row['statement_currency'] if imported and pd.notna(row['statement_currency'])
@@ -273,6 +293,7 @@ def snapshot(db):
             currency, usd if usd is not None else ('NOT AVAILABLE' if imported else ''),
             'AMBIGUOUS SETUP IDENTITY' if ambiguous else ('IMPORTED' if complete else 'INCOMPLETE') if imported else 'NO IMPORT',
             verification, applied_fx, optional_decimal(row['money_in']) if imported else None, optional_decimal(row['money_out']) if imported else None,
+            balance_date,
         ))))
         result[-1]['_balance_import_order'] = cyprus_time(row['imported_at']) if imported else ''
     # Preserve existing balance-order semantics despite the independent display date.
@@ -303,6 +324,67 @@ def _verified_time(value):
         return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _referenced_transaction_events(connection, row):
+    """Only already-verified source references may supply overlap import dates."""
+    from balance_only import PREFIX
+    refs = json.loads(row['notes'][len(PREFIX):])['references']
+    ids = [ref[0] for ref in refs]
+    placeholders = ','.join('?' for _ in ids)
+    cursor = connection.cursor()
+    try:
+        cursor.execute(f'''SELECT i.id, i.imported_at, i.transaction_count, COUNT(*)
+            FROM classified_transactions t
+            LEFT JOIN statement_imports i ON i.statement_hash = t.statement_hash
+            WHERE t.id IN ({placeholders}) AND t.bank = ? AND t.account_number = ?
+              AND t.currency = ? AND t.split_parent_id IS NULL
+            GROUP BY i.id, i.imported_at, i.transaction_count''',
+            (*ids, row['statement_bank'], row['statement_account_number'], row['statement_currency']))
+        events = cursor.fetchall()
+    finally:
+        cursor.close()
+    if sum(event[3] for event in events) != len(ids) or any(event[0] is None or event[2] is None or event[2] <= 0 for event in events):
+        return []
+    return [dict(import_id=event[0], imported_at=event[1]) for event in events]
+
+
+def _balance_import_date(row):
+    """Report-only provenance; never borrow transaction or generic edit time."""
+    if not pd.notna(row.get('balance_statement_hash')):
+        return '—', ''
+    first = row.get('balance_imported_at')
+    updated = row.get('balance_updated_at')
+    first_time, updated_time = _verified_time(first), _verified_time(updated)
+    events = []
+    if row.get('source') == 'BOC bank columns':
+        for line in str(row.get('notes') or '').splitlines():
+            try:
+                event = json.loads(line)
+                if (not isinstance(event, dict)
+                    or event.get('action') != 'user-confirmed BOC balances only'
+                    or event.get('source_hash') != row['balance_statement_hash']
+                    or not event.get('actor') or event.get('transaction_changes') != 0):
+                    continue
+                stamp = _verified_time(event.get('confirmed_at'))
+                if (stamp is not None and (first_time is None or stamp >= first_time)
+                    and updated_time is not None and stamp == updated_time):
+                    events.append(stamp)
+            except (ValueError, TypeError):
+                continue
+    if events:
+        return cyprus_time(max(events).isoformat()), ''
+    # updated_at is also written by account-label and manual metadata editors.
+    # It cannot safely be presented as an import event or silently ignored.
+    if (pd.notna(updated) and str(updated).strip()
+        and str(updated) != str(first)
+        and not (first_time is not None and updated_time == first_time)):
+        return '—', 'Balance Import Date unavailable: later metadata update has no matching source-bound balance event; no transaction/update timestamp substituted.'
+    try:
+        datetime.fromisoformat(str(first).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return '—', 'Balance Import Date unavailable: balance persistence timestamp is missing or invalid.'
+    return cyprus_time(first), ''
 
 
 def _iso_time(value):
@@ -348,6 +430,7 @@ def workbook_bytes(rows, total, warnings, generated_at=None):
             values.append(value)
         sheet.append(values)
         sheet.cell(sheet.max_row, COLUMNS.index('Transaction Import Date')+1).font = Font(color='000000')
+        sheet.cell(sheet.max_row, COLUMNS.index('Balance Import Date')+1).font = Font(color='000000')
         sheet.cell(sheet.max_row, COLUMNS.index('Statement end date')+1).font = Font(color='146B36' if fresh_closing(row['Statement end date'], generated_at) else 'B42318')
         for cell in sheet[sheet.max_row]:
             if isinstance(cell.value, str):
@@ -396,7 +479,7 @@ def print_document(rows, total, warnings, generated_at=None):
         body_parts.append('<tr>' + ''.join(
             f'<td class="{"fresh" if fresh_closing(row[column], generated_at) else "stale"}">{cell(row[column])}</td>'
             if column == 'Statement end date'
-            else f'<td' + (' style="color:#000000"' if column == 'Transaction Import Date' else '') + f'>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
+            else f'<td' + (' style="color:#000000"' if column in ('Transaction Import Date', 'Balance Import Date') else '') + f'>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
     body = ''.join(body_parts)
     warning_html = ''.join(f'<li>{escape(warning)}</li>' for warning in warnings)
     return f'''<!doctype html>
@@ -451,8 +534,12 @@ def render(st):
     except Exception:
         st.error('Latest Import Balances is temporarily unavailable. Please try again.')
         return  # Database errors must not expose connection details in the report.
+    date_warnings = [warning for warning in warnings if 'Balance Import Date unavailable:' in warning]
     for warning in warnings:
-        st.warning(warning)
+        if warning not in date_warnings:
+            st.warning(warning)
+    if date_warnings:
+        st.caption(f'Balance Import Date is unavailable for {len(date_warnings)} account(s); no substitute date is used. Per-account reasons are included in print and Excel verification details.')
     document = print_document(rows, total, warnings)
     st.caption('Download the printable report and open it in your browser to Print / Save as PDF (A4 landscape).')
     st.download_button('Download printable report', document.encode('utf-8'),

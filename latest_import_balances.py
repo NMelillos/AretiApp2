@@ -148,6 +148,11 @@ def snapshot(db):
                 row['money_out'], row['closing_balance'])
             if row['_verified_balance_only']:
                 row['_linked_transaction_events'] = _referenced_transaction_events(connection, row)
+            elif row['source']=='AMEX screen-reader balance metadata':
+                from amex_balance_metadata import verified_record as verified_amex
+                event=verified_amex(connection,row['notes'],row['statement_bank'],row['statement_account_number'],row['statement_currency'],row['opening_balance'],row['money_in'],row['money_out'],row['closing_balance'],row['balance_statement_hash'],row['period_start'],row['period_end'])
+                if event:
+                    row['_verified_balance_only']=True;row['_linked_transaction_events']=[event]
     finally:
         connection.close()
     rates = db._load_rate_lookup()  # One batch, using the application's approved lookup.
@@ -360,7 +365,8 @@ def _balance_import_date(row):
     audit_action = {'BOC bank columns':'user-confirmed BOC balances only',
                     'Russian Revolut Business':'user-confirmed Revolut balances only',
                     'English Revolut Completed Source':'user-confirmed English Revolut balances only',
-                    'CNB Account Summary':'user-confirmed CNB balances only'}.get(row.get('source'))
+                    'CNB Account Summary':'user-confirmed CNB balances only',
+                    'AMEX screen-reader balance metadata':'user-confirmed AMEX PDF balances only'}.get(row.get('source'))
     if audit_action:
         for line in str(row.get('notes') or '').splitlines():
             try:

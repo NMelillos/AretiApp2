@@ -100,10 +100,13 @@ def completed_history(db, history):
         balance_only = set()
         cur = conn.cursor()
         cur.execute('''SELECT statement_hash, notes, bank, account_number, currency,
-            opening_balance, money_in, money_out, closing_balance FROM statement_balances''')
+            opening_balance, money_in, money_out, closing_balance,period_start,period_end FROM statement_balances''')
         for row in cur.fetchall():
-            if verified_record(conn, *row[1:]):
+            if verified_record(conn, *row[1:9]):
                 balance_only.add(row[0])
+            else:
+                from amex_balance_metadata import verified_record as verified_amex
+                if verified_amex(conn,*row[1:9],row[0],*row[9:]):balance_only.add(row[0])
         sections = pd.read_sql_query('''
             SELECT b.statement_hash, COUNT(t.id) AS source_rows
             FROM statement_balances b

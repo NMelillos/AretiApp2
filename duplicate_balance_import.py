@@ -95,6 +95,14 @@ def record(db,content,filename,actor):
 def render_controls(st,content,filename):
     if not filename.lower().endswith('.pdf'):return
     digest=sha256(content).hexdigest()
+    if st.session_state.get('balance_amex_gate_hash')!=digest:
+        from amex_balance_metadata import recognized
+        try:is_amex=recognized(content)
+        except Exception:is_amex=False
+        st.session_state['balance_amex_gate_hash']=digest;st.session_state['balance_amex_gate']=is_amex
+    if st.session_state.get('balance_amex_gate'):
+        from amex_balance_metadata import render as render_amex
+        return render_amex(st,content,filename)
     if st.session_state.get('upload_balance_hash')!=digest:
         st.session_state['upload_balance_hash']=digest
         st.session_state.pop('upload_balance_preview',None);st.session_state.pop('upload_balance_result',None)

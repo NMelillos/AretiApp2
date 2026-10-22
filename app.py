@@ -5421,7 +5421,8 @@ if page == "Import":
         if import_failure.get("hash") == statement_hash:
             st.error(import_failure["message"])
         from duplicate_balance_import import render_controls as render_balance_only_controls
-        render_balance_only_controls(st, file_bytes, uploaded_statement.name)
+        if render_balance_only_controls(st, file_bytes, uploaded_statement.name):
+            st.stop()  # Verified AMEX PDF workflow is metadata-only; CSV remains the transaction source.
         if statement_already_imported(statement_hash):
             completed_message = st.session_state.get("completed_statement_import_message", {})
             if completed_message.get("hash") == statement_hash:

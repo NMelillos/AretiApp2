@@ -515,7 +515,7 @@ def print_document(rows, total, warnings, generated_at=None):
     body = ''.join(body_parts)
     from balance_report_sections import partition,totals
     amounts=totals(rows);parts={id(row):part for row,part in zip(rows,body_parts)}
-    sections=''.join('<h2>'+name+'</h2><table><thead><tr>'+headings+'</tr></thead><tbody>'+''.join(parts[id(row)] for row in group)+'</tbody></table><p class="total">'+name+' USD Total: '+cell(amounts[name])+'</p>' for name,group in partition(rows).items())
+    sections=''.join('<h2>'+name+'</h2><table><thead><tr>'+headings+'</tr></thead><tbody>'+''.join(parts[id(row)] for row in group)+'</tbody></table><p class="total">'+name+' USD Total (PARTIAL TOTAL USD): '+cell(amounts[name])+'</p>' for name,group in partition(rows).items())
     warning_html = ''.join(f'<li>{escape(warning)}</li>' for warning in warnings)
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Latest Import Balances</title>

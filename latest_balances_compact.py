@@ -23,9 +23,9 @@ def compact_model(rows,section_name='Deposits'):
     for row in sorted(rows, key=lambda r: (str(r.get('Bank') or '').casefold(), str(r.get('Account name') or '').casefold(), closing_order(r), str(r.get('Account number') or ''))):
         native=optional_decimal(row.get('Closing balance'))
         from balance_report_sections import eligible as section_eligible
-        qualified=section_eligible(row,section_name)
+        qualified=section_eligible(row,section_name,require_usd=False)
         usd=optional_decimal(row.get('Closing balance converted to USD')) if qualified else None
-        if row.get('Status')=='IMPORTED' and row.get('Verification') in ('SOURCE RECONCILIATION NOT VERIFIED','LIABILITY CONVENTION UNVERIFIED') and usd is None:
+        if qualified and usd is None:
             missing_rate+=1
         elif not qualified:
             unverified+=1
@@ -74,4 +74,4 @@ def render(st,db):
         st.error('Latest Import Balances is temporarily unavailable. Please try again.');return
     st.markdown('<div class="executive-section-title">5. Latest Import Balances</div>',unsafe_allow_html=True)
     st.markdown(compact_html(rows),unsafe_allow_html=True)
-    st.caption('INTERIM PARTIAL REPORT: current Setup accounts; separate Deposits and Debts USD sums using stored statement signs, never netted. Missing FX and unverified balances remain excluded. Details: Latest Import Balances page.')
+    st.caption('INTERIM PARTIAL REPORT: current Setup accounts; separate Deposits and Debts USD sums using stored statement signs, never netted. Accounts with no approved FX rate and unverified balances remain excluded. Details: Latest Import Balances page.')

@@ -109,6 +109,21 @@ class CompletedTests(CompletionTests):
         self.assertTrue(app.button(key='upload_balance_record').disabled)
         self.assertEqual(before,self.snapshot())
 
+    def test_available_cnb_source_normal_import_still_rejects_changed_movement(self):
+        path,content,_,_,_,account=self.setup_source('cnb')
+        frame,balance,matched=prepare(db,content,path.name)
+        changed=frame.copy();changed['Amount']=changed['Amount'].map(lambda value:Decimal(str(value))+1)
+        mapped=db.apply_account_and_rates(changed,matched);before=self.snapshot()
+        with self.assertRaises(ValueError):commit_statement(db,mapped,'synthetic-bad-cnb.pdf','synthetic-bad-cnb',balance,matched)
+        self.assertEqual(before,self.snapshot())
+
+    def test_available_cnb_source_rejects_wrong_setup_currency(self):
+        path,content,_,_,_,account=self.setup_source('cnb')
+        with closing(db.get_connection()) as c:c.execute("UPDATE account_list SET currency='EUR' WHERE id=?",(account['id'],));c.commit()
+        before=self.snapshot()
+        with self.assertRaises(ValueError):prepare(db,content,path.name)
+        self.assertEqual(before,self.snapshot())
+
 if __name__=='__main__':
     names=[n for n in CompletedTests.__dict__ if n.startswith('test_')]
     raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(CompletedTests(n) for n in names)).wasSuccessful())

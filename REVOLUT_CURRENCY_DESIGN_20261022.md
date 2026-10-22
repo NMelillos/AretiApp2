@@ -1,0 +1,13 @@
+# Revolut currency scope — design only
+
+The verified production account_list constraint is UNIQUE(account_name, bank, account_number), without currency. An otherwise-identical company/bank/IBAN cannot be inserted twice just by changing currency. Changing a company name to work around that constraint would also break strict owner matching and is not a safe wallet model.
+
+Transactions and statement balances already retain currency independently, and duplicate fingerprints distinguish currency. The existing English Revolut source-bound context supports a blank-currency Setup account by validating its IBAN/owner and resolving currency for that statement only. An explicitly configured mismatching currency is correctly rejected. Neither this package nor the design changes the previously approved production EUR configuration or broadens Russian source matching.
+
+Current report population still joins Setup's configured currency exactly. A blank base currency therefore does not yet expose separate source currency balances, and an EUR base cannot represent future USD balances safely by itself. Read-only current evidence establishes EUR history only for BProjects; no original USD PDF was supplied. Synthetic USD structural/ledger tests do not constitute original USD source acceptance.
+
+Preferred proposal for separate approval: retain the existing physical account ID/name/bank/IBAN and add explicit account-currency wallets, unique by (account_id, currency), with an independent approved rate_type per wallet. Imports must bind to source-proven IBAN plus currency; source owner, page/period, reconciliation and duplicate guards remain authoritative. Reports enumerate current Setup wallets and keep one balance per account/currency. Preserve existing transaction/history IDs and existing base configuration; no history remapping. Backfill or creating production wallet configuration is a separate scoped action, not part of this design.
+
+This requires approved schema/UI/report work and a disposable PostgreSQL migration rehearsal, or an explicitly approved equivalent currency-wallet representation. No schema/configuration/data write is authorised merely by this proposal, and none was made. Do not silently change base currency, create suffixed duplicate company identities, collapse currencies, invent FX, or claim full multi-currency reporting is implemented.
+
+Tests exercise a real EUR source and a clearly synthetic USD translation through the unchanged strong source validator, strict rejection of explicit wrong currencies, unchanged Setup, distinct per-currency transaction/balance persistence and the existing Setup uniqueness limit. Actual test results are recorded in the consolidated release handover/private logs.

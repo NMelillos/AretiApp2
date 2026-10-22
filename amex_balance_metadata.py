@@ -46,7 +46,7 @@ def parse(content):
     if len(payment_summary)!=1 or Decimal(payment_summary[0].replace(',',''))!=end or opening-payments+charges!=end:
         raise ValueError('AMEX liability summary does not reconcile.')
     return dict(source=SOURCE,currency='USD',period_start=(closing-timedelta(days=days-1)).isoformat(),period_end=closing.isoformat(),
-        opening_balance=opening,money_in=payments,money_out=charges,closing_balance=end,
+        opening_balance=opening,money_in=-payments,money_out=charges,closing_balance=end,source_payments_credits=payments,
         holder=holder.strip(),company=company.strip(),card_ending=ending,billing_days=days)
 
 def csv_evidence(content,source):
@@ -73,6 +73,8 @@ def checked_link(conn,source,evidence,accounts,lock=''):
         for account in accounts:
             if compact(account['bank']) not in ('AMEX','AMERICANEXPRESS') or account['currency']!='USD' or compact(account['account_name'])!=compact(source['company']):continue
             base=base_number(account['account_number'])
+            digits=re.sub(r'\D','',base);ending=re.sub(r'\D','',source['card_ending'])
+            if not ((len(digits)==10 and digits[-1]==ending[0]) or (len(digits)==15 and digits.endswith(ending))):continue
             allowed={compact(base+' '+member) for member in evidence['members']}
             if (all(compact(r[0])==compact(source['company']) and compact(r[1]) in ('AMEX','AMERICANEXPRESS') and r[3]=='USD' and compact(r[2]) in allowed for r in rows)
                 and any(compact(r[2])==compact(base+' '+source['holder']) for r in rows)):
@@ -98,7 +100,7 @@ def verified_record(conn,notes,bank,number,currency,opening,credits,debits,closi
         if source['source']!=SOURCE or source['period_start']!=str(period_start) or source['period_end']!=str(period_end):return None
         for key,value in zip(FIELDS[2:],(opening,credits,debits,closing)):
             if Decimal(str(value))!=Decimal(source[key]):return None
-        if Decimal(source['opening_balance'])-Decimal(source['money_in'])+Decimal(source['money_out'])!=Decimal(source['closing_balance']):return None
+        if Decimal(source['opening_balance'])+Decimal(source['money_in'])+Decimal(source['money_out'])!=Decimal(source['closing_balance']):return None
         cur=conn.cursor()
         try:
             cur.execute('SELECT id,account_name,bank,account_number,currency FROM account_list WHERE id=?',(account_id,));row=cur.fetchone()
@@ -127,7 +129,10 @@ def record(db,content,filename,csv_content,actor):
         cur.execute('SELECT id,transaction_count FROM statement_imports WHERE statement_hash=?'+(' FOR UPDATE' if db.USING_POSTGRES else ''),(digest,));header=cur.fetchone()
         cur.execute('SELECT COUNT(*) FROM classified_transactions WHERE statement_hash=?',(digest,))
         if cur.fetchone()[0] or (header is not None and header[1]!=0):raise ValueError('This PDF already has transaction history; no automatic rewrite permitted.')
-        cur.execute('SELECT bank,account_number,currency,period_start,period_end,opening_balance,money_in,money_out,closing_balance FROM statement_balances WHERE statement_hash=?'+(' FOR UPDATE' if db.USING_POSTGRES else ''),(digest,));prior=cur.fetchone()
+        cur.execute('SELECT bank,account_number,currency,period_start,period_end,opening_balance,money_in,money_out,closing_balance FROM statement_balances WHERE statement_hash=? OR (source=? AND bank=? AND account_number=? AND currency=? AND period_start=? AND period_end=?)'+(' FOR UPDATE' if db.USING_POSTGRES else ''),(digest,SOURCE,account['bank'],account['account_number'],'USD',source['period_start'],source['period_end']))
+        existing=cur.fetchall()
+        if len(existing)>1:raise ValueError('Multiple AMEX balance identities already exist; no automatic rewrite permitted.')
+        prior=existing[0] if existing else None
         if prior is not None:
             expected=(account['bank'],account['account_number'],'USD',*(source[k] for k in FIELDS))
             if any((Decimal(str(a))!=b if isinstance(b,Decimal) else str(a)!=str(b)) for a,b in zip(prior,expected)):raise ValueError('Existing AMEX balance conflicts; nothing overwritten.')

@@ -45,7 +45,9 @@ class MetadataTests(CompletionTests):
         self.assertTrue(amex.recognized(pdf))
         source,evidence,matched,event=amex.prepare(db,pdf,csv)
         self.assertEqual(matched['id'],account['id'])
-        for k in ('opening_balance','money_in','money_out','closing_balance'):self.assertEqual(source[k],abs(Decimal(info['balance'][k])))
+        for k in ('opening_balance','money_in','money_out','closing_balance'):
+            expected=abs(Decimal(info['balance'][k]))*(-1 if k=='money_in' else 1)
+            self.assertEqual(source[k],expected)
         self.assertEqual(source['period_end'],info['balance']['period_end'])
         self.assertEqual((__import__('datetime').date.fromisoformat(source['period_end'])-__import__('datetime').date.fromisoformat(source['period_start'])).days+1,source['billing_days'])
         billing=Path(r'C:/Users/Student/Downloads/2026-09-11 (2)billing.pdf').read_bytes()
@@ -67,10 +69,12 @@ class MetadataTests(CompletionTests):
         history=completed_history(db,db.get_import_history())
         self.assertEqual(len(history[history.statement_hash==digest]),1)
         self.assertEqual(history.loc[history.statement_hash==digest,'transaction_count'].iloc[0],0)
+        raw=db.get_statement_balances();self.assertEqual(raw.loc[raw.statement_hash==digest,'reconciliation_status'].iloc[0],'OK')
         rows,_,_=snapshot(db);row=next(r for r in rows if r['Account number']==account['account_number'])
         self.assertEqual(row['Status'],'IMPORTED')
         self.assertNotEqual(row['Balance Import Date'],'—');self.assertNotEqual(row['Transaction Import Date'],'—')
         unchanged=self.snapshot();self.assertEqual(amex.record(db,pdf,p.name,csv,'Synthetic operator'),'already recorded');self.assertEqual(unchanged,self.snapshot())
+        self.assertEqual(amex.record(db,pdf+b'\n',p.name,csv,'Synthetic operator'),'already recorded');self.assertEqual(unchanged,self.snapshot())
 
     def test_missing_csv_wrong_card_wrong_setup_and_conflict_reject(self):
         p,pdf,csv,_,account=self.seed()

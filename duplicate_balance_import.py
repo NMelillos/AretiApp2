@@ -116,5 +116,5 @@ def render_controls(st,content,filename):
         except BalanceImportError as error:st.error(str(error));return
         except Exception:st.error('Balance-only import failed. No operation was committed.');return
         st.session_state.pop('upload_balance_preview',None)
-        st.session_state['upload_balance_result']='Balances already recorded; no changes made.' if outcome=='already recorded' else 'Balances recorded. No transactions or classifications changed.'
+        st.session_state['upload_balance_result']='Balances already recorded; no changes made. No new balance-import event was created; Balance Import Date remains the existing recorded import date.' if outcome=='already recorded' else 'Balances recorded. No transactions or classifications changed.'
         st.cache_data.clear();st.rerun()

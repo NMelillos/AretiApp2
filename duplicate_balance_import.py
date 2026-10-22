@@ -19,6 +19,9 @@ def prepare(db,content,filename):
         from boc_summary_balances import prepare as prepare_boc
         frame,balance=prepare_boc(content)
         return frame,balance,None
+    if frame.attrs.get('revolut_source_account') or balance.get('source')=='CNB Account Summary':
+        from completed_balance_sources import prepare as prepare_completed
+        return prepare_completed(db,frame)
     if balance.get('source')!='Russian Revolut Business':
         raise BalanceImportError('This separate action requires source-verified BOC or Revolut Business balance metadata. No data changed.')
     compact=lambda value:re.sub(r'[\s.-]','',str(value)).upper()
@@ -48,7 +51,7 @@ def record(db,content,filename,actor):
         cur.execute('SELECT id,transaction_count,imported_at FROM statement_imports WHERE statement_hash=?'+lock,(digest,));header=cur.fetchone()
         cur.execute('SELECT account_name,bank,account_number,currency FROM account_list WHERE id=?'+(' FOR SHARE' if db.USING_POSTGRES else ''),(account['id'],))
         current_account=cur.fetchone()
-        if current_account is None or tuple(current_account)!=tuple(account[key] for key in ('account_name','bank','account_number','currency')):
+        if current_account is None or tuple(current_account)!=tuple(account.get('_setup_identity',tuple(account[key] for key in ('account_name','bank','account_number','currency')))):
             raise BalanceImportError('Setup account changed since source validation; reload before recording balances.')
         cur.execute('SELECT id,bank,account_number,currency,account_name,period_start,period_end,opening_balance,money_in,money_out,closing_balance,notes FROM statement_balances WHERE statement_hash=?'+lock,(digest,));prior=cur.fetchone()
         if header is None:
@@ -71,7 +74,10 @@ def record(db,content,filename,actor):
                 else:changes[key]=balance[key]
             if not changes:conn.rollback();return 'already recorded'
         now=datetime.now(timezone.utc).isoformat(timespec='seconds')
-        audit=json.dumps(dict(action='user-confirmed Revolut balances only',actor=str(actor),source_hash=digest,confirmed_at=now,transaction_changes=0),separators=(',',':'))
+        action={'Russian Revolut Business':'user-confirmed Revolut balances only',
+                'English Revolut Completed Source':'user-confirmed English Revolut balances only',
+                'CNB Account Summary':'user-confirmed CNB balances only'}[balance['source']]
+        audit=json.dumps(dict(action=action,actor=str(actor),source_hash=digest,confirmed_at=now,transaction_changes=0),separators=(',',':'))
         if prior is None:
             if header is None:
                 cur.execute('INSERT INTO statement_imports(statement_hash,statement_name,imported_at,transaction_count) VALUES(?,?,?,0)',(digest,filename,now))

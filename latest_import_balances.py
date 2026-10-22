@@ -358,7 +358,9 @@ def _balance_import_date(row):
     first_time, updated_time = _verified_time(first), _verified_time(updated)
     events = []
     audit_action = {'BOC bank columns':'user-confirmed BOC balances only',
-                    'Russian Revolut Business':'user-confirmed Revolut balances only'}.get(row.get('source'))
+                    'Russian Revolut Business':'user-confirmed Revolut balances only',
+                    'English Revolut Completed Source':'user-confirmed English Revolut balances only',
+                    'CNB Account Summary':'user-confirmed CNB balances only'}.get(row.get('source'))
     if audit_action:
         for line in str(row.get('notes') or '').splitlines():
             try:

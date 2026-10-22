@@ -15,18 +15,19 @@ def currency_totals(rows):
     return {key:exact_sum(values) for key,values in sorted(grouped.items())}
 
 
-def compact_model(rows):
+def compact_model(rows,section_name='Deposits'):
     visible=[]; included=[]; missing_rate=unverified=0
     def closing_order(row):
         try:return date.fromisoformat(str(row.get('Statement end date') or ''))
         except ValueError:return date.max  # Unknown dates last; freshness remains red.
     for row in sorted(rows, key=lambda r: (str(r.get('Bank') or '').casefold(), str(r.get('Account name') or '').casefold(), closing_order(r), str(r.get('Account number') or ''))):
         native=optional_decimal(row.get('Closing balance'))
-        eligible=(row.get('Status')=='IMPORTED' and row.get('Verification')=='SOURCE RECONCILIATION NOT VERIFIED')
-        usd=optional_decimal(row.get('Closing balance converted to USD')) if eligible else None
-        if eligible and usd is None:
+        from balance_report_sections import eligible as section_eligible
+        qualified=section_eligible(row,section_name)
+        usd=optional_decimal(row.get('Closing balance converted to USD')) if qualified else None
+        if row.get('Status')=='IMPORTED' and row.get('Verification') in ('SOURCE RECONCILIATION NOT VERIFIED','LIABILITY CONVENTION UNVERIFIED') and usd is None:
             missing_rate+=1
-        elif not eligible:
+        elif not qualified:
             unverified+=1
         if usd is not None: included.append(usd)
         visible.append(dict(account=str(row.get('Account name') or row.get('Account number') or 'Unknown account'),
@@ -37,9 +38,9 @@ def compact_model(rows):
     return visible,exact_sum(included),missing_rate,unverified
 
 
-def compact_html(rows, generated_at=None):
+def _section_html(rows, generated_at=None,section_name='Deposits'):
     generated_at=generated_at or datetime.now(ZoneInfo('Europe/Nicosia'))
-    visible,total,_,_=compact_model(rows)
+    visible,total,_,_=compact_model(rows,section_name)
     def money(value):
         if value is None:return '—'
         return format(cents(value),',.2f')
@@ -58,8 +59,13 @@ def compact_html(rows, generated_at=None):
             if index>=7:style+='text-align:right;'
             table+='<td title="'+escape(str(value),quote=True)+'" style="'+style+'">'+escape(str(value))+'</td>'
         table+='</tr>'
-    table+='</tbody><tfoot><tr><th colspan="8" style="padding:3px 5px;text-align:right;white-space:nowrap">USD TOTAL</th><th style="padding:3px 5px;text-align:right;white-space:nowrap">'+format(total,',.2f')+'</th></tr></tfoot></table></div>'
+    table+='</tbody><tfoot><tr><th colspan="8" style="padding:3px 5px;text-align:right;white-space:nowrap">'+section_name.upper()+' USD TOTAL</th><th style="padding:3px 5px;text-align:right;white-space:nowrap">'+format(total,',.2f')+'</th></tr></tfoot></table></div>'
     return table
+
+
+def compact_html(rows,generated_at=None):
+    from balance_report_sections import partition
+    return ''.join('<h3>'+name+'</h3>'+_section_html(group,generated_at,name) for name,group in partition(rows).items())
 
 
 def render(st,db):
@@ -68,8 +74,4 @@ def render(st,db):
         st.error('Latest Import Balances is temporarily unavailable. Please try again.');return
     st.markdown('<div class="executive-section-title">5. Latest Import Balances</div>',unsafe_allow_html=True)
     st.markdown(compact_html(rows),unsafe_allow_html=True)
-    _,_,missing,unverified=compact_model(rows)
-    note='INTERIM PARTIAL REPORT: current Setup accounts; USD sum of visible included rows.'
-    if missing:note+=f' Excludes {missing} account(s) with no approved FX rate.'
-    if unverified:note+=f' Excludes {unverified} unverified/liability balance(s).'
-    st.caption(note+' — marks balances excluded from the USD sum. Details: Latest Import Balances page.')
+    st.caption('INTERIM PARTIAL REPORT: current Setup accounts; separate Deposits and Debts USD sums using stored statement signs, never netted. Missing FX and unverified balances remain excluded. Details: Latest Import Balances page.')

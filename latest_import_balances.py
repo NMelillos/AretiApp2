@@ -286,7 +286,9 @@ def snapshot(db):
         elif not imported:
             warnings.append(f"{row['account_number']}: NO IMPORT; excluded from total.")
         elif card_convention:
-            warnings.append(f"{row['account_number']}: card/liability USD equivalent retains the stored statement sign; excluded from total pending an approved net-value convention.")
+            from balance_report_sections import section
+            is_debt=section({'Bank':row.get('_display_bank',row['bank']),'Account number':row.get('_display_number',row['account_number'])})=='Debts'
+            warnings.append(f"{row['account_number']}: card/liability USD equivalent retains the stored statement sign; " + ('included only in the separate Debts total, never netted against Deposits.' if is_debt else 'excluded from total pending an approved net-value convention.'))
         if usd is not None and not card_convention:
             eligible.append(usd)
         result.append(dict(zip(COLUMNS, (
@@ -307,7 +309,8 @@ def snapshot(db):
                                   if _iso_time(row['_balance_import_order']) else 0), row['Account number']))
     for row in result:
         row.pop('_balance_import_order')
-    return result, exact_sum(eligible), warnings
+    from balance_report_sections import totals
+    return result, totals(result)['Deposits'], warnings
 
 
 def _account_identity(row):
@@ -467,6 +470,25 @@ def workbook_bytes(rows, total, warnings, generated_at=None):
         for cell in row:
             if isinstance(cell.value, str):
                 cell.data_type = 's'
+    # Keep the established complete ledger and its columns intact; provide the
+    # two requested sections as explicit worksheets from the identical rows.
+    from balance_report_sections import partition,totals,eligible
+    from copy import copy
+    amounts=totals(rows)
+    for name,group in partition(rows).items():
+        section_sheet=book.create_sheet(name);section_sheet.append(list(COLUMNS))
+        for item in group:
+            original=rows.index(item)+2
+            section_sheet.append([sheet.cell(original,c).value for c in range(1,len(COLUMNS)+1)])
+            for column in range(1,len(COLUMNS)+1):
+                target=section_sheet.cell(section_sheet.max_row,column);source=sheet.cell(original,column)
+                target.font=copy(source.font);target.number_format=source.number_format;target.data_type=source.data_type
+        section_sheet.append([name+' USD Total',str(amounts[name])])
+        section_sheet.freeze_panes='A2'
+        section_sheet.append(['Scope',NOTE])
+        section_sheet.append(['Total basis','Eligible USD equivalents, original stored statement signs; no Deposits/Debts netting.'])
+        for item in group:
+            if not eligible(item,name):section_sheet.append(['Excluded',str(item['Account number'])+': '+str(item['Verification'])])
     output = BytesIO()
     book.save(output)
     return output.getvalue()
@@ -491,6 +513,9 @@ def print_document(rows, total, warnings, generated_at=None):
             if column == 'Statement end date'
             else f'<td' + (' style="color:#000000"' if column in ('Transaction Import Date', 'Balance Import Date') else '') + f'>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
     body = ''.join(body_parts)
+    from balance_report_sections import partition,totals
+    amounts=totals(rows);parts={id(row):part for row,part in zip(rows,body_parts)}
+    sections=''.join('<h2>'+name+'</h2><table><thead><tr>'+headings+'</tr></thead><tbody>'+''.join(parts[id(row)] for row in group)+'</tbody></table><p class="total">'+name+' USD Total: '+cell(amounts[name])+'</p>' for name,group in partition(rows).items())
     warning_html = ''.join(f'<li>{escape(warning)}</li>' for warning in warnings)
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Latest Import Balances</title>
@@ -520,12 +545,11 @@ button {{ margin: 14px 0; padding: 8px 14px; cursor: pointer; }}
 <p>{NOTE}</p>
 <p>Status: IMPORTED / INCOMPLETE / NO IMPORT. Closing dates 30 days old or less are green; older, unknown or future closing dates are red. Transaction Import Dates are always black and never use balance-only import/update timestamps.
 Legacy timezone uncertainty is preserved. Binary storage and decimal tails are unverified, displayed at currency precision and excluded from totals.
-Card/liability balances are shown in their stored statement convention and excluded pending an approved net-value convention.</p>
+Approved debt accounts are shown separately in their stored statement sign. Deposits and Debts have independent partial USD sums and are never netted. All other eligibility safeguards remain active.</p>
 <p>Non-USD values use Setup &gt; Rates as of each statement end date: the latest configured rate at or before that month,
 or the earliest configured rate when no earlier month exists (existing application policy). Missing rates are excluded.</p>
 <button onclick="window.print()">Print / Save as PDF</button>
-<table><thead><tr>{headings}</tr></thead><tbody>{body}</tbody></table>
-<p class="total">PARTIAL TOTAL USD — CURRENT SETUP ACCOUNTS (eligible deposit balances): {cell(total)}</p>
+{sections}
 <h2>Excluded balances and other verification warnings</h2>
 <p>Only warnings stating that a balance is excluded remove it from the partial total.
 Import-time verification warnings alone do not change balance eligibility.</p>

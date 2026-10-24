@@ -1,0 +1,1097 @@
+{
+  "date": "2026-10-24",
+  "branch": "codex/areti-24oct-release-validation",
+  "remote_main_baseline": "b823da5d0bda450c8ee71c736c5de28e9d36faa8",
+  "preserved_application_candidate": "fc5f8dd753837d9b589066f0b58c6870242f96fa",
+  "status": "BLOCKED: full QA not green; publication is not deployment or full-master completion",
+  "package_targeted": {
+    "tests": 38,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "postgresql": {
+    "version": 18,
+    "result": "PASS",
+    "source_pinned": true,
+    "production_connections": false,
+    "clusters_stopped": true
+  },
+  "syntax": {
+    "python_files": 188,
+    "result": "PASS"
+  },
+  "diff_check": "PASS",
+  "full_qa": {
+    "tests": 612,
+    "failures": 28,
+    "errors": 80,
+    "skipped": 6,
+    "modules": 131,
+    "pass_modules": 48,
+    "nonpassing_modules": 79,
+    "helper_modules": 4
+  },
+  "collection": "Original __main__ suites; locally defined TestCases when no entrypoint; executable top-level assertions; helper-only modules separately identified. Script checks count acceptance scenarios, not individual assertions. Imported historical TestCase classes are not independently recollected when a module defines its own suite.",
+  "application_source_sha256": {
+    "app.py": "f39116815f7584e6e9eff372c769374115e85b9bc2daf517249fc43ffc85122c",
+    "duplicate_balance_import.py": "11adf074d222a839ca9ab525cf584a87eab7814fcdb0a27dd1f08ad188471e33",
+    "completed_balance_sources.py": "851d0fa0761dc9d7cdb0b36bf66a0dee7e1223dbd1c3f145bb4b5896850277e3",
+    "amex_balance_metadata.py": "09db11cbb08f17f2e59fe9f940bb103cf5295635b9987a25c29cc9bc2d0404d1",
+    "import_history.py": "1e1730cc87204f70401e1d33770d89d2ccdbac910b0ab497a47257f2d3e65a75",
+    "latest_import_balances.py": "c0079b237b05935b537ac45f610d824eb1d0593fe3b874e88a2b0902c933c8e2",
+    "latest_balances_compact.py": "3b85ab7d17f28c89d57b5e5154387cb590c036a7d75ae747699fabca41ec2300",
+    "balance_report_sections.py": "f2e8fec3eb8d0072bee6e82b29b9cca4e4e55f1938d5bf1b9912cb808f2aace4"
+  },
+  "qa_source_sha256": "b2e4ad69ebd409de2c9f5b156cb2bd069891859ba9789302c60c455d89db92f0",
+  "modules": [
+    {
+      "module": "_qa_22oct_scope.py",
+      "status": "PASS",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_amex_metadata_22oct.py",
+      "status": "PASS",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_analytical_widths.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_app_continuation_smoke.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_autonomous_performance.py",
+      "status": "FAIL",
+      "tests": 13,
+      "failures": 1,
+      "errors": 2,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_autonomous_scope.py",
+      "status": "FAIL",
+      "tests": 2,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_autonomous_sources.py",
+      "status": "FAIL",
+      "tests": 27,
+      "failures": 2,
+      "errors": 3,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_autonomous_workflows.py",
+      "status": "FAIL",
+      "tests": 29,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_autonomous_zero_boc.py",
+      "status": "FAIL",
+      "tests": 12,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_balance_cnb_report.py",
+      "status": "FAIL",
+      "tests": 68,
+      "failures": 6,
+      "errors": 3,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_balance_date_association.py",
+      "status": "FAIL",
+      "tests": 45,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_balance_date_validation.py",
+      "status": "FAIL",
+      "tests": 23,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_balance_events_22oct.py",
+      "status": "PASS",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_balance_print_ungrouped.py",
+      "status": "PASS",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_balance_sections_22oct.py",
+      "status": "PASS",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_boc_closure.py",
+      "status": "PASS",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2
+    },
+    {
+      "module": "_qa_boc_header.py",
+      "status": "PASS",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 4
+    },
+    {
+      "module": "_qa_boc_package.py",
+      "status": "FAIL",
+      "tests": 60,
+      "failures": 4,
+      "errors": 2,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_cnb_import.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_comerica_balances.py",
+      "status": "FAIL",
+      "tests": 6,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_comerica_checks.py",
+      "status": "FAIL",
+      "tests": 6,
+      "failures": 0,
+      "errors": 3,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_completed_balances_22oct.py",
+      "status": "PASS",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_database_identity.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_decimal_ai.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_decimal_boundaries.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_decimal_pipeline.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_decimal_roundtrip.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_decimal_ui.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_decimal_xls.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_deferred_editor.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_deployment_identity.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_event_trigger_catalog.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_event_trigger_diagnostics.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_executive_total.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_existing_import_compare.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_fenced_reads.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_fifth_report_match.py",
+      "status": "PASS",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_fifth_third_uat.py",
+      "status": "ERROR",
+      "tests": 0,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_financial_atomic.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_financial_atomic_command.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_financial_preconditions.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_financial_remediation.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_financial_writer_fence.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_followup_visibility.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_import_button_state.py",
+      "status": "FAIL",
+      "tests": 14,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_import_history_reliability.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_amount_precision.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_amount_representation.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_category_unlock.py",
+      "status": "FAIL",
+      "tests": 27,
+      "failures": 0,
+      "errors": 3,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_charity.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_charity_edit.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_conflict_diagnostic.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_decimal.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_groups.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_membership.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_save_backend.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_save_types.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_save_usd.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_income_three_fields.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_inline_hierarchy.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_latest_balance_flows.py",
+      "status": "FAIL",
+      "tests": 34,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_latest_import_balances.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_memory_subcategory.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_attempt_evidence.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_controlled_execution.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_execution_gates.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_final_precheck.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_frozen_catalog.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_precheck_catalog.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_recovery_page.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_recovery_release_ui.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_recovery_status.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_runtime.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_runtime_postgres.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_transport.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_nomad_transport_pool.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_open_report.py",
+      "status": "FAIL",
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_own_prompt.py",
+      "status": "FAIL",
+      "tests": 8,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_pending_amount_override.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_pending_performance.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_pending_save_normalization.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_performance_exports.py",
+      "status": "FAIL",
+      "tests": 7,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_pglast_guard_compat.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_post_import_message.py",
+      "status": "FAIL",
+      "tests": 11,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_rates_chf_persistence.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_reduced_scope.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_reduced_source_guards.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_repair_diagnostics_export.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_repair_readiness.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_report_cutoff_notice.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_report_formatting.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_report_integrity.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_reports_five_placement.py",
+      "status": "FAIL",
+      "tests": 4,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_review_counters.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_review_status.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_reviewed_event_triggers.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_reviewed_income_save.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_revolut_business.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_revolut_closure.py",
+      "status": "FAIL",
+      "tests": 11,
+      "failures": 0,
+      "errors": 2,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_revolut_currency_design_22oct.py",
+      "status": "PASS",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_revolut_urgent.py",
+      "status": "PASS",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_safra_august_balances.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_safra_completion.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_safra_duplicate_preview.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_safra_exact_iban.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_safra_history.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_safra_history_identity.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_safra_import.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_safra_lifecycle.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_safra_uat.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_split_double_count.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_split_editing.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_statement_summary.py",
+      "status": "FAIL",
+      "tests": 13,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_statement_summary_navigation.py",
+      "status": "FAIL",
+      "tests": 7,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_supabase_project_identity.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_third_cutoff_visibility.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_third_group_income.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_third_nested.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_third_report_refinement.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_top_priority.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_transaction_import_date.py",
+      "status": "PASS",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_trend_average.py",
+      "status": "PASS",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_uat_addendum.py",
+      "status": "ERROR",
+      "tests": 1,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_uat_scope.py",
+      "status": "FAIL",
+      "tests": 3,
+      "failures": 2,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_urgent_duplicate_balances.py",
+      "status": "FAIL",
+      "tests": 21,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "_qa_urgent_family_reconciliation.py",
+      "status": "FAIL",
+      "tests": 9,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "financial_storage_qa.py",
+      "status": "NOT_APPLICABLE",
+      "tests": 0,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "reduced_release_qa.py",
+      "status": "NOT_APPLICABLE",
+      "tests": 0,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "report_visual_qa.py",
+      "status": "ERROR",
+      "tests": 0,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 0
+    },
+    {
+      "module": "safra_balances_qa.py",
+      "status": "NOT_APPLICABLE",
+      "tests": 0,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "module": "safra_page_qa.py",
+      "status": "NOT_APPLICABLE",
+      "tests": 0,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ]
+}

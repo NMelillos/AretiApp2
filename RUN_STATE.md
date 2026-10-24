@@ -233,6 +233,7 @@ Separate codex/areti-24oct-release-validation preserves fc5f8dd and all older ca
 Application bytes remain identical to f3e650ec0416096564fa49a1cce470ae53dbe28b.
 Four test files corrected only after baseline/requirement evidence established outdated presentation assertions or an incomplete disposable PostgreSQL fixture. See QA_TRIAGE_20261024.md.
 Original 114 non-green outcomes classified: 42 legacy, 28 missing fixture, 33 environment, 5 mock, 6 expected skips; zero verified application regressions.
-Full 131-module pass plus four focused reruns: 633 reported checks, 30 failures, 71 errors, zero skips; 52 passing modules, 75 non-passing, 4 helpers. This is NOT a green full suite.
+Full 131-module pass plus seven focused reruns: 633 reported checks, 30 failures, 69 errors, zero skips; 54 passing modules, 73 non-passing, 4 helpers. This is NOT a green full suite. Remaining outcomes: 44 legacy, 20 missing evidence, 30 environment, 5 mock incompatibilities.
 Integrated 38/38 and disposable PostgreSQL 18 rehearsal PASS. Required blocked coverage and the separate Render restart gate remain open. No deployment, production write, schema/configuration change, import or repair performed.
+Additional bounded checks: pglast 7.18/7.20 parity PASS for all 314 SQL decisions (zero SQL); synthetic deployment-identity scenario PASS with a tested temporary-repository-only Git allowlist. Reduced-scope legacy CNB assertion reproduced identically on baseline after enabling read-only ls-tree. Disposable PostgreSQL cluster stopped after validation.
 Raw/private evidence is preserved outside this worktree in the workspace sibling qa-triage-20261024; no confidential fixtures are included in Git.

@@ -147,7 +147,8 @@ class ReportTests(CompletionTests):
         rows=[dict(base,Currency='USD',**{'Closing balance':Decimal('10.10')}),dict(base,Currency='EUR',**{'Closing balance':Decimal('20.20')}),dict(base,Currency='USD',**{'Closing balance':Decimal('-0.10')})]
         rows.append(dict(base,Currency='USD',Verification='INCOMPLETE METADATA',**{'Closing balance':Decimal('999.99')}))
         self.assertEqual(currency_totals(rows),{'EUR':Decimal('20.20'),'USD':Decimal('10.00')})
-        html=compact_html(rows);self.assertIn('font-size:12px',html);self.assertNotIn('<script>',html);self.assertIn('&lt;script&gt;',html)
+        # Approved compact layout uses 10px; escaping and eligibility stay protected.
+        html=compact_html(rows);self.assertIn('font-size:10px',html);self.assertNotIn('<script>',html);self.assertIn('&lt;script&gt;',html)
 
     def test_third_report_hides_balance_entry_and_never_reads_compact_snapshot(self):
         from streamlit.testing.v1 import AppTest

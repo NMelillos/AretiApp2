@@ -227,3 +227,12 @@ TESTED: final integrated 37/37 PASS, zero failures/errors/skips, plus fresh isol
 ## 24 October publication and full-QA qualification
 
 Separate codex/areti-24oct-release-validation preserves fc5f8dd and all older candidates. Application source remains exactly fc5f8dd; add runtime import-path QA guard. Valid source-pinned integration38/38 and disposable PostgreSQL18 PASS; syntax188 PASS, diff check PASS. Full module inventory131: 48 PASS, 79 non-passing, 4 helpers. Full QA NOT green; missing originals, historical contract/fixture/runtime incompatibilities and unresolved residual failures retained. See RELEASE_VALIDATION_20261024.md and QA_RELEASE_20261024.json. GitHub publication requires exact ref readback; no main advance/deployment/production write/schema/config change. Restart hold and design-only currency-wallet limits remain.
+
+## 24 October 2026 — full-QA triage (no production action)
+
+Application bytes remain identical to f3e650ec0416096564fa49a1cce470ae53dbe28b.
+Four test files corrected only after baseline/requirement evidence established outdated presentation assertions or an incomplete disposable PostgreSQL fixture. See QA_TRIAGE_20261024.md.
+Original 114 non-green outcomes classified: 42 legacy, 28 missing fixture, 33 environment, 5 mock, 6 expected skips; zero verified application regressions.
+Full 131-module pass plus four focused reruns: 633 reported checks, 30 failures, 71 errors, zero skips; 52 passing modules, 75 non-passing, 4 helpers. This is NOT a green full suite.
+Integrated 38/38 and disposable PostgreSQL 18 rehearsal PASS. Required blocked coverage and the separate Render restart gate remain open. No deployment, production write, schema/configuration change, import or repair performed.
+Raw/private evidence is preserved outside this worktree in the workspace sibling qa-triage-20261024; no confidential fixtures are included in Git.

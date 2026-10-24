@@ -67,7 +67,9 @@ def sqlite_checks():
         assert 'current Setup accounts only' in html and 'not a complete reconciled total' in html
         assert 'TOTAL USD VALUE OF ALL ACCOUNTS' not in html
         assert 'Excluded balances and other verification warnings' in html
-        assert '17.43' in html and '15.29' in html and 'Card/liability balances' in html
+        # Approved debt separation replaces the former blanket liability paragraph.
+        assert '17.43' in html and '15.29' in html
+        assert 'Deposits' in html and 'Debts' in html and 'never netted' in html
         book=load_workbook(BytesIO(workbook_bytes(rows,total,warnings,generated)))
         assert book.active['B2'].data_type=='s'
         assert book.active['G2'].number_format.startswith('#,##0.00')
@@ -119,7 +121,9 @@ def postgres():
             with raw.cursor() as cursor:
                 cursor.execute('CREATE TABLE account_list(id integer,account_name text,bank text,account_number text,currency text,rate_type text)')
                 cursor.execute('CREATE TABLE statement_imports(id integer,statement_hash text,imported_at text,transaction_count integer)')
-                cursor.execute("CREATE TABLE statement_balances(statement_hash text,account_name text,bank text,account_number text,currency text,period_start text,period_end text,opening_balance numeric,closing_balance numeric, source text DEFAULT '', notes text DEFAULT '', money_in numeric, money_out numeric)")
+                # Both baseline and candidate read these real schema columns. NULL
+                # keeps the legacy-date fixture unverified instead of inventing dates.
+                cursor.execute("CREATE TABLE statement_balances(statement_hash text,account_name text,bank text,account_number text,currency text,period_start text,period_end text,opening_balance numeric,closing_balance numeric, source text DEFAULT '', notes text DEFAULT '', money_in numeric, money_out numeric, imported_at text, updated_at text)")
                 cursor.execute('CREATE TABLE classified_transactions(id integer,statement_hash text,split_parent_id integer,account_name text,bank text,account_number text,currency text)')
                 cursor.execute('CREATE TABLE rates(rate_month text,rate_type text,rate_value numeric)')
                 cursor.execute("INSERT INTO account_list VALUES(1,'QA','Deposit','QA-1','USD','USD/USD')")

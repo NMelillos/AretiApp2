@@ -92,14 +92,16 @@ class PresentationTests(unittest.TestCase):
         return [base,dict(base,**{'Account name':'AAA','Statement end date':'2026-09-30','Closing balance':Decimal('2.10'),'Closing balance converted to USD':Decimal('2.10')}),dict(base,**{'Account name':'AAA','Statement end date':'2026-09-01','Closing balance':Decimal('3.20'),'Closing balance converted to USD':Decimal('3.20')})]
     def test_columns_compact_width_two_decimals_sort_and_exact_total(self):
         rows=self.rows();before=repr(rows);html=compact_html(rows)
-        labels=('Bank','Account','Account Number','Transaction Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
+        labels=('Bank','Account','Account Number','Transaction Import Date','Balance Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
         self.assertEqual([html.index('>'+label+'</th>') for label in labels],sorted(html.index('>'+label+'</th>') for label in labels))
         self.assertIn('table-layout:auto',html);self.assertIn('width:max-content',html);self.assertIn('white-space:nowrap',html)
         self.assertNotIn('962.5999755859375',html);self.assertIn('962.60',html);self.assertIn('2.10',html)
         visible,total,*_=compact_model(rows)
         self.assertEqual([(r['account'],r['closing_date']) for r in visible],[('AAA','2026-09-01'),('AAA','2026-09-30'),('Owner','2026-09-30')])
         self.assertEqual(total,Decimal('967.8999755859375'));self.assertEqual(repr(rows),before)
-        self.assertEqual(html.count('<tr>'),5)
+        # Three data rows plus a header/footer for each approved independent section.
+        self.assertEqual(html.count('<tr>'),7)
+        self.assertIn('DEPOSITS USD TOTAL',html);self.assertIn('DEBTS USD TOTAL',html)
     def test_inclusive_30_day_closing_freshness_all_displays(self):
         now=datetime(2026,10,9,tzinfo=ZoneInfo('Europe/Nicosia'))
         from openpyxl import load_workbook

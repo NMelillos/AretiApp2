@@ -23,7 +23,9 @@ class ReportTests(unittest.TestCase):
    row={k:'' for k in COLUMNS};row.update({'Bank':bank,'Transaction Import Date':stamp,'Statement end date':end,'Account number':'0001','Account name':'<source>','Currency':'USD','Closing balance':Decimal(value),'Closing balance converted to USD':Decimal(value),'Status':'IMPORTED','Verification':'SOURCE RECONCILIATION NOT VERIFIED'});rows.append(row)
   visible,total,*_=compact_model(rows);self.assertEqual(total,Decimal('17.64'));self.assertEqual([r['import_date'] for r in visible[:2]],[rows[1]['Transaction Import Date'],rows[2]['Transaction Import Date']])
   now=datetime(2026,10,9,tzinfo=ZoneInfo('Europe/Nicosia'));html=compact_html(rows,now)
-  self.assertIn('colspan="7"',html);self.assertIn('17.64',html);self.assertNotIn('12.340000',html);self.assertIn('&lt;source&gt;',html);self.assertEqual(html.count('<tr>'),5);self.assertIn('color:#b42318',html);self.assertIn('color:#146b36',html);self.assertIn('color:#000000',html)
+  # Nine approved columns (including Balance Import Date), with independent sections.
+  self.assertEqual(html.count('colspan="8"'),2);self.assertIn('DEPOSITS USD TOTAL',html);self.assertIn('DEBTS USD TOTAL',html)
+  self.assertIn('17.64',html);self.assertNotIn('12.340000',html);self.assertIn('&lt;source&gt;',html);self.assertEqual(html.count('<tr>'),7);self.assertIn('color:#b42318',html);self.assertIn('color:#146b36',html);self.assertIn('color:#000000',html)
   doc=print_document(rows,total,[],now);self.assertNotIn('Under 30 days',doc)
   wb=load_workbook(BytesIO(workbook_bytes(rows,total,[],now)));sheet=wb.active
   self.assertEqual(sheet.cell(2,4).font.color.rgb,'00000000');self.assertEqual(sheet.cell(2,6).font.color.rgb,'00B42318');self.assertEqual(sheet.cell(3,6).font.color.rgb,'00146B36')

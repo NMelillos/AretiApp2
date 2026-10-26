@@ -1,0 +1,77 @@
+{
+  "date": "2026-10-26",
+  "tested_application_basis": "f3e650ec0416096564fa49a1cce470ae53dbe28b",
+  "tested_parent": "0b24961ab8edc19b74e74b4a5ec9a27d5efa5091",
+  "production_baseline": "b823da5d0bda450c8ee71c736c5de28e9d36faa8",
+  "targeted_package": {
+    "tests": 38,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "postgresql18_rehearsal": "PASS",
+  "isolation_safety": "PASS",
+  "focused_family_charity": {
+    "tests": 9,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "fixture": "Existing original private expectation rebound; raw failure retained"
+  },
+  "syntax_files": 188,
+  "syntax": "PASS",
+  "diff_protection": "PASS",
+  "application_modules": 57,
+  "application_unchanged_from_verified_basis": true,
+  "full_qa": {
+    "status": "NOT GREEN",
+    "tests": 633,
+    "failures": 27,
+    "errors": 75,
+    "skipped": 0,
+    "modules": 131,
+    "passed_modules": 51,
+    "helper_only": 4,
+    "non_passing": 76
+  },
+  "comparison_with_retained_raw_full_pass": {
+    "matching_non_green_outcomes": 102,
+    "new_or_changed_non_green_outcomes": 0
+  },
+  "previous_qualified_full_summary": {
+    "tests": 633,
+    "failures": 30,
+    "errors": 69,
+    "skipped": 0,
+    "modules": 131,
+    "passed_modules": 54,
+    "non_passing": 73,
+    "helper_only": 4,
+    "classification": {
+      "LEGACY TEST FAILURE": 44,
+      "MISSING FIXTURE / PRIVATE SOURCE": 20,
+      "ENVIRONMENT-SPECIFIC FAILURE": 30,
+      "TEST DOUBLE / MOCK INCOMPATIBILITY": 5
+    }
+  },
+  "counts_note": "Fresh raw 131-module pass; prior qualified summary separately includes seven focused reruns. No blocked test is counted as passing.",
+  "commands": [
+    "CPython 3.12 -B qa-release-20261026/final_run.py",
+    "CPython 3.12 -B qa-release-20261026/protection.py",
+    "CPython 3.12 -B qa-release-20261026/compare_outcomes.py",
+    "CPython 3.12 -B qa-release-20261026/family_check.py"
+  ],
+  "approved_application_files": [
+    "amex_balance_metadata.py",
+    "app.py",
+    "balance_report_sections.py",
+    "completed_balance_sources.py",
+    "duplicate_balance_import.py",
+    "import_history.py",
+    "latest_balances_compact.py",
+    "latest_import_balances.py"
+  ],
+  "production_actions": "NONE",
+  "render_deployment_performed": false,
+  "publication_requires_remote_ref_readback": true
+}

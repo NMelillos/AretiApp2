@@ -237,3 +237,38 @@ Full 131-module pass plus seven focused reruns: 633 reported checks, 30 failures
 Integrated 38/38 and disposable PostgreSQL 18 rehearsal PASS. Required blocked coverage and the separate Render restart gate remain open. No deployment, production write, schema/configuration change, import or repair performed.
 Additional bounded checks: pglast 7.18/7.20 parity PASS for all 314 SQL decisions (zero SQL); synthetic deployment-identity scenario PASS with a tested temporary-repository-only Git allowlist. Reduced-scope legacy CNB assertion reproduced identically on baseline after enabling read-only ls-tree. Disposable PostgreSQL cluster stopped after validation.
 Raw/private evidence is preserved outside this worktree in the workspace sibling qa-triage-20261024; no confidential fixtures are included in Git.
+
+
+## 26 October 2026 — GitHub publication, no Render deployment
+
+The latest explicit user instruction authorises publishing the completed
+approved package to remote main, superseding the earlier main-publication hold,
+and requires stopping before Render deployment. See
+RELEASE_PUBLICATION_20261026.md and QA_PUBLICATION_20261026.json.
+
+Source preflight: clean release-validation branch at 0b24961; remote main b823da5;
+exact authorised Render service still b823da5 LIVE / dep-dbcd6pjbc2fs73c2ruvg,
+Auto-Deploy OFF. All 57 application modules remain identical to verified f3e650e;
+no new application patch was justified. Full original/private evidence and both
+preserved candidates remain unchanged.
+
+Fresh credential-free isolation, integrated 38/38, disposable PostgreSQL18,
+syntax188 and diff/scope protection PASS. A fresh full131-module run completed;
+its exact raw counts are in QA_PUBLICATION_20261026.json. Full QA remains NOT
+GREEN. Every fresh non-green outcome matches the retained raw full pass by exact
+test identity and terminal assertion/exception after evidence-root normalisation;
+none is a newly observed outcome. A focused Family/Charity9/9 rerun passes after
+rebinding its existing private expectation file; the raw missing-file outcome is
+retained and not silently replaced in the fresh full-pass totals.
+The earlier qualified summary with seven focused reruns is kept separately,
+not substituted for the fresh run. No tests or safeguards were weakened.
+
+Only publication documentation/aggregate evidence is added in this continuation.
+No source PDFs, confidential snapshots, raw logs or credentials enter Git.
+No production financial writes, imports, repairs, schema/configuration/environment
+changes or deployment occurred. User will manually handle Render separately.
+Pending: qualified full-QA legacy/fixture/environment/mock debt, the separate
+restart/release risk gate, authenticated business UAT, exact account5055 evidence
+and the separately approved currency-wallet representation/schema decision.
+The exact final commit must be confirmed by direct GitHub branch/main readback;
+local HEAD or this entry alone does not establish publication or deployment.

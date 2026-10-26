@@ -46,7 +46,7 @@ def _section_html(rows, generated_at=None,section_name='Deposits'):
         return format(cents(value),',.2f')
     labels=('Bank','Account','Account Number','Transaction Import Date','Balance Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
     table='<div style="overflow-x:auto"><table class="compact-balances" style="font-size:10px;line-height:1.15;border-collapse:collapse;width:max-content;table-layout:auto"><thead><tr>'
-    table+=''.join('<th style="padding:1px 3px;white-space:nowrap;text-align:left">'+label+'</th>' for label in labels)
+    table+=''.join('<th style="padding:1px 3px;white-space:normal;max-width:100px;line-height:1.1;text-align:left">'+label+'</th>' for label in labels)
     table+='</tr></thead><tbody>'
     for row in visible:
         table+='<tr>'

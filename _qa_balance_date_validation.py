@@ -93,7 +93,9 @@ class VisibilityTests(CompletionTests):
             app.run()
         self.assertFalse(app.exception,[e.message for e in app.exception])
         self.assertIn('Latest Import Balances',[s.value for s in app.subheader])
-        self.assertIn(NOTE,[s.value for s in app.info])
+        from html import unescape
+        self.assertIn(NOTE,unescape(''.join(s.value for s in app.markdown)))
+        self.assertTrue(any(e.label=='Report scope, date guidance and verification details' for e in app.expander))
         self.assertEqual(self.snapshot(),before)
 
 

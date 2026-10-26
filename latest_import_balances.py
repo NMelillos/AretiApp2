@@ -81,9 +81,21 @@ def snapshot(db):
     bank_match = '(' + source_bank + ' = ' + _sql_bank('a.bank', db.USING_POSTGRES) + ' AND ' + source_bank + " <> '')"
     number_match = ('(' + source_number + ' = ' + _sql_number('a.account_number','a.bank','a.currency',db.USING_POSTGRES)
                     + ' AND ' + source_number + " <> '')")
+    from natalia_balance_context import report_links
+    connection = db.get_connection()
+    try:
+        links = report_links(connection)
+    finally:
+        connection.close()
+    currency_sql = 'currency'
+    if links:
+        account_id = links[0][0]
+        # Only a database integer ID enters this expression. Keep the existing
+        # SQL execution contract (including literal LIKE '%' expressions) intact.
+        currency_sql = "CASE WHEN id="+str(int(account_id))+" AND COALESCE(currency,'')='' THEN 'EUR' ELSE currency END"
     query = f'''
         WITH accounts AS (
-            SELECT id, account_name, bank, account_number, currency, rate_type,
+            SELECT id, account_name, bank, account_number, {currency_sql} AS currency, rate_type,
                    CASE WHEN LOWER(bank) LIKE '%safra%'
                         THEN REPLACE(UPPER(REPLACE(account_number, ' ', '')),
                              'CURRENTACCOUNT' || UPPER(currency) || '/IBAN', '')
@@ -558,27 +570,44 @@ Import-time verification warnings alone do not change balance eligibility.</p>
 </body></html>'''
 
 
+def screen_document(document):
+    """Screen-only density; the downloadable print document is untouched."""
+    style='''<style>@media screen {
+body.balances-screen { margin:0; font-size:10px; }
+.balances-screen > h1, .balances-screen > p:not(.total),
+.balances-screen > button, .balances-screen > .warnings,
+.balances-screen > h2:last-of-type { display:none; }
+.balances-screen table { width:max-content; max-width:none; table-layout:auto; margin:3px 0; }
+.balances-screen th { white-space:normal; max-width:100px; line-height:1.1; }
+.balances-screen td { white-space:nowrap; }
+.balances-screen th, .balances-screen td { padding:1px 3px; }
+.balances-screen h2 { margin:5px 0 2px; font-size:13px; }
+.balances-screen .total { margin:3px 0; padding-top:3px; font-size:12px; }
+}</style>'''
+    return document.replace('</head>',style+'</head>',1).replace('<body>','<body class="balances-screen">',1)
+
+
 def render(st):
     import db
     import streamlit.components.v1 as components
     st.subheader('Latest Import Balances')
-    st.info(NOTE)
     try:
         rows, total, warnings = snapshot(db)
     except Exception:
         st.error('Latest Import Balances is temporarily unavailable. Please try again.')
         return  # Database errors must not expose connection details in the report.
-    date_warnings = [warning for warning in warnings if 'Balance Import Date unavailable:' in warning]
-    for warning in warnings:
-        if warning not in date_warnings:
-            st.warning(warning)
-    if date_warnings:
-        st.caption(f'Balance Import Date is unavailable for {len(date_warnings)} account(s); no substitute date is used. Per-account reasons are included in print and Excel verification details.')
+    st.caption('INTERIM PARTIAL REPORT — current Setup accounts. Deposits and Debts retain separate USD totals.')
     document = print_document(rows, total, warnings)
+    with st.expander('Report scope, date guidance and verification details',expanded=False):
+        # Relocate every existing explanatory paragraph; do not remove policy
+        # text or alter the downloadable print/export representation.
+        guidance=''.join(re.findall(r'<p(?![^>]*class="total")[^>]*>.*?</p>',document,re.DOTALL))
+        st.markdown(guidance,unsafe_allow_html=True)
+        for warning in warnings:st.warning(warning)
     st.caption('Download the printable report and open it in your browser to Print / Save as PDF (A4 landscape).')
     st.download_button('Download printable report', document.encode('utf-8'),
                        file_name='latest_import_balances.html', mime='text/html')
     st.download_button('Download balances workbook', workbook_bytes(rows,total,warnings),
                        file_name='latest_import_balances.xlsx',
                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    components.html(document, height=650, scrolling=True)
+    components.html(screen_document(document), height=min(650,max(180,160+18*len(rows))), scrolling=True)

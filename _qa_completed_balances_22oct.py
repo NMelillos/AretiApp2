@@ -68,7 +68,14 @@ class CompletedTests(CompletionTests):
     def test_existing_complete_balance_is_noop_and_conflicting_balance_rejects(self):
         for key in ('natalia','cnb'):
             path,content,_,_,digest,_=self.setup_source(key)
-            before=self.snapshot();self.assertEqual(record(db,content,path.name,'Synthetic operator'),'already recorded');self.assertEqual(before,self.snapshot())
+            before=self.protected()
+            with closing(db.get_connection()) as c:
+                financial=c.execute('SELECT opening_balance,money_in,money_out,closing_balance,period_start,period_end,imported_at,updated_at FROM statement_balances WHERE statement_hash=?',(digest,)).fetchone()
+            self.assertEqual(record(db,content,path.name,'Synthetic operator'),'linked' if key=='natalia' else 'already recorded')
+            self.assertEqual(before,self.protected())
+            with closing(db.get_connection()) as c:
+                self.assertEqual(financial,c.execute('SELECT opening_balance,money_in,money_out,closing_balance,period_start,period_end,imported_at,updated_at FROM statement_balances WHERE statement_hash=?',(digest,)).fetchone())
+            frozen=self.snapshot();self.assertEqual(record(db,content,path.name,'Synthetic operator'),'already recorded');self.assertEqual(frozen,self.snapshot())
             with closing(db.get_connection()) as c:c.execute('UPDATE statement_balances SET closing_balance=closing_balance+1 WHERE statement_hash=?',(digest,));c.commit()
             before=self.snapshot()
             with self.assertRaisesRegex(BalanceImportError,'conflicts'):record(db,content,path.name,'Synthetic operator')

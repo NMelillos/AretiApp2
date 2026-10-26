@@ -272,3 +272,25 @@ restart/release risk gate, authenticated business UAT, exact account5055 evidenc
 and the separately approved currency-wallet representation/schema decision.
 The exact final commit must be confirmed by direct GitHub branch/main readback;
 local HEAD or this entry alone does not establish publication or deployment.
+
+
+## 26 October 2026 — three-flow UAT follow-up
+
+Separate codex/areti-uat-three-flows-20261026 above verified live a67b8db.
+See UAT_FOLLOWUP_20261026.md and UAT_FOLLOWUP_QA_20261026.json.
+IMPLEMENTED: strict source-bound Natalia report linkage (no Setup/financial/date
+rewrite), dedicated two-value Flexline metadata-only operation, explicit AMEX
+metadata action, and screen-only report density. Locked report business rules,
+print/Excel and all unrelated application functions remain protected.
+TESTED: final combined76/76 PASS; disposable PostgreSQL18/writer fence, rollback,
+concurrent copy idempotence, zero transactions and date/preservation PASS;
+SQLite/PostgreSQL report integrity PASS; syntax191 and diff protection PASS.
+Original failures and source/production evidence remain private. All53 other
+pre-existing application files unchanged. Owned test cluster stopped.
+DEPLOYED:NO in this task; DATA-REPAIRED:NONE; USER-ACCEPTED: new fixes pending
+controlled Areti UAT. No main update, production financial write/import/repair,
+schema/Setup/environment/configuration change. A complete Natalia balance needs
+one explicit balance-only confirmation after an approved future deployment to
+record source currency linkage; original balance timestamp remains historical.
+LOC intentionally stores only closing date/value and remains incomplete/excluded
+under the unchanged report rules. Remote isolated-branch SHA requires readback.

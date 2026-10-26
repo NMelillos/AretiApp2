@@ -72,12 +72,25 @@ def record(db,content,filename,actor):
                 if value not in (None,''):
                     if (str(value)!=str(balance[key]) if key.startswith('period_') else Decimal(str(value))!=balance[key]):raise BalanceImportError('Existing balance metadata conflicts; no balance overwritten.')
                 else:changes[key]=balance[key]
-            if not changes:conn.rollback();return 'already recorded'
+            if not changes:
+                from natalia_balance_context import eligible,has_link,event
+                if eligible(account) and not has_link(prior[11],account,digest,balance):
+                    link=event(account,digest,balance,actor,datetime.now(timezone.utc).isoformat(timespec='seconds'))
+                    # Existing complete balances retain their real persistence
+                    # timestamp. This is report linkage, not a new balance import.
+                    cur.execute('UPDATE statement_balances SET notes=? WHERE id=? AND statement_hash=?',
+                                ((str(prior[11] or '')+'\n'+link).strip(),prior[0],digest))
+                    if cur.rowcount!=1:raise BalanceImportError('Balance linkage changed concurrently.')
+                    conn.commit();return 'linked'
+                conn.rollback();return 'already recorded'
         now=datetime.now(timezone.utc).isoformat(timespec='seconds')
         action={'Russian Revolut Business':'user-confirmed Revolut balances only',
                 'English Revolut Completed Source':'user-confirmed English Revolut balances only',
                 'CNB Account Summary':'user-confirmed CNB balances only'}[balance['source']]
         audit=json.dumps(dict(action=action,actor=str(actor),source_hash=digest,confirmed_at=now,transaction_changes=0),separators=(',',':'))
+        from natalia_balance_context import event
+        link=event(account,digest,balance,actor,now)
+        if link:audit+='\n'+link
         if prior is None:
             if header is None:
                 cur.execute('INSERT INTO statement_imports(statement_hash,statement_name,imported_at,transaction_count) VALUES(?,?,?,0)',(digest,filename,now))
@@ -95,6 +108,14 @@ def record(db,content,filename,actor):
 def render_controls(st,content,filename):
     if not filename.lower().endswith('.pdf'):return
     digest=sha256(content).hexdigest()
+    if st.session_state.get('balance_flexline_gate_hash')!=digest:
+        from flexline_balance_metadata import recognized as is_flexline
+        st.session_state['balance_flexline_gate_hash']=digest
+        try:st.session_state['balance_flexline_gate']=is_flexline(content)
+        except Exception:st.session_state['balance_flexline_gate']=False
+    if st.session_state.get('balance_flexline_gate'):
+        from flexline_balance_metadata import render as render_flexline
+        return render_flexline(st,content,filename)
     if st.session_state.get('balance_amex_gate_hash')!=digest:
         from amex_balance_metadata import recognized
         try:is_amex=recognized(content)
@@ -130,5 +151,6 @@ def render_controls(st,content,filename):
         except BalanceImportError as error:st.error(str(error));return
         except Exception:st.error('Balance-only import failed. No operation was committed.');return
         st.session_state.pop('upload_balance_preview',None)
-        st.session_state['upload_balance_result']='Balances already recorded; no changes made. No new balance-import event was created; Balance Import Date remains the existing recorded import date.' if outcome=='already recorded' else 'Balances recorded. No transactions or classifications changed.'
+        st.session_state['upload_balance_result']=('Existing balances verified and linked to their source currency for Latest Import Balances. No transactions or balances re-imported; the original Balance Import Date is retained.' if outcome=='linked' else
+            'Balances already recorded; no changes made. No new balance-import event was created; Balance Import Date remains the existing recorded import date.' if outcome=='already recorded' else 'Balances recorded. No transactions or classifications changed.')
         st.cache_data.clear();st.rerun()

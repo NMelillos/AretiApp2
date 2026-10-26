@@ -148,14 +148,17 @@ def record(db,content,filename,csv_content,actor):
 
 def render(st,content,filename):
     digest=sha256(content).hexdigest()
-    st.info('AMEX PDF: balance/date metadata only. Continue using CSV for transactions. Use the Screen Reader Optimized PDF and its original already-imported CSV to prove the account.')
+    st.info('Use the Screen Reader Optimized PDF. AMEX PDF: balance/date metadata only. Continue using CSV for transactions. Upload the corresponding already-imported original CSV as account identity evidence only.')
     evidence=st.file_uploader('Already-imported AMEX CSV — identity evidence only; no transactions imported',type=['csv'],key='amex_balance_csv_'+digest)
-    if evidence is None:return True
+    if evidence is None:
+        st.button('Import AMEX Balance Metadata',key='amex_balance_record',disabled=True)
+        st.caption('Upload the corresponding already-imported CSV to validate the account and enable this action. No CSV transactions are imported here.')
+        return True
     csv_content=evidence.getvalue();identity=digest+sha256(csv_content).hexdigest()
     if st.session_state.get('amex_balance_identity')!=identity:
         st.session_state['amex_balance_identity']=identity;st.session_state.pop('amex_balance_preview',None);st.session_state.pop('amex_balance_result',None)
     if st.session_state.get('amex_balance_result'):st.success(st.session_state['amex_balance_result']);return True
-    if st.button('Import Balances Only',key='amex_balance_prepare'):
+    if not st.session_state.get('amex_balance_preview'):
         try:
             import db
             source,_,account,_=prepare(db,content,csv_content)
@@ -165,7 +168,7 @@ def render(st,content,filename):
     preview=st.session_state.get('amex_balance_preview')
     if preview:
         st.table([preview]);confirmed=st.checkbox('Confirm PDF balances only — no PDF or CSV transactions will be imported.',key='amex_balance_confirm_'+identity)
-        if st.button('Confirm Balance-Only Import',key='amex_balance_record',disabled=not confirmed):
+        if st.button('Import AMEX Balance Metadata',key='amex_balance_record',disabled=not confirmed):
             try:
                 import db
                 from auth import get_login_user

@@ -1,0 +1,34 @@
+{
+  "baseline": "a67b8db80f903a6c7e0ecacd238c6241da220d35",
+  "acceptance": {
+    "tests": 76,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "postgresql": {
+    "status": "PASS",
+    "loc_only_two_source_values": true,
+    "loc_transaction_count": 0,
+    "loc_rollback": true,
+    "loc_concurrent_copy_idempotence": true,
+    "natalia_report_link": true,
+    "natalia_original_dates_preserved": true,
+    "financial_records_preserved": true,
+    "production_connections": false
+  },
+  "report_integrity_sqlite_postgresql": "PASS",
+  "syntax_files": 191,
+  "protected_application_files": 53,
+  "print_excel_functions": "UNCHANGED",
+  "deposits_debts_fx_calculations": "UNCHANGED",
+  "natalia_exception": "Source-bound report currency linkage only; Setup and financial values unchanged",
+  "production_writes": "NONE",
+  "render_deployment": "NONE",
+  "full_historical_qa": "Not rerun; prior qualified debt retained",
+  "commands": [
+    "CPython 3.12 -B qa-uat-three-flows-20261026/acceptance.py",
+    "CPython 3.12 -B qa-uat-three-flows-20261026/postgres_followup.py",
+    "CPython 3.12 -B qa-uat-three-flows-20261026/source_review.py"
+  ]
+}

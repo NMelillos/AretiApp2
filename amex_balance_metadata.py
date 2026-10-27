@@ -36,17 +36,22 @@ def parse(content):
     if not 1<=days<=62:raise ValueError('AMEX billing-period length is invalid.')
     summary=one(r'^Account Total\s*\n([\s\S]+?)\nPay Over Time Limit ')
     def amount(label):
-        found=re.findall(r'^'+re.escape(label)+r' \$((?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})\s*$',summary,re.MULTILINE)
+        found=re.findall(r'^'+re.escape(label)+r' \$(-?(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})\s*$',summary,re.MULTILINE)
         if len(found)!=1:raise ValueError('AMEX Account Total is not deterministic.')
         return Decimal(found[0].replace(',',''))
     opening=amount('Previous Balance');payments=amount('Less Payments/Credits')
     charges=amount('Plus New Charges')+amount('Plus Fees')+amount('Plus Interest Charged')
     end=amount('Equals New Balance')
-    payment_summary=re.findall(r'^New Balance \$([\d,]+\.\d{2})\s*$',text,re.MULTILINE)
-    if len(payment_summary)!=1 or Decimal(payment_summary[0].replace(',',''))!=end or opening-payments+charges!=end:
+    payment_summary=re.findall(r'^New Balance \$(-?[\d,]+\.\d{2})\s*$',text,re.MULTILINE)
+    owing = min(opening,payments,charges,end)>=0 and opening-payments+charges==end
+    signed = max(opening,charges,end)<=0 and payments>=0 and opening+payments+charges==end
+    if len(payment_summary)!=1 or Decimal(payment_summary[0].replace(',',''))!=end or not (owing or signed):
         raise ValueError('AMEX liability summary does not reconcile.')
+    # Metadata only: negative debt, positive payments, negative new charges.
+    # Validate the printed equation before converting its complete sign vector.
+    # The CSV transaction amounts and original CSV history are never changed.
     return dict(source=SOURCE,currency='USD',period_start=(closing-timedelta(days=days-1)).isoformat(),period_end=closing.isoformat(),
-        opening_balance=opening,money_in=-payments,money_out=charges,closing_balance=end,source_payments_credits=payments,
+        opening_balance=-abs(opening),money_in=payments,money_out=-abs(charges),closing_balance=-abs(end),source_payments_credits=payments,
         holder=holder.strip(),company=company.strip(),card_ending=ending,billing_days=days)
 
 def csv_evidence(content,source):

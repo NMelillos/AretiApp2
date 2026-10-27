@@ -41,8 +41,10 @@ def parse(content):
     if number != SOURCE_ACCOUNT or len(re.findall(r'\bWOKING WAY LLC\b', text)) != 1:
         raise ValueError('Only the source-proven Woking Way Flexline account is supported.')
     when = datetime.strptime(one(r'^STATEMENT\s*DATE\s+([A-Z]+ \d{2}, \d{4})\s*$'), '%B %d, %Y').date()
-    value = one(r'^(?:WOKING WAY LLC\s+)?NEW\s*BALANCE\s+((?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})\s*$')
-    closing = Decimal(value.replace(',', ''))
+    value = one(r'^(?:WOKING WAY LLC\s+)?NEW\s*BALANCE\s+(-?(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2})\s*$')
+    # This positively identified facility's New Balance is debt. Preserve an
+    # explicit negative source sign; never negate an already-negative liability.
+    closing = -abs(Decimal(value.replace(',', '')))
     # No billing-period start, opening balance, payment or finance charge is
     # inferred. The approved operation records these two labelled values only.
     return dict(source=SOURCE, account_number=number, period_end=when.isoformat(),
@@ -148,7 +150,7 @@ def render(st, content, filename):
         return True
     st.table([{'Account': account['account_name'], 'Statement Date': source['period_end'],
                'New Balance (USD)': format(source['closing_balance'], ',.2f')}])
-    st.caption('Only these two source values are recorded. Opening balance and activity remain unknown; existing report completeness/total safeguards remain in force.')
+    st.caption('Only Statement Date and New Balance are recorded; debt is negative. Opening balance and activity remain unknown; existing report completeness/total safeguards remain in force.')
     confirmed = st.checkbox('Confirm Line of Credit balance metadata only — zero transactions.', key='flexline_confirm_'+digest)
     if st.button('Import Line of Credit Balance Only', key='flexline_record', disabled=not confirmed):
         if not st.session_state.get('authenticated'):

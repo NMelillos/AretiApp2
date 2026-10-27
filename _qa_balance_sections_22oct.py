@@ -39,7 +39,7 @@ class SectionTests(DateTests):
         for html in (full,compact):
             for name in ('Deposits','Debts'):self.assertIn(name,html)
             for amount in ('100.25','20.50'):self.assertIn(amount,html)
-            self.assertIn('Balance Import Date',html);self.assertIn('Transaction Import Date',html)
+            self.assertIn('Balance Import Date',html.replace('<br>',' '));self.assertIn('Transaction Import Date',html.replace('<br>',' '))
         book=load_workbook(BytesIO(workbook_bytes(rows,Decimal('100.25'),[],now)))
         self.assertIn('Latest Import Balances',book.sheetnames)
         for name,group in partition(rows).items():

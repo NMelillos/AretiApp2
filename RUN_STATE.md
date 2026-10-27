@@ -294,3 +294,23 @@ one explicit balance-only confirmation after an approved future deployment to
 record source currency linkage; original balance timestamp remains historical.
 LOC intentionally stores only closing date/value and remains incomplete/excluded
 under the unchanged report rules. Remote isolated-branch SHA requires readback.
+
+## 26 October 2026 — final four UAT corrections, local candidate
+
+Separate codex/areti-final-four-uat-20261026 above approved314de3b; preserve the
+published candidate. Direct Render:314de3b LIVE / dep-dbfm0c8ae00c738j8j0g,
+Auto-Deploy OFF. See UAT_FINAL_FOUR_20261026.md and QA_FINAL_FOUR_20261026.json.
+Natalia's complete balance date is historical12October;26October UAT only
+recorded source/report linkage. DATE CORRECT — EXPLAIN TO ARETI; no timestamp
+logic or historical data rewrite. Minimal message explanation, dedicated LOC
+negative New Balance, consistently signed AMEX liability metadata, smaller screen
+spacing/explicit two-line headings only. All source/account/CSV proof, zero-PDF
+transaction protections, duplicate/rollback/financial rules remain active.
+Final integrated85/85 PASS; disposable PostgreSQL18/fence/concurrency/rollback,
+SQLite/PostgreSQL report integrity, syntax192, scoped-function/diff protection
+PASS.54 other application files unchanged after Git CRLF normalization.
+Owned test cluster stopped. No production financial write/import/repair, schema,
+Setup/environment/configuration change, push or deployment in this task.
+Candidate is local; controlled live UAT pending separate deployment approval.
+LOC remains intentionally incomplete/excluded under the preserved report gates;
+full Revolut currency-wallet representation is not implemented.

@@ -45,21 +45,21 @@ def _section_html(rows, generated_at=None,section_name='Deposits'):
         if value is None:return '—'
         return format(cents(value),',.2f')
     labels=('Bank','Account','Account Number','Transaction Import Date','Balance Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
-    table='<div style="overflow-x:auto"><table class="compact-balances" style="font-size:10px;line-height:1.15;border-collapse:collapse;width:max-content;table-layout:auto"><thead><tr>'
-    table+=''.join('<th style="padding:1px 3px;white-space:normal;max-width:100px;line-height:1.1;text-align:left">'+label+'</th>' for label in labels)
+    table='<div style="overflow-x:auto"><table class="compact-balances" style="font-size:10px;line-height:1.05;border-collapse:collapse;width:max-content;table-layout:auto"><thead><tr>'
+    table+=''.join('<th style="padding:1px 2px;white-space:normal;max-width:82px;line-height:1.05;text-align:left">'+label.replace(' ','<br>',1)+'</th>' for label in labels)
     table+='</tr></thead><tbody>'
     for row in visible:
         table+='<tr>'
         values=(row['bank'],row['account'],row['account_number'],row['import_date'],row['balance_import_date'],row['closing_date'] or '—',row['currency'],money(row['closing']),money(row['usd']))
         for index,value in enumerate(values):
-            style='padding:1px 3px;white-space:nowrap;'
+            style='padding:1px 2px;white-space:nowrap;'
             if index==1:style+='max-width:210px;overflow:hidden;text-overflow:ellipsis;'
             if index in (3,4):style+='color:#000000;'
             if index==5:style+='color:'+('#146b36' if fresh_closing(value,generated_at) else '#b42318')+';'
             if index>=7:style+='text-align:right;'
             table+='<td title="'+escape(str(value),quote=True)+'" style="'+style+'">'+escape(str(value))+'</td>'
         table+='</tr>'
-    table+='</tbody><tfoot><tr><th colspan="8" style="padding:3px 5px;text-align:right;white-space:nowrap">'+section_name.upper()+' USD TOTAL</th><th style="padding:3px 5px;text-align:right;white-space:nowrap">'+format(total,',.2f')+'</th></tr></tfoot></table></div>'
+    table+='</tbody><tfoot><tr><th colspan="8" style="padding:2px;text-align:right;white-space:nowrap">'+section_name.upper()+' USD TOTAL</th><th style="padding:2px;text-align:right;white-space:nowrap">'+format(total,',.2f')+'</th></tr></tfoot></table></div>'
     return table
 
 

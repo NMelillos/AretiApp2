@@ -99,7 +99,7 @@ class FlexlineTests(CompletionTests):
 
     def test_exact_two_values_no_parser_no_transactions_and_copy_repeat(self):
         path,content=self.source();account=self.seed()
-        source=loc.parse(content);self.assertEqual(source['period_end'],'2026-10-07');self.assertEqual(source['closing_balance'],Decimal('771915.46'))
+        source=loc.parse(content);self.assertEqual(source['period_end'],'2026-10-07');self.assertEqual(source['closing_balance'],Decimal('-771915.46'))
         before=self.counts()
         with patch.object(parsing,'parse_pdf',side_effect=AssertionError('Transaction parser forbidden')):
             self.assertEqual(loc.record(db,content,path.name,'Synthetic UAT reviewer'),'recorded')
@@ -107,14 +107,14 @@ class FlexlineTests(CompletionTests):
         with closing(db.get_connection()) as c:
             row=c.execute('SELECT period_start,period_end,opening_balance,money_in,money_out,closing_balance FROM statement_balances WHERE statement_hash=?',(sha256(content).hexdigest(),)).fetchone()
             self.assertEqual(row[0],'');self.assertEqual(row[1],'2026-10-07')
-            self.assertEqual(row[2:5],(None,None,None));self.assertEqual(Decimal(str(row[5])),Decimal('771915.46'))
+            self.assertEqual(row[2:5],(None,None,None));self.assertEqual(Decimal(str(row[5])),Decimal('-771915.46'))
             self.assertEqual(c.execute('SELECT COUNT(*) FROM classified_transactions WHERE amount=5855.63').fetchone()[0],0)
         frozen=self.snapshot()
         self.assertEqual(loc.record(db,content,path.name,'Synthetic UAT reviewer'),'already recorded')
         self.assertEqual(loc.record(db,content+b'\n',path.name,'Synthetic UAT reviewer'),'already recorded')
         self.assertEqual(frozen,self.snapshot())
         row=next(r for r in snapshot(db)[0] if r['Account number']==account['account_number'])
-        self.assertEqual(row['Closing balance'],Decimal('771915.46'));self.assertEqual(row['Closing balance converted to USD'],'NOT AVAILABLE')
+        self.assertEqual(row['Closing balance'],Decimal('-771915.46'));self.assertEqual(row['Closing balance converted to USD'],'NOT AVAILABLE')
         self.assertEqual(row['Status'],'INCOMPLETE')  # No invented reconciliation.
 
     def test_route_stops_before_generic_preview_and_pending_creation(self):
@@ -187,7 +187,7 @@ class PreservationTests(unittest.TestCase):
 
     def test_screen_only_compaction_retains_download_document(self):
         original='<!doctype html><html><head></head><body><h1>Latest Import Balances</h1><table><td>123.45</td></table></body></html>'
-        self.assertIn('padding:1px 3px',screen_document(original));self.assertIn('white-space:normal',screen_document(original))
+        self.assertIn('padding:1px 2px',screen_document(original));self.assertIn('white-space:normal',screen_document(original))
         self.assertIn('<td>123.45</td>',screen_document(original));self.assertNotIn('balances-screen',original)
 
 if __name__=='__main__':

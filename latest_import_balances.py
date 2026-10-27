@@ -573,17 +573,20 @@ Import-time verification warnings alone do not change balance eligibility.</p>
 def screen_document(document):
     """Screen-only density; the downloadable print document is untouched."""
     style='''<style>@media screen {
-body.balances-screen { margin:0; font-size:10px; }
+body.balances-screen { margin:0; font-size:10px; line-height:1.1; background:#fff; }
 .balances-screen > h1, .balances-screen > p:not(.total),
 .balances-screen > button, .balances-screen > .warnings,
 .balances-screen > h2:last-of-type { display:none; }
-.balances-screen table { width:max-content; max-width:none; table-layout:auto; margin:3px 0; }
-.balances-screen th { white-space:normal; max-width:100px; line-height:1.1; }
-.balances-screen td { white-space:nowrap; }
-.balances-screen th, .balances-screen td { padding:1px 3px; }
-.balances-screen h2 { margin:5px 0 2px; font-size:13px; }
-.balances-screen .total { margin:3px 0; padding-top:3px; font-size:12px; }
+.balances-screen table { width:max-content; max-width:none; table-layout:auto; margin:1px 0; }
+.balances-screen th { white-space:normal; max-width:82px; line-height:1.05; background:#f7f8fa; }
+.balances-screen td { white-space:nowrap; overflow-wrap:normal; }
+.balances-screen th, .balances-screen td { padding:1px 2px; }
+.balances-screen h2 { margin:3px 0 1px; font-size:12px; }
+.balances-screen .total { margin:2px 0; padding-top:2px; font-size:11px; }
 }</style>'''
+    # Header wrapping must not depend on the width of an unbroken account/date
+    # value below it. This screen-only copy retains every cell and download.
+    document=re.sub(r'<th>([^<]+)</th>',lambda match:'<th>'+match[1].replace(' ','<br>',1)+'</th>',document)
     return document.replace('</head>',style+'</head>',1).replace('<body>','<body class="balances-screen">',1)
 
 
@@ -610,4 +613,4 @@ def render(st):
     st.download_button('Download balances workbook', workbook_bytes(rows,total,warnings),
                        file_name='latest_import_balances.xlsx',
                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    components.html(screen_document(document), height=min(650,max(180,160+18*len(rows))), scrolling=True)
+    components.html(screen_document(document), height=min(650,max(110,100+16*len(rows))), scrolling=True)

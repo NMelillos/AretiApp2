@@ -130,7 +130,8 @@ class AssociationTests(DateTests):
         now=datetime.fromisoformat('2026-10-21T12:00:00+03:00')
         html=compact_html(rows,now);doc=print_document(rows,total,warnings,now)
         labels=('Bank','Account','Account Number','Transaction Import Date','Balance Import Date','Statement Closing Date','Currency','Closing Balance','Closing Balance USD')
-        positions=[html.index('>'+label+'</th>') for label in labels]
+        # Screen headings now explicitly wrap; their wording/order is unchanged.
+        positions=[html.replace('<br>',' ').index('>'+label+'</th>') for label in labels]
         self.assertEqual(positions,sorted(positions));self.assertIn('colspan="8"',html)
         self.assertIn(rows[0]['Balance Import Date'],html);self.assertIn('<th>Balance Import Date</th>',doc)
         self.assertNotIn('class="group"',doc);self.assertIn('width:max-content',html);self.assertIn('9.00',html)

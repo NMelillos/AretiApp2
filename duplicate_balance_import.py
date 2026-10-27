@@ -151,6 +151,6 @@ def render_controls(st,content,filename):
         except BalanceImportError as error:st.error(str(error));return
         except Exception:st.error('Balance-only import failed. No operation was committed.');return
         st.session_state.pop('upload_balance_preview',None)
-        st.session_state['upload_balance_result']=('Existing balances verified and linked to their source currency for Latest Import Balances. No transactions or balances re-imported; the original Balance Import Date is retained.' if outcome=='linked' else
-            'Balances already recorded; no changes made. No new balance-import event was created; Balance Import Date remains the existing recorded import date.' if outcome=='already recorded' else 'Balances recorded. No transactions or classifications changed.')
+        st.session_state['upload_balance_result']=('Existing balances verified and linked to their source currency for Latest Import Balances. No transactions or balances re-imported; the original Balance Import Date is retained. The historical date records when the balances were persisted, not today\'s report-link confirmation.' if outcome=='linked' else
+            'Balances already recorded; no changes made. No new balance-import event was created; Balance Import Date remains the existing recorded import date. Confirming an already-complete balance does not create a new completion date.' if outcome=='already recorded' else 'Balances recorded. No transactions or classifications changed.')
         st.cache_data.clear();st.rerun()

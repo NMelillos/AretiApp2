@@ -1,0 +1,33 @@
+{
+  "baseline": "314de3bc02b2d9645948660a72c77a763be42713",
+  "branch": "codex/areti-final-four-uat-20261026",
+  "integrated": {"tests": 85, "passed": 85, "failures": 0, "errors": 0, "skipped": 0},
+  "new_focused_cases": 9,
+  "postgresql_18": "PASS — disposable owned loopback cluster; stopped afterwards",
+  "report_integrity_sqlite_postgresql": "PASS",
+  "syntax_files": 192,
+  "protected_application_files": 54,
+  "diff_and_function_scope": "PASS",
+  "report_financial_snapshot_fx_selection_totals": "UNCHANGED",
+  "print_and_excel_functions": "UNCHANGED",
+  "natalia_persistence_and_date_logic": "UNCHANGED — correct historical date",
+  "metadata_identity_record_and_csv_proof": "UNCHANGED",
+  "browser_layout": {
+    "data": "synthetic local HTML only",
+    "before_width_px": [744.671875, 751.328125],
+    "after_width_px": [573.90625, 585.015625],
+    "before_table_height_px": 55,
+    "after_table_height_px": 50,
+    "row_and_cell_equivalence": "PASS",
+    "before_after_visually_inspected": true
+  },
+  "production_access": "enforced READ ONLY only",
+  "production_writes": false,
+  "schema_changes": false,
+  "configuration_changes": false,
+  "pushed": false,
+  "deployed": false,
+  "business_uat": "PENDING AFTER SEPARATELY AUTHORISED DEPLOYMENT",
+  "full_legacy_qa_green_claimed": false,
+  "private_evidence": "workspace sibling qa-final-four-uat-20261026; not committed"
+}

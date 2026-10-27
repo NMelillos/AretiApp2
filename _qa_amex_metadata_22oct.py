@@ -46,7 +46,9 @@ class MetadataTests(CompletionTests):
         source,evidence,matched,event=amex.prepare(db,pdf,csv)
         self.assertEqual(matched['id'],account['id'])
         for k in ('opening_balance','money_in','money_out','closing_balance'):
-            expected=abs(Decimal(info['balance'][k]))*(-1 if k=='money_in' else 1)
+            # Approved 26 October liability convention: debt/charges negative,
+            # payments positive; PDF activity never changes CSV transactions.
+            expected=abs(Decimal(info['balance'][k]))*(1 if k=='money_in' else -1)
             self.assertEqual(source[k],expected)
         self.assertEqual(source['period_end'],info['balance']['period_end'])
         self.assertEqual((__import__('datetime').date.fromisoformat(source['period_end'])-__import__('datetime').date.fromisoformat(source['period_start'])).days+1,source['billing_days'])

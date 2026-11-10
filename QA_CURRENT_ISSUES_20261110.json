@@ -1,0 +1,96 @@
+{
+  "baseline": "ba75caab3b259e3bfed8625bb5bac5b31f219e49",
+  "branch": "codex/areti-current-issues-20261110",
+  "new_targeted": {
+    "passed": 13,
+    "failed": 0,
+    "errors": 0
+  },
+  "boc_final_regression": {
+    "passed": 15,
+    "failed": 0,
+    "errors": 0
+  },
+  "combined_unique_aggregate": {
+    "tests": 54,
+    "passed": 53,
+    "legacy_failures": 1,
+    "introduced_failures": 0,
+    "unresolved_errors": 0,
+    "skips": 0,
+    "single_green_full_suite_claimed": false
+  },
+  "legacy_failure": {
+    "test": "_qa_boc_package.SourceTests.test_upload_atomic_history_pending_latest_balances_duplicates",
+    "assertion": "INTERIM PARTIAL REPORT expected in app.info",
+    "baseline_same_failure": true,
+    "test_not_weakened": true
+  },
+  "existing_memory_assertions": 4,
+  "postgres": {
+    "status": "PASS",
+    "database_version": 18,
+    "disposable_only": true,
+    "writer_fence": true,
+    "sources": [
+      {
+        "source": "boc-4626",
+        "rows": 14,
+        "reconciliation": true,
+        "rollback": true,
+        "duplicate_idempotence": true,
+        "history_pending_exact": true,
+        "reviewed_seed_preserved": true,
+        "learning_preserved": true
+      },
+      {
+        "source": "boc-1557",
+        "rows": 14,
+        "reconciliation": true,
+        "rollback": true,
+        "duplicate_idempotence": true,
+        "history_pending_exact": true,
+        "reviewed_seed_preserved": true,
+        "learning_preserved": true
+      },
+      {
+        "source": "citi-october",
+        "rows": 2,
+        "reconciliation": true,
+        "rollback": true,
+        "duplicate_idempotence": true,
+        "history_pending_exact": true,
+        "reviewed_seed_preserved": true,
+        "learning_preserved": true
+      }
+    ],
+    "production_connections": false
+  },
+  "browser": {
+    "views": 2,
+    "geometry_aligned": true,
+    "all_cells_equal": true,
+    "visually_reviewed": true,
+    "synthetic_only": true
+  },
+  "syntax_files": 195,
+  "other_application_files_unchanged": 52,
+  "protected_functions": 51,
+  "application_hashes": {
+    "balance_report_sections.py": "b5ef983ddea72c2ac1d96730d4565628f028f32527f331f8f2886c6a7e6ec231",
+    "boc_import.py": "d82aa4fd661a64b4a04e1817f1af992c72de100f814a04a1d64874c5a3138677",
+    "citi_refund.py": "9f5b2181ac8c3421b94b299e1a61aa7b99574b7874ca5ffbc04144fdf0fed4a7",
+    "classification.py": "ecdb760c02e96c1192e0b913981b5f5ec6a0a54276e2ac959288a01969c2fc00",
+    "import_history.py": "a99baae9cc6fb5b50433d680a19db7b094b20e83e26f51769fbd9bb277ea22c7",
+    "latest_balances_compact.py": "b8f0a45e69001478ce73e28882d5296612e372c2adf413b6c5893537de0891e9",
+    "latest_import_balances.py": "a84d3cc29a31a2fc049e704879c3a2814cd05dd4a9d29d06a954eaf52c1c60b5"
+  },
+  "diff_check": "PASS",
+  "production_writes": "NONE",
+  "schema_environment_configuration_changes": "NONE",
+  "auto_deploy": "OFF directly read back",
+  "pushed": false,
+  "deployed": false,
+  "user_acceptance": "PENDING",
+  "private_evidence": "Sibling qa-current-issues-20261110; originals and financial snapshots excluded from Git"
+}

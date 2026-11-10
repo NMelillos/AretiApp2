@@ -570,6 +570,42 @@ Import-time verification warnings alone do not change balance eligibility.</p>
 </body></html>'''
 
 
+def align_balance_tables(document):
+    """Presentation only: identical content-sized columns across both sections."""
+    from html.parser import HTMLParser
+    class Cells(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True);self.tables=[];self.table=None;self.row=[];self.cell=None
+        def handle_starttag(self,tag,attrs):
+            if tag=='table':self.table=[]
+            elif tag=='tr':self.row=[]
+            elif tag in ('th','td'):
+                self.cell=[];self.span=int(dict(attrs).get('colspan','1'))
+            elif tag=='br' and self.cell is not None:self.cell.append('\n')
+        def handle_data(self,data):
+            if self.cell is not None:self.cell.append(data)
+        def handle_endtag(self,tag):
+            if tag in ('th','td') and self.cell is not None:
+                self.row.append((''.join(self.cell),self.span));self.cell=None
+            elif tag=='tr' and self.table is not None and self.row and all(span==1 for _,span in self.row):self.table.append(self.row)
+            elif tag=='table' and self.table is not None:self.tables.append(self.table);self.table=None
+    parsed=Cells();parsed.feed(document)
+    rows=[row for table in parsed.tables for row in table]
+    if not rows or len({len(row) for row in rows})!=1:return document
+    count=len(rows[0])
+    def text_width(line):
+        return sum(9.5 if c in 'WM' else 7.2 if c.isupper() else 5.6 if c.isdigit()
+                   else 2.8 if c.isspace() else 5.2 for c in line)
+    widths=[max(32,int(max(text_width(line) for row in rows for line in row[index][0].split('\n'))+8)) for index in range(count)]
+    columns='<colgroup>'+''.join('<col style="width:'+str(width)+'px">' for width in widths)+'</colgroup>'
+    def opening(match):
+        tag=match[0];style='table-layout:fixed;width:'+str(sum(widths))+'px'
+        if 'style="' in tag:tag=re.sub(r'style="([^"]*)"',lambda s:'style="'+s[1]+';'+style+'"',tag,count=1)
+        else:tag=tag[:-1]+' style="'+style+'">'
+        return tag+columns
+    return re.sub(r'<table\b[^>]*>',opening,document)
+
+
 def screen_document(document):
     """Screen-only density; the downloadable print document is untouched."""
     style='''<style>@media screen {
@@ -587,7 +623,7 @@ body.balances-screen { margin:0; font-size:10px; line-height:1.1; background:#ff
     # Header wrapping must not depend on the width of an unbroken account/date
     # value below it. This screen-only copy retains every cell and download.
     document=re.sub(r'<th>([^<]+)</th>',lambda match:'<th>'+match[1].replace(' ','<br>',1)+'</th>',document)
-    return document.replace('</head>',style+'</head>',1).replace('<body>','<body class="balances-screen">',1)
+    return align_balance_tables(document.replace('</head>',style+'</head>',1).replace('<body>','<body class="balances-screen">',1))
 
 
 def render(st):

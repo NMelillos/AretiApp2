@@ -46,6 +46,23 @@ def metadata(text):
                 currency=currency, period_start=start, period_end=end, source='BOC bank columns')
 
 
+def _zero_interest_annex(text, lines):
+    """Recognize the source-proven non-activity last page, never skip a table."""
+    body = re.search(r'Accumulated\s+Interest([\s\S]+?)This\s*account\s*is\s*eligible', text)
+    if not body or re.search(r'\d{1,2}/\d{1,2}/\d{2,4}', text):
+        return False
+    amounts = [w['text'] for _, words in lines for w in words
+               if re.fullmatch(r'[+-]?\d[\d,]*\.\d{2}', w['text'])]
+    text_amounts = re.findall(r'(?<![\w.,])[+-]?\d[\d,]*\.\d{2}(?![\w.%])', text)
+    if amounts != ['0.00', '0.00'] or text_amounts != amounts:
+        return False
+    compact = re.sub(r'\s+', '', body[1])
+    return re.fullmatch(
+        r'DebitCreditAnalysisofinterestrateineffect0\.000\.00FromToBaseMarginTotal'
+        r'Credit0\.00%0\.00%0\.00%Unauthorisedexcessbalanceswillbechargedwithinterest\d+\.\d{2}%',
+        compact) is not None
+
+
 def parse_pages(pages, texts):
     meta = metadata('\n'.join(texts))
     rows, previous, opening, totals = [], None, None, None
@@ -67,6 +84,12 @@ def parse_pages(pages, texts):
             lines[-1][1].append(word)
         headers = [(y, ws) for y, ws in lines if {'Debit', 'Credit', 'Balance'}.issubset({w['text'] for w in ws})
                    and any('Transaction' in w['text'] for w in ws)]
+        # A numbered same-account zero-interest annex follows an already closed
+        # activity table in these originals. All page/account checks above and
+        # exact statement-total reconciliation below remain mandatory.
+        if (not headers and number == len(pages) and totals is not None
+                and last_header is not None and _zero_interest_annex(text, lines)):
+            continue
         summary_only = False
         if len(headers) == 1:
             top, words = headers[0]

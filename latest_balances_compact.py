@@ -65,7 +65,8 @@ def _section_html(rows, generated_at=None,section_name='Deposits'):
 
 def compact_html(rows,generated_at=None):
     from balance_report_sections import partition
-    return ''.join('<h3>'+name+'</h3>'+_section_html(group,generated_at,name) for name,group in partition(rows).items())
+    from latest_import_balances import align_balance_tables
+    return align_balance_tables(''.join('<h3>'+name+'</h3>'+_section_html(group,generated_at,name) for name,group in partition(rows).items()))
 
 
 def render(st,db):

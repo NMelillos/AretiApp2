@@ -7,6 +7,8 @@ def section(row):
     number=re.sub(r'[^A-Z0-9]','',str(row.get('Account number') or '').upper())
     if bank in ('AMEX','AMERICANEXPRESS','CITIBANKCREDITCARD','SAPPHIRECHASE'):return 'Debts'
     if bank in ('COMERICA','COMERICACREDITLINE','FIFTHTHIRDEXCOMERICA') and number in ('05590000991','05590000991CREDITLINE'):return 'Debts'
+    if (bank=='FIFTHTHIRDEXCOMERICA' and number=='05590000991CREDITLINE00548546519'
+        and re.sub(r'[^A-Z0-9]','',str(row.get('Account name') or '').upper())=='WOKINGWAYLLC'):return 'Debts'
     return 'Deposits'
 
 def eligible(row,name,require_usd=True):

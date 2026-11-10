@@ -314,3 +314,23 @@ Setup/environment/configuration change, push or deployment in this task.
 Candidate is local; controlled live UAT pending separate deployment approval.
 LOC remains intentionally incomplete/excluded under the preserved report gates;
 full Revolut currency-wallet representation is not implemented.
+
+## 10 November 2026 — current Areti issues, isolated local candidate
+
+Baseline ba75caab3b259e3bfed8625bb5bac5b31f219e49 verified GitHub/main and LIVE;
+branch codex/areti-current-issues-20261110. Direct exact-service Auto-Deploy OFF.
+See CURRENT_ISSUES_20261110.md and QA_CURRENT_ISSUES_20261110.json.
+IMPLEMENTED: exact BOC4626/1557 zero-interest annex recognition (strict source/page/
+amount safeguards), current Citi source-proven credit-adjustment signs, evidence-
+backed suggestion-only subcategories, exact combined Woking Way LOC in Debts,
+and shared screen column widths. Historical financial data is untouched.
+TESTED: new13/13; final BOC15/15; related54 unique cases:53 PASS and1 baseline-
+reproduced legacy widget assertion FAIL; no introduced failure or missing source
+remains. Existing memory4 assertions PASS. Disposable PostgreSQL18/fence/rollback/
+duplicate/reconciliation/protected-row preservation PASS, owned cluster stopped.
+Browser geometry/cell equality PASS. Syntax195 PASS;52 other application files
+unchanged,51 existing functions/branches protected. Full legacy suite not green
+and not rerun wholesale. Original failed evidence is retained privately.
+DEPLOYED:NO; DATA-REPAIRED:NONE; USER-ACCEPTED:pending controlled UAT.
+No production writes/imports/repairs, schema/Setup/account/history/env/config
+change, push or deployment. A separate deployment gate remains mandatory.

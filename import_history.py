@@ -31,6 +31,9 @@ def commit_statement(db, frame, name, fingerprint, balance, account):
     if balance.get('source') == 'BOC bank columns':
         from boc_import import validate_preview
         validate_preview(frame, balance, account)
+    if balance.get('source') == 'Citi credit adjustment summary':
+        from citi_refund import validate_adjustment_preview
+        validate_adjustment_preview(frame, balance, account)
     if not account.get('account_number') or not account.get('currency'):
         raise ValueError('A complete statement account is required.')
     if frame.empty:

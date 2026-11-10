@@ -347,6 +347,45 @@ def _similar_from_index(
     return row
 
 
+def _label_history_indexes(memory_df, categories):
+    """Read-only indexes for specific description/subcategory evidence."""
+    tokens, labels = {}, {}
+    active = _category_lookup(categories)
+    def words(value):
+        text=re.sub(r'CONTINUE\s+ON\s+NEXT\s+PAGE',' ',str(value or '').upper())
+        return {w for w in re.findall(r'[A-Z]+',text) if len(w)>=3 and w not in
+                MERCHANT_SIGNATURE_STOP_WORDS | {'MONTHLY','SUBSCRIPTION','ONLINE','INC','COM','PURCHASES','TRADING','LIMITED','COMPANY','MEMBER','SINCE'}}
+    for row in memory_df.to_dict('records'):
+        if str(row.get('category','')).strip().casefold() not in active:continue
+        if not str(row.get('subcategory','') or '').strip():continue
+        row=dict(row)
+        row['_hint_words']=words(str(row.get('normalized_description',''))+' '+str(row.get('subcategory','')))
+        label=' '.join(sorted(words(row.get('subcategory',''))))
+        if label:labels.setdefault(label,[]).append(row)
+        for token in row['_hint_words']:tokens.setdefault(token,[]).append(row)
+    return words,tokens,labels
+
+
+def _specific_history_hint(description, indexes):
+    words,index,labels=indexes;query=words(description)
+    if not query:return None
+    candidates=labels.get(' '.join(sorted(query)))
+    if candidates is None:
+        pool={id(row):row for token in query for row in index.get(token,[])}
+        if not pool:return None
+        score=max(len(query & row['_hint_words']) for row in pool.values())
+        if score<2 and not any(len(token)>=7 and token in index for token in query):return None
+        candidates=[row for row in pool.values() if len(query & row['_hint_words'])==score]
+    pairs={};references={}
+    for row in candidates:
+        pair=(row['category'],row['subcategory']);weight=max(1,int(row.get('times_seen',0) or 0))
+        pairs[pair]=pairs.get(pair,0)+weight;references.setdefault(pair,row)
+    if not pairs:return None
+    best=max(pairs,key=pairs.get)
+    if pairs[best]<2 or pairs[best]/sum(pairs.values())<0.80:return None
+    return references[best]
+
+
 def classify_transactions(df, memory_df):
     categories = get_categories()
     category_lookup = _category_lookup(categories)
@@ -358,6 +397,9 @@ def classify_transactions(df, memory_df):
         best_by_signature,
         signature_history,
     ) = _memory_indexes(memory_df)
+    hint_indexes = _label_history_indexes(memory_df,categories)
+    driver_learned=any(r.get('category')=='Transportation' and r.get('subcategory')=='Driver'
+                       for r in hint_indexes[2].get('DRIVER',[]))
     suggestions = []
 
     def active_category(category):
@@ -370,6 +412,14 @@ def classify_transactions(df, memory_df):
         beneficiary = row.get("beneficiary", "")
         transaction_type = row.get("transaction_type", "")
         amount = row.get("Amount", row.get("amount", 0))
+
+        # Explicit current business instruction, using an existing learned pair;
+        # this suggests only, never edits historical categories or creates one.
+        if (re.search(r'\bANDREAS\s+POUPAS\b',str(normalized).upper())
+                and driver_learned and active_category('Transportation')):
+            suggestions.append(dict(suggested_category='Transportation',suggested_subcategory='Driver',
+                match_type='suggestion',matched_reference='Existing Driver history; Areti-approved beneficiary rule',confidence=0.85))
+            continue
 
         exact = exact_index.get(str(normalized), None)
         exact_category = active_category(exact.get("category", "")) if exact else ""
@@ -405,11 +455,20 @@ def classify_transactions(df, memory_df):
             continue
 
         merchant = best_by_signature.get(merchant_signature) if merchant_signature else None
+        specific = _specific_history_hint(normalized,hint_indexes)
+        if specific and active_category(specific.get('category')):
+            suggestions.append(dict(suggested_category=active_category(specific['category']),
+                suggested_subcategory=specific['subcategory'],match_type='suggestion',
+                matched_reference=specific.get('original_description') or specific.get('normalized_description'),confidence=0.85))
+            continue
         merchant_category = active_category(merchant.get("category", "")) if merchant else ""
         if merchant and merchant_category:
+            same_parent=[r for r in signature_history.get(merchant_signature,[]) if active_category(r.get('category'))==merchant_category]
+            labels={str(r.get('subcategory') or '').strip() for r in same_parent}
+            learned_subcategory=next(iter(labels)) if len(labels)==1 and '' not in labels else ''
             suggestions.append({
                 "suggested_category": merchant_category,
-                "suggested_subcategory": "",
+                "suggested_subcategory": learned_subcategory,
                 "match_type": "similar",
                 "matched_reference": merchant.get("original_description") or merchant["normalized_description"],
                 "confidence": 0.78,

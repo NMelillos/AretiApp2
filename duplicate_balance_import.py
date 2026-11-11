@@ -13,6 +13,8 @@ class BalanceImportError(ValueError):pass
 
 
 def prepare(db,content,filename):
+    from sapphire_balance_metadata import recognized,prepare as prepare_sapphire
+    if recognized(content):return prepare_sapphire(db,content,filename)
     from parsing import parse_pdf
     frame=parse_pdf(BytesIO(content));balance=frame.attrs.get('statement_balance',{})
     if balance.get('source')=='BOC bank columns':
@@ -40,6 +42,9 @@ def prepare(db,content,filename):
 def record(db,content,filename,actor):
     if not actor or not str(filename).strip():raise BalanceImportError('Authenticated source confirmation is required.')
     frame,balance,account=prepare(db,content,filename)
+    if balance.get('source')=='Sapphire Chase source liability summary':
+        from sapphire_balance_metadata import record as record_sapphire
+        return record_sapphire(db,content,filename,actor)
     if account is None:
         from boc_summary_balances import record as record_boc
         return record_boc(db,content,filename,actor)
@@ -133,7 +138,10 @@ def render_controls(st,content,filename):
         try:
             import db
             _,balance,_=prepare(db,content,filename)
-            st.session_state['upload_balance_preview']={key:str(balance[key]) for key in ('account_number','currency',*FIELDS)}
+            shown=dict(balance)
+            if balance.get('source')=='Sapphire Chase source liability summary':
+                shown.update(opening_balance=-balance['opening_balance'],closing_balance=-balance['closing_balance'],money_in=-balance['money_in'],money_out=-balance['money_out'])
+            st.session_state['upload_balance_preview']={key:str(shown[key]) for key in ('account_number','currency',*FIELDS)}
         except Exception:
             st.session_state.pop('upload_balance_preview',None)
             st.error('Balance-only source/account validation failed. No data changed. A reconciled supported statement is required.')

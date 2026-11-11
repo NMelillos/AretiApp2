@@ -1,0 +1,67 @@
+{
+  "baseline": "98356258e779d99a5d8b87852060f34bad828dd8",
+  "branch": "codex/areti-balance-sapphire-20261111",
+  "focused_final": {
+    "tests": 10,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0
+  },
+  "affected_regressions": {
+    "tests": 17,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0
+  },
+  "unique_total": 27,
+  "postgres": {
+    "status": "PASS",
+    "postgresql": 18,
+    "writer_fence": true,
+    "transactions_unchanged": 10,
+    "history_dates_preserved": true,
+    "complete_legacy_noop": true,
+    "missing_balance_completion": true,
+    "rollback": true,
+    "concurrent_idempotence": true,
+    "reconciliation": true,
+    "liability_report": true,
+    "production_connections": false
+  },
+  "report_evidence": {
+    "read_only_production_transactions": true,
+    "local_replay_only": true,
+    "current_setup_rows": 43,
+    "unrelated_rows_unchanged": 41,
+    "deposits_total_unchanged": true,
+    "signed_grand_total_verified": true
+  },
+  "browser_width_px": {
+    "compact-before": 1298,
+    "compact-after": 1004,
+    "full-before": 2194,
+    "full-after": 1650
+  },
+  "totals_under_usd_column": true,
+  "section_columns_aligned": true,
+  "syntax_files": 197,
+  "unchanged_application_files": 54,
+  "existing_definitions_checked": 37,
+  "app_hashes": {
+    "balance_report_sections.py": "873f82a64a30c37693c7993ede52bc4fc07b0f6a50e8b00229b69d4dbce5faef",
+    "duplicate_balance_import.py": "375d74aaec796d5dba287f2cc7c25945a6dd5e488bd6935b33ec602b854a1102",
+    "flexline_balance_metadata.py": "788bf20cfa8e4596b10f592f9e1992189af11c9092baef5138b86ca317c87dea",
+    "latest_balances_compact.py": "f63c398f3286d90e7fc650f3ce02de3953848c184da92a5013b9d0965a5be8f8",
+    "latest_import_balances.py": "e0bcedf7bec0994b2646b2cc6b36f94be07620176cebdced2b5121a53d35e117",
+    "sapphire_balance_metadata.py": "57f2fedad43077b6d7977889131c3a12a625e7c7ff239c183f1aef7784ee5f7a"
+  },
+  "existing_tests_unchanged": true,
+  "production_writes": "NONE",
+  "schema_environment_configuration_changes": "NONE",
+  "historical_data_repairs": "NONE",
+  "deployed": false,
+  "business_uat": "PENDING",
+  "memory": "AWAITING REAL USER VERIFICATION — NO FURTHER CHANGE",
+  "graph": "NEW FEATURE REQUEST — NOT INCLUDED IN CURRENT FIX",
+  "private_evidence": "Sibling qa-balance-sapphire-20261111; originals/financial facts/card number/snapshots excluded from Git"
+}

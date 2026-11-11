@@ -133,6 +133,26 @@ def record(db, content, filename, actor):
         conn.close()
 
 
+def verified_closing_record(conn,row):
+    """Read-only proof for the explicitly approved two-value metadata contract."""
+    try:
+        if not (row['source']==SOURCE and compact(row['bank'])=='FIFTHTHIRDEXCOMERICA'
+                and compact(row['account_name'])=='WOKINGWAYLLC' and compact(row['account_number'])==SETUP_ACCOUNT
+                and row['statement_bank']==row['bank'] and row['statement_account_name']==row['account_name']
+                and row['statement_account_number']==row['account_number'] and row['statement_currency']==row['currency']=='USD'):
+            return False
+        note=json.loads(row['notes']);closing=Decimal(str(row['closing_balance']))
+        when=datetime.fromisoformat(str(row['period_end'])).date().isoformat()
+        confirmed=datetime.fromisoformat(note['confirmed_at'])
+        if not (note['action']==ACTION and note['actor'] and confirmed.tzinfo and note['source_hash']==row['balance_statement_hash']
+                and note['setup_id']==row['account_id'] and note['transaction_changes']==0 and note['statement_date']==when
+                and Decimal(note['new_balance'])==closing and closing.is_finite() and closing<=0
+                and row['transaction_count']==row['source_rows']==0):return False
+        cur=conn.cursor();cur.execute('SELECT COUNT(*) FROM classified_transactions WHERE statement_hash=?',(row['balance_statement_hash'],))
+        return cur.fetchone()[0]==0
+    except (ValueError,TypeError,KeyError,ArithmeticError):return False
+
+
 def render(st, content, filename):
     digest = sha256(content).hexdigest()
     st.info('Line of Credit balance only: Statement Date and New Balance. No payment, finance-charge or other transactions will be imported.')

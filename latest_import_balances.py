@@ -154,6 +154,8 @@ def snapshot(db):
         rows = pd.read_sql_query(query, connection, coerce_float=False).to_dict('records')
         from balance_only import verified_record
         for row in rows:
+            from flexline_balance_metadata import verified_closing_record
+            row['_verified_closing_only']=verified_closing_record(connection,row)
             row['_verified_balance_only'] = verified_record(
                 connection, row['notes'], row['statement_bank'], row['statement_account_number'],
                 row['statement_currency'], row['opening_balance'], row['money_in'],
@@ -246,6 +248,9 @@ def snapshot(db):
                     and str(row['statement_currency']).strip() else row['currency']) or ''
         opening = optional_decimal(row['opening_balance']) if imported else None
         closing = optional_decimal(row['closing_balance']) if imported else None
+        from sapphire_balance_metadata import report_values
+        opening,closing,sapphire_sign=report_values(row,opening,closing)
+        closing_only=row.get('_verified_closing_only',False)
         complete = imported and opening is not None and closing is not None and all(
             pd.notna(row[key]) and str(row[key]).strip() for key in ('period_start', 'period_end'))
         complete = complete and pd.notna(row['statement_currency']) and bool(str(row['statement_currency']).strip())
@@ -269,17 +274,19 @@ def snapshot(db):
                             for key in ('opening_storage_type', 'closing_storage_type'))
         exact_precision = exact_storage and precision_known and all(value is None or value == cents(value)
                                                   for value in (opening, closing))
+        closing_precision=(closing_only and str(row['closing_storage_type']).lower() in ('numeric','decimal','text','integer','bigint','smallint')
+                           and closing is not None and closing==cents(closing))
         card_convention = (_account_identity(row)[0] in ('CITI', 'AMERICANEXPRESS', 'CHASE')
                            or any(token in (str(row['bank']) + ' ' + str(row['account_name'])).lower()
                                   for token in ('credit card', 'liability')))
-        verification = ('AMBIGUOUS SETUP IDENTITY' if ambiguous else 'NO IMPORT' if not imported else 'SETUP/SOURCE LABEL MISMATCH' if label_mismatch else 'INCOMPLETE METADATA' if not complete
+        verification = ('AMBIGUOUS SETUP IDENTITY' if ambiguous else 'NO IMPORT' if not imported else 'SETUP/SOURCE LABEL MISMATCH' if label_mismatch else 'VERIFIED CLOSING METADATA ONLY' if closing_precision else 'INCOMPLETE METADATA' if not complete
                         else 'UNVERIFIED BINARY STORAGE' if not exact_storage
                         else 'UNVERIFIED STORED PRECISION' if not exact_precision
                         else 'LIABILITY CONVENTION UNVERIFIED' if card_convention
                         else 'SOURCE RECONCILIATION NOT VERIFIED')
         usd = None
         applied_fx = ''
-        if complete and exact_precision and not ambiguous:
+        if ((complete and exact_precision) or closing_precision) and not ambiguous and not label_mismatch:
             if currency.upper() == 'USD':
                 usd = closing
                 applied_fx = '1 (USD identity)'
@@ -297,11 +304,15 @@ def snapshot(db):
             warnings.append(f"{row['account_number']}: USD NOT AVAILABLE ({verification}); excluded from total.")
         elif not imported:
             warnings.append(f"{row['account_number']}: NO IMPORT; excluded from total.")
+        elif closing_only:
+            warnings.append(f"{row['account_number']}: verified closing-only USD liability; opening/activity/period start remain unknown. Included only in Debts using its source-verified closing value.")
+        elif sapphire_sign:
+            warnings.append(f"{row['account_number']}: printed Sapphire liability balances are sign-converted for presentation only; stored balances and transaction signs remain unchanged.")
         elif card_convention:
             from balance_report_sections import section
             is_debt=section({'Bank':row.get('_display_bank',row['bank']),'Account number':row.get('_display_number',row['account_number'])})=='Debts'
             warnings.append(f"{row['account_number']}: card/liability USD equivalent retains the stored statement sign; " + ('included only in the separate Debts total, never netted against Deposits.' if is_debt else 'excluded from total pending an approved net-value convention.'))
-        if usd is not None and not card_convention:
+        if usd is not None and not card_convention and not closing_only:
             eligible.append(usd)
         result.append(dict(zip(COLUMNS, (
             row.get('_display_number', row['account_number']) or '', '; '.join(ambiguous) if ambiguous else (str(row['account_name']) + '; source label: ' + str(row['statement_account_name']) if label_mismatch else row['account_name'] or ''), row.get('_display_bank', row['bank']) or '',
@@ -310,7 +321,7 @@ def snapshot(db):
             row['period_end'] if imported and pd.notna(row['period_end']) else '',
             opening, closing,
             currency, usd if usd is not None else ('NOT AVAILABLE' if imported else ''),
-            'AMBIGUOUS SETUP IDENTITY' if ambiguous else ('IMPORTED' if complete else 'INCOMPLETE') if imported else 'NO IMPORT',
+            'AMBIGUOUS SETUP IDENTITY' if ambiguous else ('CLOSING ONLY' if closing_precision else 'IMPORTED' if complete else 'INCOMPLETE') if imported else 'NO IMPORT',
             verification, applied_fx, optional_decimal(row['money_in']) if imported else None, optional_decimal(row['money_out']) if imported else None,
             balance_date,
         ))))
@@ -381,7 +392,8 @@ def _balance_import_date(row):
                     'Russian Revolut Business':'user-confirmed Revolut balances only',
                     'English Revolut Completed Source':'user-confirmed English Revolut balances only',
                     'CNB Account Summary':'user-confirmed CNB balances only',
-                    'AMEX screen-reader balance metadata':'user-confirmed AMEX PDF balances only'}.get(row.get('source'))
+                    'AMEX screen-reader balance metadata':'user-confirmed AMEX PDF balances only',
+                    'Sapphire Chase source liability summary':'source-verified Sapphire balances only'}.get(row.get('source'))
     if audit_action:
         for line in str(row.get('notes') or '').splitlines():
             try:
@@ -495,12 +507,18 @@ def workbook_bytes(rows, total, warnings, generated_at=None):
             for column in range(1,len(COLUMNS)+1):
                 target=section_sheet.cell(section_sheet.max_row,column);source=sheet.cell(original,column)
                 target.font=copy(source.font);target.number_format=source.number_format;target.data_type=source.data_type
-        section_sheet.append([name+' USD Total',str(amounts[name])])
+        total_row=['']*len(COLUMNS);total_row[0]=name+' USD Total';total_row[9]=str(amounts[name]);section_sheet.append(total_row)
+        from openpyxl.styles import Alignment
+        section_sheet.merge_cells(start_row=section_sheet.max_row,start_column=1,end_row=section_sheet.max_row,end_column=9)
+        section_sheet.cell(section_sheet.max_row,1).alignment=Alignment(horizontal='right')
         section_sheet.freeze_panes='A2'
         section_sheet.append(['Scope',NOTE])
-        section_sheet.append(['Total basis','Eligible USD equivalents, original stored statement signs; no Deposits/Debts netting.'])
+        section_sheet.append(['Total basis','Eligible signed USD equivalents; Grand Total adds the two section totals once.'])
         for item in group:
             if not eligible(item,name):section_sheet.append(['Excluded',str(item['Account number'])+': '+str(item['Verification'])])
+    summary=book.create_sheet('USD Totals');summary.append(['Section','Signed USD equivalent'])
+    for name,value in amounts.items():summary.append([name,str(value)])
+    summary.append(['Grand Total',str(exact_sum(amounts.values()))])
     output = BytesIO()
     book.save(output)
     return output.getvalue()
@@ -523,11 +541,13 @@ def print_document(rows, total, warnings, generated_at=None):
         body_parts.append('<tr>' + ''.join(
             f'<td class="{"fresh" if fresh_closing(row[column], generated_at) else "stale"}">{cell(row[column])}</td>'
             if column == 'Statement end date'
-            else f'<td' + (' style="color:#000000"' if column in ('Transaction Import Date', 'Balance Import Date') else '') + f'>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
+            else f'<td title="{escape(str(row[column]),quote=True)}"' + (' style="color:#000000"' if column in ('Transaction Import Date', 'Balance Import Date') else '') + f'>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
     body = ''.join(body_parts)
     from balance_report_sections import partition,totals
     amounts=totals(rows);parts={id(row):part for row,part in zip(rows,body_parts)}
-    sections=''.join('<h2>'+name+'</h2><table><thead><tr>'+headings+'</tr></thead><tbody>'+''.join(parts[id(row)] for row in group)+'</tbody></table><p class="total">'+name+' USD Total (PARTIAL TOTAL USD): '+cell(amounts[name])+'</p>' for name,group in partition(rows).items())
+    def total_row(label,value):
+        return '<tr class="total"><th colspan="9" style="text-align:right">'+label+'</th><td style="text-align:right">'+cell(value)+'</td><td colspan="6"></td></tr>'
+    sections=''.join('<h2>'+name+'</h2><table><thead><tr>'+headings+'</tr></thead><tbody>'+''.join(parts[id(row)] for row in group)+'</tbody><tfoot>'+total_row(name+' USD Total (PARTIAL TOTAL USD)',amounts[name])+(total_row('Grand Total',exact_sum(amounts.values())) if name=='Debts' else '')+'</tfoot></table>' for name,group in partition(rows).items())
     warning_html = ''.join(f'<li>{escape(warning)}</li>' for warning in warnings)
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Latest Import Balances</title>
@@ -557,7 +577,7 @@ button {{ margin: 14px 0; padding: 8px 14px; cursor: pointer; }}
 <p>{NOTE}</p>
 <p>Status: IMPORTED / INCOMPLETE / NO IMPORT. Closing dates 30 days old or less are green; older, unknown or future closing dates are red. Transaction Import Dates are always black and never use balance-only import/update timestamps.
 Legacy timezone uncertainty is preserved. Binary storage and decimal tails are unverified, displayed at currency precision and excluded from totals.
-Approved debt accounts are shown separately in their stored statement sign. Deposits and Debts have independent partial USD sums and are never netted. All other eligibility safeguards remain active.</p>
+Approved debt accounts are shown separately with their approved liability signs. Deposits and Debts have independent partial USD sums; Grand Total adds those signed USD sums once. Verified closing-only USD liabilities do not imply known opening balances or activity. All other eligibility safeguards remain active.</p>
 <p>Non-USD values use Setup &gt; Rates as of each statement end date: the latest configured rate at or before that month,
 or the earliest configured rate when no earlier month exists (existing application policy). Missing rates are excluded.</p>
 <button onclick="window.print()">Print / Save as PDF</button>
@@ -596,7 +616,9 @@ def align_balance_tables(document):
     def text_width(line):
         return sum(9.5 if c in 'WM' else 7.2 if c.isupper() else 5.6 if c.isdigit()
                    else 2.8 if c.isspace() else 5.2 for c in line)
-    widths=[max(32,int(max(text_width(line) for row in rows for line in row[index][0].split('\n'))+8)) for index in range(count)]
+    widths=[max(32,int(max(text_width(line) for row in rows for line in row[index][0].split('\n'))+6)) for index in range(count)]
+    caps=({0:145,1:145,2:95,10:88,11:145,12:110} if count==16 else {0:95,1:145,2:145} if count==9 else {})
+    widths=[min(width,caps.get(i,width)) for i,width in enumerate(widths)]
     columns='<colgroup>'+''.join('<col style="width:'+str(width)+'px">' for width in widths)+'</colgroup>'
     def opening(match):
         tag=match[0];style='table-layout:fixed;width:'+str(sum(widths))+'px'
@@ -610,6 +632,7 @@ def screen_document(document):
     """Screen-only density; the downloadable print document is untouched."""
     style='''<style>@media screen {
 body.balances-screen { margin:0; font-size:10px; line-height:1.1; background:#fff; }
+body.balances-screen td:nth-child(1),body.balances-screen td:nth-child(2),body.balances-screen td:nth-child(3),body.balances-screen td:nth-child(11),body.balances-screen td:nth-child(12),body.balances-screen td:nth-child(13) { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .balances-screen > h1, .balances-screen > p:not(.total),
 .balances-screen > button, .balances-screen > .warnings,
 .balances-screen > h2:last-of-type { display:none; }

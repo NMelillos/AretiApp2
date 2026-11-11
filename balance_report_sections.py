@@ -12,6 +12,9 @@ def section(row):
     return 'Deposits'
 
 def eligible(row,name,require_usd=True):
+    if (name=='Debts' and section(row)==name and row.get('Status')=='CLOSING ONLY'
+        and row.get('Verification')=='VERIFIED CLOSING METADATA ONLY' and row.get('Currency')=='USD'):
+        return not require_usd or optional_decimal(row.get('Closing balance converted to USD')) is not None
     if section(row)!=name or row.get('Status')!='IMPORTED':return False
     allowed=('SOURCE RECONCILIATION NOT VERIFIED','LIABILITY CONVENTION UNVERIFIED') if name=='Debts' else ('SOURCE RECONCILIATION NOT VERIFIED',)
     return row.get('Verification') in allowed and (not require_usd or optional_decimal(row.get('Closing balance converted to USD')) is not None)

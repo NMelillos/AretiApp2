@@ -38,7 +38,7 @@ def compact_model(rows,section_name='Deposits'):
     return visible,exact_sum(included),missing_rate,unverified
 
 
-def _section_html(rows, generated_at=None,section_name='Deposits'):
+def _section_html(rows, generated_at=None,section_name='Deposits',grand=None):
     generated_at=generated_at or datetime.now(ZoneInfo('Europe/Nicosia'))
     visible,total,_,_=compact_model(rows,section_name)
     def money(value):
@@ -53,20 +53,24 @@ def _section_html(rows, generated_at=None,section_name='Deposits'):
         values=(row['bank'],row['account'],row['account_number'],row['import_date'],row['balance_import_date'],row['closing_date'] or '—',row['currency'],money(row['closing']),money(row['usd']))
         for index,value in enumerate(values):
             style='padding:1px 2px;white-space:nowrap;'
+            if index in (0,1,2):style+='overflow:hidden;text-overflow:ellipsis;'
             if index==1:style+='max-width:210px;overflow:hidden;text-overflow:ellipsis;'
             if index in (3,4):style+='color:#000000;'
             if index==5:style+='color:'+('#146b36' if fresh_closing(value,generated_at) else '#b42318')+';'
             if index>=7:style+='text-align:right;'
             table+='<td title="'+escape(str(value),quote=True)+'" style="'+style+'">'+escape(str(value))+'</td>'
         table+='</tr>'
-    table+='</tbody><tfoot><tr><th colspan="8" style="padding:2px;text-align:right;white-space:nowrap">'+section_name.upper()+' USD TOTAL</th><th style="padding:2px;text-align:right;white-space:nowrap">'+format(total,',.2f')+'</th></tr></tfoot></table></div>'
+    table+='</tbody><tfoot><tr><th colspan="8" style="padding:2px;text-align:right;white-space:nowrap">'+section_name.upper()+' USD TOTAL</th><th style="padding:2px;text-align:right;white-space:nowrap">'+format(total,',.2f')+'</th></tr>'
+    if grand is not None:table+='<tr><th colspan="8" style="padding:2px;text-align:right">Grand Total</th><th style="padding:2px;text-align:right">'+format(grand,',.2f')+'</th></tr>'
+    table+='</tfoot></table></div>'
     return table
 
 
 def compact_html(rows,generated_at=None):
-    from balance_report_sections import partition
+    from balance_report_sections import partition,totals
     from latest_import_balances import align_balance_tables
-    return align_balance_tables(''.join('<h3>'+name+'</h3>'+_section_html(group,generated_at,name) for name,group in partition(rows).items()))
+    grand=exact_sum(totals(rows).values())
+    return align_balance_tables(''.join('<h3 style="margin:3px 0;font-size:11px;line-height:1.1">'+name+'</h3>'+_section_html(group,generated_at,name,grand if name=='Debts' else None) for name,group in partition(rows).items()))
 
 
 def render(st,db):
@@ -75,4 +79,4 @@ def render(st,db):
         st.error('Latest Import Balances is temporarily unavailable. Please try again.');return
     st.markdown('<div class="executive-section-title">5. Latest Import Balances</div>',unsafe_allow_html=True)
     st.markdown(compact_html(rows),unsafe_allow_html=True)
-    st.caption('INTERIM PARTIAL REPORT: current Setup accounts; separate Deposits and Debts USD sums using stored statement signs, never netted. Accounts with no approved FX rate and unverified balances remain excluded. Details: Latest Import Balances page.')
+    st.caption('INTERIM PARTIAL REPORT: current Setup accounts; separate signed Deposits and Debts USD sums. Grand Total adds those sums once. Accounts with no approved FX rate and unverified balances remain excluded. Details: Latest Import Balances page.')

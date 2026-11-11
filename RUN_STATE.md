@@ -334,3 +334,28 @@ and not rerun wholesale. Original failed evidence is retained privately.
 DEPLOYED:NO; DATA-REPAIRED:NONE; USER-ACCEPTED:pending controlled UAT.
 No production writes/imports/repairs, schema/Setup/account/history/env/config
 change, push or deployment. A separate deployment gate remains mandatory.
+
+## 11 November 2026 — balance report / Sapphire follow-up
+
+Verified live baseline98356258e779d99a5d8b87852060f34bad828dd8, deployment
+dep-dbpmbmmtlv9c73do7kk0. Areti confirms both current BOC cases, Citi, exact LOC
+Debts placement and report alignment PASS. Do not reopen. Memory awaits user use.
+New isolated branch codex/areti-balance-sapphire-20261111; see
+BALANCE_SAPPHIRE_20261111.md and QA_BALANCE_SAPPHIRE_20261111.json.
+IMPLEMENTED: narrower aligned text columns; source-verified closing-only LOC USD
+identity conversion without invented opening/activity; totals under USD and one
+signed Grand Total; exact Sapphire liability balance presentation and strict
+balance-only metadata support. Existing Sapphire transaction parsing is unchanged.
+Historical complete records remain a no-op; missing metadata needs explicit
+authenticated confirmation; conflicts and transaction changes still reject.
+TESTED: final focused10/10 and affected regression17/17 PASS;27 unique, no failures,
+errors or skips. Exact source, actual43-row read-only report replay, browser
+geometry, PostgreSQL18/fence/concurrency/idempotence/rollback/preservation PASS.
+Syntax197 PASS;54 other application files unchanged,37 existing definitions and
+unrelated date-provenance logic protected. No unchanged full legacy QA rerun.
+DEPLOYED:NO in this task; DATA-REPAIRED:NONE; USER-ACCEPTED:pending current UAT.
+No production financial writes/imports, history/date/account/classification/SPLIT
+rewrite, schema/Setup/environment/configuration change. Test DB dropped/cluster
+stopped. Do not deploy during12:20-14:00 Cyprus; observe Areti's finish confirmation.
+Graph remains NEW FEATURE REQUEST — NOT INCLUDED. Memory remains AWAITING REAL
+USER VERIFICATION — NO FURTHER CHANGE. No new design/feature work included.

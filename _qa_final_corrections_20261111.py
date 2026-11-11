@@ -43,6 +43,10 @@ class LinkageTests(unittest.TestCase):
   # UAT-004 deliberately corrects these two source-proven presentation cells.
   old['4147202716389513']['Credits / money in']='375.00'
   old['4147202716389513']['Debits / money out']='-515.14'
+  # UAT-016 removes this known display artifact; all financial cells stay exact.
+  for row in old.values():
+   if row['Applied FX']=='1.1200000000000001 (Setup rate at statement month)':
+    row['Applied FX']='1.12 (Setup rate at statement month)'
   for n in old:
    if n!=NUMBER:self.assertEqual(json.loads(json.dumps(new[n],default=str)),old[n],n)
   r=new[NUMBER];self.assertEqual(r['Closing balance'],Decimal('997.23'));self.assertEqual(r['Statement end date'],'2026-09-30')

@@ -1,5 +1,6 @@
 """Read-only account snapshot and standalone A4 landscape print document."""
 from datetime import date, datetime, timezone
+from decimal import localcontext, ROUND_HALF_EVEN
 from html import escape
 from zoneinfo import ZoneInfo
 import re
@@ -35,6 +36,18 @@ BANK_ALIASES = {'BOC':'BANKOFCYPRUS','CITIBANK':'CITI','CITIBANKCREDITCARD':'CIT
                 'CNB':'CITYNATIONALBANK','AMEX':'AMERICANEXPRESS',
                 'JPMORGANCHASE':'CHASE','SAPPHIRECHASE':'CHASE',
                 'FIFTHTHIRD(EXCOMERICA)':'COMERICA'}
+
+
+def _format_applied_fx(value):
+    """Display only: 15 significant digits, fixed notation, no padding zeros.
+
+    The original resolved Decimal remains untouched for USD calculations.
+    """
+    with localcontext() as context:
+        context.prec = 15
+        context.rounding = ROUND_HALF_EVEN
+        text = format(+value, 'f')
+    return text.rstrip('0').rstrip('.') if '.' in text else text
 
 
 def _report_bank_equal(left, right):
@@ -298,7 +311,7 @@ def snapshot(db):
                     rates, row['rate_type'], currency, row['period_end'])
                 if (parsed_rate := optional_decimal(rate)) is not None and parsed_rate > 0:
                     usd = db._usd_from_amount(closing, parsed_rate)
-                    applied_fx = f'{parsed_rate} (Setup rate at statement month)'
+                    applied_fx = f'{_format_applied_fx(parsed_rate)} (Setup rate at statement month)'
         if ambiguous:
             warnings.append(f"{row['account_number']}: AMBIGUOUS SETUP IDENTITY; aliases: {'; '.join(ambiguous)}. One account/currency row is shown using the latest available import; excluded from total until Setup ownership is resolved.")
         elif label_mismatch:

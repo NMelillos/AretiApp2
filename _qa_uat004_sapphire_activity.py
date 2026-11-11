@@ -44,7 +44,48 @@ class ActivityTests(old.SapphireTests):
   for key,value in [('bank','AMEX'),('bank','Citi'),('bank','Fifth Third (ex-Comerica)'),('balance_statement_hash','other'),('period_end','2026-09-27'),('opening_balance','388.55'),('statement_account_number','other')]:
    with self.subTest(key=key,value=value):self.assertEqual(sapphire.report_activity(dict(row,**{key:value}),D('-375'),D('507.96')),(D('-375'),D('507.96')))
 
+class GeneralActivityTests(old.SapphireTests):
+ def future(self,other_account=False):
+  # Synthetic future fixture derived from the supported layout, not an original.
+  from types import SimpleNamespace
+  raw=old.SOURCE.read_bytes()
+  with pdfplumber.open(BytesIO(raw)) as pdf:texts=[p.extract_text() or '' for p in pdf.pages]
+  number='4147202716381234' if other_account else '4147202716389513'
+  owner='OTHER SYNTHETIC OWNER' if other_account else 'TIMUR BEKMAMBETOV'
+  replacements={'09/28/26':'10/28/26','10/27/26':'11/27/26','4147202716389513':number,'9513':number[-4:],'TIMUR BEKMAMBETOV':owner}
+  for old_text,new_text in replacements.items():texts=[t.replace(old_text,new_text) for t in texts]
+  f=parsing.parse_pdf(BytesIO(raw));f['Date']=f['Date'].str.replace('2026-10-','2026-11-',regex=False)
+  content=('synthetic supported future Sapphire '+number).encode();digest=hashlib.sha256(content).hexdigest()
+  account=dict(account_name=owner,bank='Sapphire Chase',account_number=number,currency='USD',rate_type='USD/USD')
+  from contextlib import closing
+  with closing(db.get_connection()) as c:
+   c.execute('INSERT INTO account_list(account_name,bank,account_number,currency,rate_type) VALUES(?,?,?,?,?)',tuple(account.values()));c.commit()
+  mapped=db.apply_account_and_rates(f,account)
+  db.save_pending_transactions(mapped,'future.pdf',digest)
+  doc=__import__('unittest.mock',fromlist=['MagicMock']).MagicMock()
+  doc.__enter__.return_value.pages=[SimpleNamespace(extract_text=lambda t=t:t) for t in texts]
+  with patch.object(pdfplumber,'open',return_value=doc),patch.object(parsing,'parse_pdf',return_value=f):
+   proof=sapphire.source(content)
+   self.assertEqual((proof['period_start'],proof['period_end'],proof['account_number']),('2026-10-28','2026-11-27',number))
+   self.assertEqual(sapphire.record(db,content,'future.pdf','QA'),'recorded')
+   frozen=self.snapshot();self.assertEqual(sapphire.record(db,content,'future.pdf','QA'),'already recorded');self.assertEqual(frozen,self.snapshot())
+  before=self.snapshot();row=next(r for r in report.snapshot(db)[0] if r['Account number']==number)
+  self.assertEqual(tuple(row[k] for k in ('Opening balance','Credits / money in','Debits / money out','Closing balance')),(D('-387.55'),D('375'),D('-515.14'),D('-527.69')))
+  self.assertEqual(row['Opening balance']+row['Credits / money in']+row['Debits / money out'],row['Closing balance'])
+  self.assertEqual(self.snapshot(),before)
+  return digest
+
+ def test_future_supported_statement_same_account(self):self.future()
+ def test_future_supported_different_account(self):self.future(True)
+ def test_generic_proof_tamper_rejected(self):
+  digest=self.future(True)
+  from contextlib import closing
+  with closing(db.get_connection()) as c:
+   c.execute("UPDATE statement_balances SET notes='{}' WHERE statement_hash=?",(digest,));c.commit()
+  row=next(r for r in report.snapshot(db)[0] if r['Account number']=='4147202716381234')
+  self.assertEqual((row['Credits / money in'],row['Debits / money out']),(D('-375'),D('515.14')))
+
 if __name__=='__main__':
- suite=unittest.TestSuite(ActivityTests(n) for n in ActivityTests.__dict__ if n.startswith('test_'))
+ suite=unittest.TestSuite(cls(n) for cls in (ActivityTests,GeneralActivityTests) for n in cls.__dict__ if n.startswith('test_'))
  result=unittest.TextTestRunner(verbosity=2).run(suite)
  raise SystemExit(not result.wasSuccessful())

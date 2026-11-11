@@ -64,7 +64,51 @@ def prepare(db,content,filename):
  # Interest is source metadata, not a reconstructed/new transaction.
  if -balance['opening_balance']+incoming-outgoing-balance['source_interest']!=-balance['closing_balance']:raise ValueError('Signed Sapphire liability does not reconcile.')
  return frame,balance,matches[0]
+def validated_report_summary(row):
+ """Generic persisted Sapphire proof: full source summary plus matching audit.
+
+ No account, period, amount or document hash is predefined. Incomplete legacy
+ summaries are not completed by calculating an unexplained balance difference.
+ """
+ try:
+  number=compact(row.get('account_number'))
+  digest=str(row.get('balance_statement_hash') or '')
+  if (row.get('source')!=SOURCE or compact(row.get('bank'))!='SAPPHIRECHASE'
+      or compact(row.get('statement_bank'))!='SAPPHIRECHASE'
+      or not re.fullmatch(r'\d{16}',number)
+      or compact(row.get('statement_account_number'))!=number
+      or not compact(row.get('account_name'))
+      or compact(row.get('statement_account_name'))!=compact(row.get('account_name'))
+      or row.get('currency')!='USD' or row.get('statement_currency')!='USD'
+      or not re.fullmatch(r'[a-f0-9]{64}',digest)
+      or row.get('transaction_count')!=row.get('source_rows')
+      or row.get('transaction_count') is None):
+   return None
+  start=datetime.strptime(str(row['period_start']),'%Y-%m-%d').date()
+  end=datetime.strptime(str(row['period_end']),'%Y-%m-%d').date()
+  if start>end:return None
+  opening,credits,charges,closing=[Decimal(str(row[k])) for k in ('opening_balance','money_in','money_out','closing_balance')]
+  if any(not v.is_finite() or v!=v.quantize(Decimal('.01')) for v in (opening,credits,charges,closing)):
+   return None
+  if credits>0 or charges<0 or opening+credits+charges!=closing:return None
+  evidence=[]
+  for line in str(row.get('notes') or '').splitlines():
+   try:event=json.loads(line)
+   except (ValueError,TypeError):continue
+   if not isinstance(event,dict) or event.get('action')!='source-verified Sapphire balances only':continue
+   if event.get('source_hash')!=digest or event.get('transaction_changes')!=0:return None
+   interest=Decimal(str(event.get('source_interest')))
+   if not interest.is_finite() or interest!=interest.quantize(Decimal('.01')) or not 0<=interest<=charges:return None
+   evidence.append(interest)
+  if not evidence or len(set(evidence))!=1:return None
+  return -opening,-closing,-credits,-charges
+ except (KeyError,TypeError,ValueError,ArithmeticError):
+  return None
+
+
 def report_values(row,opening,closing):
+ verified=validated_report_summary(row)
+ if verified is not None:return verified[0],verified[1],True
  # The generic extractor stores the printed liability convention unchanged.
  # Only this exact approved account/current summary changes presentation.
  if (compact(row.get('bank'))=='SAPPHIRECHASE' and compact(row.get('account_name'))=='TIMURBEKMAMBETOV'
@@ -109,11 +153,13 @@ def record(db,content,filename,actor):
 
 
 def report_activity(row, credits, debits):
- """UAT-004: source-pinned October 9513 activity, presentation only.
+ """General validated activity; legacy October proof is compatibility only.
 
  Legacy metadata excludes the separately printed interest line. Do not derive
  missing charges from a balance difference or apply this proof to another PDF.
  """
+ verified=validated_report_summary(row)
+ if verified is not None:return verified[2],verified[3]
  if (not report_values(row, None, None)[2]
      or row.get('balance_statement_hash') != '9d11c8568b93a5557e94efcf621b35f2c0ccf23b6c10f862f4038225b23aa358'
      or str(row.get('period_start')) != '2026-09-28' or str(row.get('period_end')) != '2026-10-27'

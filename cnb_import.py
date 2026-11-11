@@ -28,6 +28,9 @@ def parse_cnb(pages, metadata):
             fail()
         return values[0]
 
+    if not is_cnb(text):
+        fail()
+
     number = unique(r"^Account #:\s*(\d+)\s*$", r"^Account #:")
     if unique(r"^Account number (\d+) Beginning balance", r"^Account number\b") != number:
         fail()
@@ -48,7 +51,14 @@ def parse_cnb(pages, metadata):
     closing_date, closing = unique(rf"^Ending balance \((\d+/\d+/\d+)\) \$({money})$")
     if datetime.strptime(opening_date, "%m/%d/%Y").date() not in (prior, start) or datetime.strptime(closing_date, "%m/%d/%Y").date() != end:
         fail()
-    credits = amount(unique(rf"^Total credits \+\$({money})$", r"^Total credits\b"))
+    no_activity = bool(re.search(r"^\*\* No activity this statement period \*\*$", text, re.MULTILINE))
+    if no_activity:
+        # This layout explicitly declares zero activity, rather than omitting rows.
+        credits = amount(unique(rf"(?:^| )Credits \+ \$({money})$"))
+        if credits != 0 or re.search(r"^Total (credits|debits)\b", text, re.MULTILINE):
+            fail()
+    else:
+        credits = amount(unique(rf"^Total credits \+\$({money})$", r"^Total credits\b"))
     # Zero-debit statements omit both debit breakdown and transaction sections.
     zero_debits = re.findall(rf"^Debits - \$({money})$", text, re.MULTILINE)
     if zero_debits:
@@ -66,7 +76,7 @@ def parse_cnb(pages, metadata):
     expected = {}
     for section, (label, sign, direction) in labels.items():
         found = re.findall(rf"{label}\s*\((\d+)\) {sign} ({money})$", text, re.MULTILINE)
-        if not found and zero_debits and direction == -1:
+        if not found and (no_activity or (zero_debits and direction == -1)):
             expected[section] = (0, Decimal(0))
         elif len(found) != 1:
             fail()
@@ -77,18 +87,23 @@ def parse_cnb(pages, metadata):
                 fail()
     for label, sign in ((r"Other credits", r"\+"),(r"Other debits", "-")):
         found = re.findall(rf"{label}\s*\((\d+)\) {sign} ({money})$", text, re.MULTILINE)
-        if not found and zero_debits and label == 'Other debits':
+        if not found and (no_activity or (zero_debits and label == 'Other debits')):
             continue
         if len(found) != 1 or int(found[0][0]) != 0 or amount(found[0][1]) != 0:
             fail()
     headers = {'DEPOSITS':'Date Description Reference Credits',
                'ELECTRONIC CREDITS':'Date Description Credits',
                'ELECTRONIC DEBITS':'Date Description Debits'}
+    if no_activity and (debits != 0 or any(count or total for count, total in expected.values())):
+        fail()
+    pending = None
     rows, state, seen, header = [], None, [], False
     counts = {key:0 for key in labels}
     sums = {key:Decimal(0) for key in labels}
     for line in lines:
         if line in labels or line == 'DAILY BALANCES':
+            if pending or no_activity:
+                fail()
             if state and not header:
                 fail()
             if line in seen:
@@ -117,7 +132,23 @@ def parse_cnb(pages, metadata):
                 fail()
             movements = [(m,d,'Check '+n,v) for n,m,d,v in matches]
         else:
+            if pending:
+                # Never consume a new record/header as continuation of a truncated row.
+                if re.match(r"\d{1,2}-\d{1,2}\b", line) or line in headers.values():
+                    fail()
+                if not line or not re.match(r"[A-Za-z0-9]", line):
+                    fail()
+                line = pending + ' ' + line
+                pending = None
             match = re.fullmatch(rf"(\d{{1,2}})-(\d{{1,2}}) (.+) ({money})",line)
+            if not match and state in ('ELECTRONIC CREDITS', 'ELECTRONIC DEBITS'):
+                partial = re.fullmatch(r"(\d{1,2})-(\d{1,2}) ([A-Za-z].+)", line)
+                if partial and not re.search(rf"{money}|[+$]", partial[3]):
+                    when = datetime(end.year, int(partial[1]), int(partial[2])).date()
+                    if not start <= when <= end:
+                        fail()
+                    pending = line
+                    continue
             if not match:
                 fail()
             movements = [match.groups()]
@@ -135,7 +166,7 @@ def parse_cnb(pages, metadata):
             counts[state] += 1
             sums[state] += magnitude
     present = [key for key in labels if expected[key][0] > 0]
-    if seen != present + ['DAILY BALANCES']:
+    if pending or seen != ([] if no_activity else present + ['DAILY BALANCES']):
         fail()
     if any((counts[key],sums[key]) != expected[key] for key in labels):
         fail()
@@ -144,6 +175,8 @@ def parse_cnb(pages, metadata):
             or amount(opening) + credits - debits != amount(closing)):
         fail()
     result = _frame_from_pdf_rows(rows)
+    if no_activity:
+        result["statement_currency"] = "USD"
     result["source_account_number"] = number
     result.attrs["cnb_account"] = number
     result.attrs["cnb_alias"] = alias

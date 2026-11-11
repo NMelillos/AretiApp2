@@ -14,11 +14,18 @@ from _qa_balance_sapphire_20261111 import fixture
 class FXDisplayTests(CompletionTests):
     def test_artifacts_precision_fixed_notation_and_immutable_input(self):
         cases = {
+            '1': '1',
+            '1.12': '1.12',
+            '0.9235': '0.9235',
+            '1.234567': '1.234567',
+            '1.23456789': '1.234568',
+            '0.00012345': '0.000123',
+            '123.456789': '123.456789',
             '1.1200000000000001': '1.12',
             '0.9235000000000001': '0.9235',
             '1.0': '1',
-            '1.23456789012345': '1.23456789012345',
-            '1E-20': '0.00000000000000000001',
+            '1.23456789012345': '1.234568',
+            '1E-20': '0',
             '1E+20': '100000000000000000000',
         }
         for raw, expected in cases.items():
@@ -37,7 +44,7 @@ class FXDisplayTests(CompletionTests):
         fixture()
         with closing(db.get_connection()) as connection:
             before_db = '\n'.join(connection.iterdump())
-        rate = Decimal('1.1200000000000001')
+        rate = Decimal('1.23456789')
         with patch.object(db, '_resolve_rate_for_values', return_value=('EUR/USD', rate)):
             with patch.object(report, '_format_applied_fx', side_effect=str):
                 before = report.snapshot(db)
@@ -50,7 +57,7 @@ class FXDisplayTests(CompletionTests):
         for old, new in zip(before[0], after[0]):
             for key in old:
                 if key == 'Applied FX' and old[key].startswith(str(rate)):
-                    self.assertEqual(new[key], '1.12 (Setup rate at statement month)')
+                    self.assertEqual(new[key], '1.234568 (Setup rate at statement month)')
                     changed += 1
                 else:
                     self.assertEqual(old[key], new[key], key)
@@ -62,13 +69,23 @@ class FXDisplayTests(CompletionTests):
         self.assertEqual(grand_total(before[0]), grand_total(after[0]))
         html = report.print_document(*after)
         for document in (html, report.screen_document(html)):
-            self.assertIn('1.12 (Setup rate at statement month)', document)
+            self.assertIn('1.234568 (Setup rate at statement month)', document)
             self.assertNotIn(str(rate), document)
         from openpyxl import load_workbook
         book = load_workbook(BytesIO(report.workbook_bytes(*after)))
         cells = [cell for sheet in book for row in sheet.iter_rows(values_only=True) for cell in row]
-        self.assertIn('1.12 (Setup rate at statement month)', cells)
+        self.assertIn('1.234568 (Setup rate at statement month)', cells)
         self.assertFalse(any(str(rate) in str(cell) for cell in cells))
+        prior_book = load_workbook(BytesIO(report.workbook_bytes(*before)))
+        for sheet in book:
+            if sheet.title not in ('Latest Import Balances', 'Deposits', 'Debts'):
+                continue
+            for row in sheet.iter_rows(min_row=2):
+                fx_cell = row[report.COLUMNS.index('Applied FX')]
+                prior_cell = prior_book[sheet.title][fx_cell.coordinate]
+                self.assertEqual(fx_cell.data_type, prior_cell.data_type)
+                if fx_cell.value and 'Setup rate' in str(fx_cell.value):
+                    self.assertEqual(fx_cell.data_type, 's')
         with closing(db.get_connection()) as connection:
             self.assertEqual('\n'.join(connection.iterdump()), before_db)
 

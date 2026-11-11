@@ -39,14 +39,13 @@ BANK_ALIASES = {'BOC':'BANKOFCYPRUS','CITIBANK':'CITI','CITIBANKCREDITCARD':'CIT
 
 
 def _format_applied_fx(value):
-    """Display only: 15 significant digits, fixed notation, no padding zeros.
+    """Display only: at most six decimal places, fixed notation, no padding zeros.
 
     The original resolved Decimal remains untouched for USD calculations.
     """
     with localcontext() as context:
-        context.prec = 15
         context.rounding = ROUND_HALF_EVEN
-        text = format(+value, 'f')
+        text = format(value, '.6f')
     return text.rstrip('0').rstrip('.') if '.' in text else text
 
 

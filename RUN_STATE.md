@@ -383,3 +383,34 @@ source-backed current Setup USD coverage or explicit scope exclusions are suppli
 No production writes/imports/repair, historical changes, schema/Setup/env/config
 changes or deployment. Respect12:20-14:00 Cyprus and Areti's finish confirmation.
 Memory awaits real user use; graph remains a separate unimplemented request.
+
+## 11 November 2026 — final bounded correction pass (partial, deployment held)
+
+Preserve fb4dadacbab7138a58fdf410d61f371eeb7651e3. New isolated branch
+codex/areti-final-corrections-20261111; see FINAL_CORRECTIONS_20261111.md.
+Exact October Natalia original reproduced the extraction failure and revealed
+two wallets in one PDF:115 completed EUR rows and7 completed USD rows, separately
+reconciled. Greek layout plus mixed-wallet source requires explicit safe wallet
+selection/import identity; no currency guessing, parser patch or import attempted.
+P0 BLOCKED. Source-only counts are not application import validation.
+
+Source-backed read-only Setup968 report linkage implemented: exact September
+original hash/metadata/eight movements/history plus unique currency/identity
+evidence; second currency/duplicate/source tampering/SPLIT rejects. Setup/history
+unchanged. Existing EUR997.23 now displays with existing FX USD1116.90 and genuine
+historical dates. Other42 rows identical; Deposits1706011.18 partial;
+Debts-789715.99 unchanged; four Eurasian source-required rows keep final Grand
+Total NOT AVAILABLE. Parent Sapphire/LOC/layout/totals/guards preserved.
+
+TESTED:43 distinct targeted/affected cases PASS (7new +36regression),0 final
+failures/errors/skips. Initial duplicate-fixture column-order failure retained;
+only corrected affected fixture rerun. Disposable PostgreSQL18 enforced-read-only
+report replay/ambiguity/rollback/fingerprint preservation PASS. DB dropped/owned
+cluster stopped. Syntax200 and diff/protection PASS;59 other application files
+unchanged, all existing tests unchanged. No full legacy QA rerun.
+
+DEPLOYED:NO; DATA-REPAIRED:NONE; USER-ACCEPTED:pending. No production connection,
+financial write/import, historical mutation, schema/Setup/env/config change.
+No push or Render action. Partial local candidate only; DO NOT DEPLOY while
+exact October Natalia upload remains blocked. Memory waits for user evidence;
+graph remains separate; Eurasian964/965/966/967 SOURCE DATA REQUIRED.

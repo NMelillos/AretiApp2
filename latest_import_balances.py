@@ -85,14 +85,17 @@ def snapshot(db):
     connection = db.get_connection()
     try:
         links = report_links(connection)
+        from bprojects_report_context import report_links as bprojects_links
+        currency_links = [(item[0], 'EUR') for item in links] + bprojects_links(connection)
     finally:
         connection.close()
     currency_sql = 'currency'
-    if links:
-        account_id = links[0][0]
+    if currency_links:
         # Only a database integer ID enters this expression. Keep the existing
         # SQL execution contract (including literal LIKE '%' expressions) intact.
-        currency_sql = "CASE WHEN id="+str(int(account_id))+" AND COALESCE(currency,'')='' THEN 'EUR' ELSE currency END"
+        currency_sql = "CASE " + ' '.join(
+            "WHEN id=" + str(int(account_id)) + " AND COALESCE(currency,'')='' THEN 'EUR'"
+            for account_id, _ in currency_links) + " ELSE currency END"
     query = f'''
         WITH accounts AS (
             SELECT id, account_name, bank, account_number, {currency_sql} AS currency, rate_type,

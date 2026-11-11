@@ -1,0 +1,23 @@
+{
+  "baseline": "fb4dadacbab7138a58fdf410d61f371eeb7651e3",
+  "new_distinct_tests": 7,
+  "affected_regression_tests": 36,
+  "final_distinct_passes": 43,
+  "final_failures": 0,
+  "final_errors": 0,
+  "final_skips": 0,
+  "initial_test_fixture_failure": "Duplicate-Setup fixture used implicit column order; explicit columns corrected; affected case rerun PASS; original evidence retained privately",
+  "postgresql_18": "PASS — disposable, enforced read-only replay, ambiguity rejection, rollback and fingerprint preservation",
+  "syntax_python_files": 200,
+  "diff_protection": "PASS",
+  "other_application_files_unchanged": 59,
+  "existing_tests_changed": false,
+  "production_connections": false,
+  "production_writes": false,
+  "deployment": false,
+  "natalia_october": "BLOCKED — exact original combines EUR and USD wallets; safe explicit wallet selection/import identity required",
+  "revolut_968": "IMPLEMENTED AND LOCALLY TESTED — source-bound report linkage; no Setup change",
+  "grand_total": "NOT AVAILABLE — four current Eurasian Setup rows remain source-required",
+  "full_legacy_suite_rerun": false,
+  "release_status": "PARTIALLY FIXED — DO NOT DEPLOY"
+}

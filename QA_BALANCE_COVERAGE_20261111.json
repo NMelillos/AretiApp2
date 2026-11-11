@@ -1,0 +1,66 @@
+{
+  "baseline": "f164e000fb0c7322b716b454b23e496c7a06e475",
+  "production_main_baseline": "98356258e779d99a5d8b87852060f34bad828dd8",
+  "branch": "codex/areti-balance-coverage-20261111",
+  "new_tests": 6,
+  "affected_existing_tests": 4,
+  "requirement_updated_test": 1,
+  "unique_passed": 11,
+  "unresolved_failures": 0,
+  "unresolved_errors": 0,
+  "skips": 0,
+  "original_fixture_error": "Duplicate test Setup seed correctly rejected; fixture reused same account, affected case alone rerun; original evidence retained",
+  "two_originals": [
+    {
+      "month": "September",
+      "rows": 9,
+      "summary_reconciled": true,
+      "legacy_noop": true
+    },
+    {
+      "month": "October",
+      "rows": 10,
+      "summary_reconciled": true,
+      "legacy_noop": true
+    }
+  ],
+  "coverage": {
+    "rows": 43,
+    "missing_current_setup_rows": 5,
+    "grand_total": null,
+    "native_usd_dates_rows_section_totals_unchanged": true
+  },
+  "final_numeric_grand_total": "BLOCKED — five current Setup rows lack eligible USD balances",
+  "postgres": {
+    "status": "PASS",
+    "postgresql": 18,
+    "writer_fence": true,
+    "transactions_unchanged": 9,
+    "history_dates_preserved": true,
+    "complete_legacy_noop": true,
+    "missing_balance_completion": true,
+    "rollback": true,
+    "concurrent_idempotence": true,
+    "reconciliation": true,
+    "liability_report": true,
+    "production_connections": false
+  },
+  "browser": "PASS — two aligned43-row views, final total withheld",
+  "syntax": 198,
+  "other_application_files_unchanged": 56,
+  "protected_definitions": 32,
+  "app_hashes": {
+    "balance_report_sections.py": "e8b3d0538d08246abf5ffacbaed67abe175ed479d8e24c53b11e201454d710bd",
+    "latest_balances_compact.py": "eaca4ffc0020accd04a5cab7f84d405241c5eaed146f11236944241124f0729c",
+    "latest_import_balances.py": "adb52640c1c617f5b83380d3b9faa9779c05180b15b08ada45d947381deb722c",
+    "sapphire_balance_metadata.py": "eb04b52aaf31f514d4ba3c5e8a1500d6a94fcd7e76df33c5f4fabc6a7f04a534"
+  },
+  "outdated_partial_grand_expectation_updated": true,
+  "production_writes": "NONE",
+  "historical_changes": "NONE",
+  "schema_environment_configuration_changes": "NONE",
+  "deployed": false,
+  "memory": "AWAITING REAL USER VERIFICATION — NO CHANGE",
+  "graph": "NEW FEATURE REQUEST — NOT PART OF CURRENT FIX",
+  "private_evidence": "Sibling qa-balance-coverage-20261111; originals/financial facts/snapshots excluded from Git"
+}

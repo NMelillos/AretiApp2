@@ -42,10 +42,14 @@ def source(content):
   sign,amount=found[0]
   if Decimal(amount.replace(',',''))*(-1 if sign=='-' else 1)!=expected:raise ValueError('Sapphire coupon/interest detail conflicts with its summary.')
  repeated_value(r'^New Balance:\s*([+-]?)\$(\d[\d,]*\.\d{2})\s*$',v['New Balance'])
- repeated_value(r'^TOTAL INTEREST FOR THIS PERIOD\s*([+-]?)\$(\d[\d,]*\.\d{2})\s*$',v['Interest Charged'])
+ interest_total=r'^TOTAL INTEREST FOR THIS PERIOD\s*([+-]?)\$(\d[\d,]*\.\d{2})\s*$'
+ if v['Interest Charged'] or re.search(interest_total,text,re.M):
+  repeated_value(interest_total,v['Interest Charged'])
+ elif re.search(r'^INTEREST CHARGED\s*$|^\d{2}/\d{2}[^\n]*INTEREST',text,re.M):
+  raise ValueError('Sapphire zero-interest summary conflicts with activity.')
  return dict(source=SOURCE,bank='Sapphire Chase',account_number=number,currency='USD',period_start=start,period_end=end,
              opening_balance=v['Previous Balance'],money_in=v['Payment, Credits'],money_out=charges+v['Interest Charged'],source_activity_out=charges,
-             closing_balance=v['New Balance'],source_interest=v['Interest Charged'],source_text=first)
+             closing_balance=v['New Balance'],source_interest=v['Interest Charged'],source_purchases=v['Purchases'],source_text=first)
 def prepare(db,content,filename):
  from parsing import parse_pdf
  balance=source(content);frame=parse_pdf(BytesIO(content))
@@ -88,7 +92,7 @@ def record(db,content,filename,actor):
    value=b[k] if k not in ('bank','account_name','account_number','currency') else a[k]
    if prior and prior[i] not in (None,''):
     actual_value=Decimal(str(prior[i])) if k.endswith('balance') or k in ('money_in','money_out') else str(prior[i])
-    if actual_value!=value and not (k=='money_out' and actual_value==b['source_activity_out']):raise ValueError('Existing Sapphire balance conflicts; no historical value overwritten.')
+    if actual_value!=value and not (k=='money_out' and actual_value in (b['source_activity_out'],b['source_purchases'])):raise ValueError('Existing Sapphire balance conflicts; no historical value overwritten.')
    else:changes[k]=value
   if prior and not changes:conn.rollback();return 'already recorded'
   now=datetime.now(timezone.utc).isoformat(timespec='seconds')

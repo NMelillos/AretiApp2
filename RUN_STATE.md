@@ -359,3 +359,27 @@ rewrite, schema/Setup/environment/configuration change. Test DB dropped/cluster
 stopped. Do not deploy during12:20-14:00 Cyprus; observe Areti's finish confirmation.
 Graph remains NEW FEATURE REQUEST — NOT INCLUDED. Memory remains AWAITING REAL
 USER VERIFICATION — NO FURTHER CHANGE. No new design/feature work included.
+
+## 11 November 2026 — final-total completeness clarification
+
+Preserve f164e000fb0c7322b716b454b23e496c7a06e475 unchanged. New isolated delta
+codex/areti-balance-coverage-20261111; see BALANCE_COVERAGE_20261111.md and
+QA_BALANCE_COVERAGE_20261111.json. Main/production baseline remains9835625.
+New explicit rule: do not present partial section sums as a final Grand Total.
+The actual43-row read-only snapshot has five NO IMPORT/unknown USD rows. UI/print/
+Excel now withhold final Grand Total until all current Setup rows are eligible;
+existing section sums, financial cells, FX, dates, sorting and row scope stay.
+The original September Sapphire attachment hash matches its historical statement.
+Independently verified9 stored/source rows, signed liability/fee reconciliation,
+strict zero-interest/absent-detail handling and source-proven legacy summary no-op.
+October original remains verified; no transaction parser or historical data change.
+TESTED:11 unique changed/affected cases PASS; PostgreSQL18/fence/rollback/concurrent
+idempotence/preservation PASS; browser aligned43-row withheld-total views PASS;
+syntax198 and diff/protection PASS;56 other application files unchanged. One old
+partial-grand expectation updated for the new requirement, no financial assertions
+weakened. Original fixture error and targeted rerun retained privately.
+DEPLOYED:NO; DATA-REPAIRED:NONE. Final numerical Grand Total remains BLOCKED until
+source-backed current Setup USD coverage or explicit scope exclusions are supplied.
+No production writes/imports/repair, historical changes, schema/Setup/env/config
+changes or deployment. Respect12:20-14:00 Cyprus and Areti's finish confirmation.
+Memory awaits real user use; graph remains a separate unimplemented request.

@@ -38,9 +38,11 @@ class ReportTests(unittest.TestCase):
   self.assertEqual(amounts['Debts'],Decimal(previous['Debts'])--Decimal(EXPECTED['loc_closing'])-2*Decimal(EXPECTED['closing']))
   (ROOT/'report-after-private.json').write_text(json.dumps({'rows':rows,'totals':amounts,'grand':sum(amounts.values()),'warnings':warnings},default=str,indent=2))
  def test_html_excel_total_column_and_one_signed_grand_total(self):
-  fixture();rows,total,warnings=report.snapshot(db);amounts=totals(rows);grand=sum(amounts.values())
+  fixture();rows,total,warnings=report.snapshot(db);amounts=totals(rows)
+  from balance_report_sections import grand_total
+  grand=grand_total(rows);self.assertIsNone(grand) # Five current Setup rows lack eligible USD coverage.
   full=report.print_document(rows,total,warnings);compact=compact_html(rows)
-  self.assertEqual(full.count('>Grand Total<'),1);self.assertIn(format(grand,',.2f'),full)
+  self.assertEqual(full.count('>Grand Total<'),1);self.assertIn('Grand Total withheld',full)
   self.assertIn('colspan="9" style="text-align:right">Debts USD Total',full)
   for html in (report.screen_document(full),compact):
    groups=re.findall(r'<colgroup>(.*?)</colgroup>',html);self.assertEqual(len(groups),2);self.assertEqual(groups[0],groups[1])
@@ -50,7 +52,7 @@ class ReportTests(unittest.TestCase):
   for name in ('Deposits','Debts'):
    row=next(r for r in book[name].iter_rows(values_only=True) if r[0]==name+' USD Total')
    self.assertEqual(Decimal(row[9]),amounts[name])
-  self.assertEqual(Decimal(book['USD Totals']['B4'].value),grand)
+  self.assertEqual(book['USD Totals']['B4'].value,'NOT AVAILABLE')
  def test_closing_only_proof_tamper_rejected_and_other_account_not_promoted(self):
   fixture()
   with closing(db.get_connection()) as c:

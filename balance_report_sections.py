@@ -26,3 +26,9 @@ def partition(rows):
 
 def totals(rows):
     return {name:exact_sum(optional_decimal(r['Closing balance converted to USD']) for r in group if eligible(r,name)) for name,group in partition(rows).items()}
+
+
+def grand_total(rows):
+    """Never present a partial sum as a final total for current Setup coverage."""
+    if not rows or any(not eligible(row,section(row)) for row in rows):return None
+    return exact_sum(totals(rows).values())

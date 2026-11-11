@@ -496,7 +496,7 @@ def workbook_bytes(rows, total, warnings, generated_at=None):
                 cell.data_type = 's'
     # Keep the established complete ledger and its columns intact; provide the
     # two requested sections as explicit worksheets from the identical rows.
-    from balance_report_sections import partition,totals,eligible
+    from balance_report_sections import partition,totals,eligible,grand_total
     from copy import copy
     amounts=totals(rows)
     for name,group in partition(rows).items():
@@ -518,7 +518,9 @@ def workbook_bytes(rows, total, warnings, generated_at=None):
             if not eligible(item,name):section_sheet.append(['Excluded',str(item['Account number'])+': '+str(item['Verification'])])
     summary=book.create_sheet('USD Totals');summary.append(['Section','Signed USD equivalent'])
     for name,value in amounts.items():summary.append([name,str(value)])
-    summary.append(['Grand Total',str(exact_sum(amounts.values()))])
+    grand=grand_total(rows)
+    summary.append(['Grand Total','NOT AVAILABLE' if grand is None else str(grand)])
+    if grand is None:summary.append(['Reason','Current Setup USD coverage is incomplete; partial section sums are not a final total.'])
     output = BytesIO()
     book.save(output)
     return output.getvalue()
@@ -543,11 +545,12 @@ def print_document(rows, total, warnings, generated_at=None):
             if column == 'Statement end date'
             else f'<td title="{escape(str(row[column]),quote=True)}"' + (' style="color:#000000"' if column in ('Transaction Import Date', 'Balance Import Date') else '') + f'>{cell(row[column], row["Currency"] if column in ("Opening balance", "Closing balance", "Credits / money in", "Debits / money out") else "USD")}</td>' for column in COLUMNS) + '</tr>')
     body = ''.join(body_parts)
-    from balance_report_sections import partition,totals
+    from balance_report_sections import partition,totals,grand_total
     amounts=totals(rows);parts={id(row):part for row,part in zip(rows,body_parts)}
     def total_row(label,value):
-        return '<tr class="total"><th colspan="9" style="text-align:right">'+label+'</th><td style="text-align:right">'+cell(value)+'</td><td colspan="6"></td></tr>'
-    sections=''.join('<h2>'+name+'</h2><table><thead><tr>'+headings+'</tr></thead><tbody>'+''.join(parts[id(row)] for row in group)+'</tbody><tfoot>'+total_row(name+' USD Total (PARTIAL TOTAL USD)',amounts[name])+(total_row('Grand Total',exact_sum(amounts.values())) if name=='Debts' else '')+'</tfoot></table>' for name,group in partition(rows).items())
+        return '<tr class="total"><th colspan="9" style="text-align:right">'+label+'</th><td style="text-align:right">'+('NOT AVAILABLE' if value is None else cell(value))+'</td><td colspan="6"></td></tr>'
+    grand=grand_total(rows)
+    sections=''.join('<h2>'+name+'</h2><table><thead><tr>'+headings+'</tr></thead><tbody>'+''.join(parts[id(row)] for row in group)+'</tbody><tfoot>'+total_row(name+' USD Total (PARTIAL TOTAL USD)',amounts[name])+(total_row('Grand Total',grand) if name=='Debts' else '')+('<tr><td colspan="16">Grand Total withheld: current Setup USD coverage is incomplete. Partial section sums are not a final total.</td></tr>' if name=='Debts' and grand is None else '')+'</tfoot></table>' for name,group in partition(rows).items())
     warning_html = ''.join(f'<li>{escape(warning)}</li>' for warning in warnings)
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Latest Import Balances</title>

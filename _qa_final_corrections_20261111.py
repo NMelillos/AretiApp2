@@ -40,6 +40,9 @@ class LinkageTests(unittest.TestCase):
   with patch.object(db,'get_connection',side_effect=readonly):rows,total,warnings=report.snapshot(db)
   self.assertEqual(before,self.frozen());self.assertEqual(len(rows),43)
   new={r['Account number']:r for r in rows}
+  # UAT-004 deliberately corrects these two source-proven presentation cells.
+  old['4147202716389513']['Credits / money in']='375.00'
+  old['4147202716389513']['Debits / money out']='-515.14'
   for n in old:
    if n!=NUMBER:self.assertEqual(json.loads(json.dumps(new[n],default=str)),old[n],n)
   r=new[NUMBER];self.assertEqual(r['Closing balance'],Decimal('997.23'));self.assertEqual(r['Statement end date'],'2026-09-30')

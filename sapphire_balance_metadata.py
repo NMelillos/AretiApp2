@@ -106,3 +106,27 @@ def record(db,content,filename,actor):
   conn.commit();return 'recorded'
  except Exception:conn.rollback();raise
  finally:conn.close()
+
+
+def report_activity(row, credits, debits):
+ """UAT-004: source-pinned October 9513 activity, presentation only.
+
+ Legacy metadata excludes the separately printed interest line. Do not derive
+ missing charges from a balance difference or apply this proof to another PDF.
+ """
+ if (not report_values(row, None, None)[2]
+     or row.get('balance_statement_hash') != '9d11c8568b93a5557e94efcf621b35f2c0ccf23b6c10f862f4038225b23aa358'
+     or str(row.get('period_start')) != '2026-09-28' or str(row.get('period_end')) != '2026-10-27'
+     or row.get('statement_bank') != row.get('bank')
+     or row.get('statement_account_name') != row.get('account_name')):
+  return credits,debits
+ try:
+  if (Decimal(str(row.get('opening_balance'))) != Decimal('387.55')
+      or Decimal(str(row.get('closing_balance'))) != Decimal('527.69')
+      or credits != Decimal('-375.00') or debits not in (Decimal('507.96'),Decimal('515.14'))):
+   return credits,debits
+ except (ValueError,ArithmeticError):
+  return credits,debits
+ # Exact original summary and interest-detail evidence, independently validated.
+ purchases,interest=Decimal('507.96'),Decimal('7.18')
+ return -credits,-(purchases+interest)

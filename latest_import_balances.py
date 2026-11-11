@@ -317,6 +317,10 @@ def snapshot(db):
             warnings.append(f"{row['account_number']}: card/liability USD equivalent retains the stored statement sign; " + ('included only in the separate Debts total, never netted against Deposits.' if is_debt else 'excluded from total pending an approved net-value convention.'))
         if usd is not None and not card_convention and not closing_only:
             eligible.append(usd)
+        credits = optional_decimal(row['money_in']) if imported else None
+        debits = optional_decimal(row['money_out']) if imported else None
+        from sapphire_balance_metadata import report_activity
+        credits, debits = report_activity(row, credits, debits)
         result.append(dict(zip(COLUMNS, (
             row.get('_display_number', row['account_number']) or '', '; '.join(ambiguous) if ambiguous else (str(row['account_name']) + '; source label: ' + str(row['statement_account_name']) if label_mismatch else row['account_name'] or ''), row.get('_display_bank', row['bank']) or '',
             row['_transaction_import_date'],
@@ -325,7 +329,7 @@ def snapshot(db):
             opening, closing,
             currency, usd if usd is not None else ('NOT AVAILABLE' if imported else ''),
             'AMBIGUOUS SETUP IDENTITY' if ambiguous else ('CLOSING ONLY' if closing_precision else 'IMPORTED' if complete else 'INCOMPLETE') if imported else 'NO IMPORT',
-            verification, applied_fx, optional_decimal(row['money_in']) if imported else None, optional_decimal(row['money_out']) if imported else None,
+            verification, applied_fx, credits, debits,
             balance_date,
         ))))
         result[-1]['_balance_import_order'] = cyprus_time(row['imported_at']) if imported else ''

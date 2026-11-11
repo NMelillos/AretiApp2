@@ -129,6 +129,10 @@ def render_controls(st,content,filename):
     if st.session_state.get('balance_amex_gate'):
         from amex_balance_metadata import render as render_amex
         return render_amex(st,content,filename)
+    from safra_balance_only import recognized as is_safra, render as render_safra
+    if is_safra(content):
+        import db
+        return render_safra(st,db,content,filename)
     if st.session_state.get('upload_balance_hash')!=digest:
         st.session_state['upload_balance_hash']=digest
         st.session_state.pop('upload_balance_preview',None);st.session_state.pop('upload_balance_result',None)

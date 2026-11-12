@@ -650,7 +650,7 @@ def align_balance_tables(document):
     return re.sub(r'<table\b[^>]*>',opening,document)
 
 
-def screen_document(document):
+def screen_document(document, rows=None):
     """Screen-only density; the downloadable print document is untouched."""
     style='''<style>@media screen {
 body.balances-screen { margin:0; font-size:10px; line-height:1.1; background:#fff; }
@@ -684,6 +684,20 @@ body.balances-screen td:nth-child(1),body.balances-screen td:nth-child(2),body.b
     summary=''
     if grand:
         summary='<div class="grand-summary">Grand Total: '+grand[1]+(' — current Setup USD coverage is incomplete.' if grand[1]=='NOT AVAILABLE' else ' USD')+'</div>'
+    if rows is not None:
+        from balance_report_sections import totals, eligible, section
+        excluded=[row for row in rows if not eligible(row,section(row))]
+        missing=sum(row.get('Status')=='NO IMPORT' for row in excluded)
+        other=len(excluded)-missing
+        amounts=totals(rows)
+        available=exact_sum(amounts.values()) if len(excluded)<len(rows) else None
+        value='$'+format(available,',.2f') if available is not None else 'NOT AVAILABLE'
+        label='Grand Total (available balances only)'
+        note=f'Excludes {missing} accounts with no current imported balance.'
+        if other:note+=f' Also excludes {other} accounts without eligible USD balances.'
+        summary='<div class="grand-summary">'+label+': '+value+'<br><span style="font-weight:normal">'+note+'</span></div>'
+        document=re.sub(r'>Grand Total</th><td([^>]*)>.*?</td>',lambda match:'>'+label+'</th><td'+match[1]+'>'+value+'</td>',document)
+        document=re.sub(r'<tr><td colspan="16">Grand Total withheld:.*?</td></tr>','',document)
     def heading(match):
         words=match[1].split(' ');split=(len(words)+1)//2
         return '<th>'+' '.join(words[:split])+('<br>'+' '.join(words[split:]) if len(words)>1 else '')+'</th>'
@@ -743,4 +757,4 @@ def render(st):
     st.download_button('Download balances workbook', workbook_bytes(rows,total,warnings),
                        file_name='latest_import_balances.xlsx',
                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    components.html(screen_document(document), height=min(650,max(110,100+16*len(rows))), scrolling=True)
+    components.html(screen_document(document, rows), height=min(650,max(110,100+16*len(rows))), scrolling=True)

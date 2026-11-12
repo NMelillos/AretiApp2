@@ -654,7 +654,7 @@ def screen_document(document):
     """Screen-only density; the downloadable print document is untouched."""
     style='''<style>@media screen {
 body.balances-screen { margin:0; font-size:10px; line-height:1.1; background:#fff; }
-body.balances-screen td:nth-child(1),body.balances-screen td:nth-child(2),body.balances-screen td:nth-child(3),body.balances-screen td:nth-child(11),body.balances-screen td:nth-child(12),body.balances-screen td:nth-child(13) { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+body.balances-screen td:nth-child(1),body.balances-screen td:nth-child(2),body.balances-screen td:nth-child(3),body.balances-screen td:nth-child(12),body.balances-screen td:nth-child(13),body.balances-screen td:nth-child(14) { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .balances-screen > h1, .balances-screen > p:not(.total),
 .balances-screen > button, .balances-screen > .warnings,
 .balances-screen > h2:last-of-type { display:none; }
@@ -664,11 +664,60 @@ body.balances-screen td:nth-child(1),body.balances-screen td:nth-child(2),body.b
 .balances-screen th, .balances-screen td { padding:1px 2px; }
 .balances-screen h2 { margin:3px 0 1px; font-size:12px; }
 .balances-screen .total { margin:2px 0; padding-top:2px; font-size:11px; }
+.balances-screen td { text-align:left; }
+.balances-screen td:nth-child(8), .balances-screen td:nth-child(9), .balances-screen td:nth-child(11), .balances-screen td:nth-child(15), .balances-screen td:nth-child(16) { text-align:right; }
+.balances-screen .grand-summary { position:sticky;left:0;top:0;z-index:1;background:#fff;width:fit-content;max-width:100vw;padding:2px 0;font-weight:bold; }
+.balances-screen tfoot td { overflow:visible !important;text-overflow:clip !important; }
 }</style>'''
     # Header wrapping must not depend on the width of an unbroken account/date
     # value below it. This screen-only copy retains every cell and download.
-    document=re.sub(r'<th>([^<]+)</th>',lambda match:'<th>'+match[1].replace(' ','<br>',1)+'</th>',document)
-    return align_balance_tables(document.replace('</head>',style+'</head>',1).replace('<body>','<body class="balances-screen">',1))
+    def reorder(match):
+        cells=re.findall(r'<t[hd]\b[^>]*>.*?</t[hd]>',match[1],re.DOTALL)
+        if len(cells)!=16 or any('colspan=' in cell for cell in cells):return match[0]
+        cells.insert(4,cells.pop(15))
+        return '<tr>'+''.join(cells)+'</tr>'
+    # Screen column move only: retain exact existing values, dates and exports.
+    document=re.sub(r'<tr>(.*?)</tr>',reorder,document,flags=re.DOTALL)
+    document=document.replace('<th>Balance Import Date</th>','<th>Balances Import Date</th>')
+    document=document.replace('colspan="9" style="text-align:right"','colspan="10" style="text-align:right"').replace('<td colspan="6"></td>','<td colspan="5"></td>')
+    grand=re.search(r'>Grand Total</th><td[^>]*>(.*?)</td>',document)
+    summary=''
+    if grand:
+        summary='<div class="grand-summary">Grand Total: '+grand[1]+(' — current Setup USD coverage is incomplete.' if grand[1]=='NOT AVAILABLE' else ' USD')+'</div>'
+    def heading(match):
+        words=match[1].split(' ');split=(len(words)+1)//2
+        return '<th>'+' '.join(words[:split])+('<br>'+' '.join(words[split:]) if len(words)>1 else '')+'</th>'
+    document=re.sub(r'<th>([^<]+)</th>',heading,document)
+    document=align_balance_tables(document.replace('</head>',style+'</head>',1).replace('<body>','<body class="balances-screen">'+summary,1))
+    # Use the actual browser font, not character-count estimates. Both sections
+    # receive the same widths; financial/date cells are never capped or clipped.
+    sizing='''<script>
+(()=>{
+const tables=[...document.querySelectorAll('table')];
+const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
+if(!ctx||tables.length!==2)return;
+const widths=Array(16).fill(0),caps={0:145,1:145,2:95,11:88,12:145,13:110};
+for(const table of tables)for(const row of [...table.tHead.rows,...table.tBodies[0].rows]){
+ if(row.cells.length!==16)continue;
+ [...row.cells].forEach((cell,i)=>{
+  const css=getComputedStyle(cell);ctx.font=css.fontWeight+' '+css.fontSize+' '+css.fontFamily;
+  const width=Math.max(...cell.innerText.split('\\n').map(s=>ctx.measureText(s).width))+parseFloat(css.paddingLeft)+parseFloat(css.paddingRight)+2;
+  widths[i]=Math.max(widths[i],Math.min(width,caps[i]||Infinity));
+ });
+}
+for(const table of tables)for(const row of table.tFoot.rows){
+ if(row.cells.length!==3)continue;
+ const cell=row.cells[1],css=getComputedStyle(cell);
+ ctx.font=css.fontWeight+' '+css.fontSize+' '+css.fontFamily;
+ widths[10]=Math.max(widths[10],ctx.measureText(cell.innerText).width+parseFloat(css.paddingLeft)+parseFloat(css.paddingRight)+2);
+}
+for(const table of tables){
+ [...table.querySelectorAll('col')].forEach((col,i)=>col.style.width=Math.ceil(widths[i])+'px');
+ table.style.width=widths.reduce((sum,w)=>sum+Math.ceil(w),0)+'px';
+}
+})();
+</script>'''
+    return document.replace('</body>',sizing+'</body>',1)
 
 
 def render(st):

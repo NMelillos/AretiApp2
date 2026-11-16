@@ -45,9 +45,9 @@ def parse(pages):
     rows=[];observed={k:[] for k in sections};section=None
     for raw in text.splitlines():
         line=re.sub(r'\s+',' ',raw).strip()
-        header=re.fullmatch(rf'(Checks|Withdrawals /Debits|Deposits /Credits) (\d+) (?:checks|items|item) totaling \$({money})',line)
+        header=re.fullmatch(rf'(Checks?|Withdrawals /Debits|Deposits /Credits) (\d+) (?:checks?|items|item) totaling \$({money})',line)
         if header:
-            section=header[1]
+            section='Checks' if header[1]=='Check' else header[1]
             if observed[section] or expected[section]!=(int(header[2]),amount(header[3])):fail()
             continue
         if line.startswith('DailyBalanceSummary'):section=None;continue

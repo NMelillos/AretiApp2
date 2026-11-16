@@ -5500,7 +5500,7 @@ if page == "Import":
                 classified = classify_statement_rows(parsed, get_memory())
                 if "safra_sections" in parsed.attrs:
                     classified.attrs["safra_sections"] = parsed.attrs["safra_sections"]
-                if classified.empty and ("safra_sections" in parsed.attrs or balance_info.get('source') == 'BOC bank columns'):
+                if classified.empty and ("safra_sections" in parsed.attrs or parsed.attrs.get('cnb_account') or balance_info.get('source') == 'BOC bank columns'):
                     classified = classified.reindex(columns=list(dict.fromkeys([
                         *classified.columns, "match_type", "suggested_category", "suggested_subcategory",
                     ])))

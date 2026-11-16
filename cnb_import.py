@@ -70,6 +70,7 @@ def parse_cnb(pages, metadata):
     labels = {
         "DEPOSITS": (r"Credits Deposits", r"\+", 1),
         "ELECTRONIC CREDITS": (r"Electronic cr", r"\+", 1),
+        "OTHER CREDITS": (r"Other credits", r"\+", 1),
         "CHECKS PAID": (r"Debits Checks paid", "-", -1),
         "ELECTRONIC DEBITS": (r"Electronic db", "-", -1),
     }
@@ -85,13 +86,14 @@ def parse_cnb(pages, metadata):
             expected[section] = (int(count), amount(total))
             if (int(count) == 0) != (amount(total) == 0):
                 fail()
-    for label, sign in ((r"Other credits", r"\+"),(r"Other debits", "-")):
+    for label, sign in ((r"Other debits", "-"),):
         found = re.findall(rf"{label}\s*\((\d+)\) {sign} ({money})$", text, re.MULTILINE)
         if not found and (no_activity or (zero_debits and label == 'Other debits')):
             continue
         if len(found) != 1 or int(found[0][0]) != 0 or amount(found[0][1]) != 0:
             fail()
     headers = {'DEPOSITS':'Date Description Reference Credits',
+               'OTHER CREDITS':'Date Description Reference Credits',
                'ELECTRONIC CREDITS':'Date Description Credits',
                'ELECTRONIC DEBITS':'Date Description Debits'}
     if no_activity and (debits != 0 or any(count or total for count, total in expected.values())):
@@ -100,6 +102,20 @@ def parse_cnb(pages, metadata):
     rows, state, seen, header = [], None, [], False
     counts = {key:0 for key in labels}
     sums = {key:Decimal(0) for key in labels}
+    # A daily-balance continuation page may repeat its owner/page and dated
+    # account header. Remove only that explicit boundary, validating identity.
+    for page in pages[1:]:
+        page_lines = [re.sub(r"\s+", " ", line).strip() for line in page.splitlines()]
+        if (len(page_lines) >= 3 and page_lines[2] == 'DAILY BALANCES'
+                and re.fullmatch(r".+ Page \d+", page_lines[0])):
+            continuation = re.fullmatch(r"([A-Za-z]+ \d{1,2}, \d{4}) Account #: (\d+)", page_lines[1])
+            if (not continuation or continuation[2] != number
+                    or datetime.strptime(continuation[1], "%B %d, %Y").date() != end):
+                fail()
+            boundary = lines.index('DAILY BALANCES')
+            if lines[boundary-2:boundary] != page_lines[:2]:
+                fail()
+            del lines[boundary-2:boundary]
     for line in lines:
         if line in labels or line == 'DAILY BALANCES':
             if pending or no_activity:

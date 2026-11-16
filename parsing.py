@@ -1149,9 +1149,10 @@ def extract_statement_balance(uploaded_file, file_name=""):
     with pdfplumber.open(uploaded_file) as pdf:
         pages = [page.extract_text() or "" for page in pdf.pages]
         text = "\n".join(pages)
-        from fifth_third_import import recognized, parse as parse_fifth
-        if recognized(text):
-            return parse_fifth(pages).attrs['statement_balance']
+        from fifth_third_scanned import parse_document
+        fifth = parse_document(pdf, pages)
+        if fifth is not None:
+            return fifth.attrs['statement_balance']
         if "Revolut Bank UAB" in text and "Выписка со счета" in text:
             from revolut_localized import parse
             return parse(pages).attrs["statement_balance"]
@@ -1592,9 +1593,10 @@ def parse_pdf(uploaded_file):
                 text = "\n".join(pages)
                 text_upper = text.upper()
                 text_compact = re.sub(r"[^A-Z0-9]", "", text_upper)
-                from fifth_third_import import recognized, parse as parse_fifth
-                if recognized(text):
-                    return parse_fifth(pages)
+                from fifth_third_scanned import parse_document
+                fifth = parse_document(pdf, pages)
+                if fifth is not None:
+                    return fifth
                 if is_cnb(text):
                     try:
                         return parse_cnb(pages, pdf.metadata)

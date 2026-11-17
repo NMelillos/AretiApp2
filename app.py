@@ -5454,7 +5454,7 @@ if page == "Import":
                 parsed = parse_statement(file_bytes, uploaded_statement.name)
                 balance_info = {}
                 selected_account = {}
-                if "safra_sections" not in parsed.attrs:
+                if "safra_sections" not in parsed.attrs and "revolut_sections" not in parsed.attrs:
                     balance_info = parsed.attrs.get("statement_balance") or parse_statement_balance(file_bytes, uploaded_statement.name)
                     labels, lookup = account_options(accounts)
                     default_account_index = guess_account_index(file_bytes, uploaded_statement.name, accounts, labels, balance_info)
@@ -5498,6 +5498,9 @@ if page == "Import":
                     validate_revolut(parsed, balance_info, selected_account)
                 parsed = flag_duplicates(parsed)
                 classified = classify_statement_rows(parsed, get_memory())
+                if 'revolut_sections' in parsed.attrs:
+                    for key in ('revolut_sections', 'revolut_document_hash'):
+                        classified.attrs[key] = parsed.attrs[key]
                 if "safra_sections" in parsed.attrs:
                     classified.attrs["safra_sections"] = parsed.attrs["safra_sections"]
                 if classified.empty and ("safra_sections" in parsed.attrs or parsed.attrs.get('cnb_account') or balance_info.get('source') == 'BOC bank columns'):
@@ -5593,7 +5596,10 @@ if page == "Import":
                             "Check that the matching exchange rate exists in Setup > Rates."
                         )
 
-            if "safra_sections" in classified.attrs:
+            if "revolut_sections" in classified.attrs:
+                from revolut_sections import preview_sections
+                st.dataframe(preview_sections(classified), use_container_width=True, hide_index=True)
+            elif "safra_sections" in classified.attrs:
                 from safra_history import preview_sections
                 st.dataframe(preview_sections(classified, accounts), use_container_width=True, hide_index=True)
             elif balance_has_values(balance_info):

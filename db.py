@@ -2198,6 +2198,10 @@ def _safra_page_accounts(df, accounts):
 
 
 def apply_account_and_rates(df, account):
+    if df.attrs.get('revolut_sections'):
+        from revolut_sections import apply_accounts
+        import sys
+        return apply_accounts(sys.modules[__name__], df)
     out = df.copy()
     account = account or {}
 
@@ -2268,6 +2272,12 @@ def build_statement_hash(file_bytes):
 
 
 def save_pending_transactions(df, statement_name, statement_hash, *, _connection=None):
+    if df.attrs.get('revolut_sections'):
+        if _connection is not None:
+            raise ValueError('Revolut wallets require their own atomic document boundary.')
+        from revolut_sections import save_sections
+        import sys
+        return save_sections(sys.modules[__name__], df, statement_name, statement_hash)
     from datetime import timezone
     from safra_duplicate_preview import is_existing_safra
     if is_existing_safra(statement_hash):

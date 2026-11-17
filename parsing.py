@@ -1,4 +1,5 @@
 from fifth_third_import import FifthThirdParseError
+from revolut_greek import GreekRevolutError, recognized as is_greek_revolut
 import re
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
@@ -1149,6 +1150,8 @@ def extract_statement_balance(uploaded_file, file_name=""):
     with pdfplumber.open(uploaded_file) as pdf:
         pages = [page.extract_text() or "" for page in pdf.pages]
         text = "\n".join(pages)
+        if is_greek_revolut(text):
+            raise GreekRevolutError('Greek Revolut balances require the independent wallet import preview.')
         from fifth_third_scanned import parse_document
         fifth = parse_document(pdf, pages)
         if fifth is not None:
@@ -1593,6 +1596,17 @@ def parse_pdf(uploaded_file):
                 text = "\n".join(pages)
                 text_upper = text.upper()
                 text_compact = re.sub(r"[^A-Z0-9]", "", text_upper)
+                if is_greek_revolut(text):
+                    from hashlib import sha256
+                    from revolut_sections import from_document
+                    try:
+                        uploaded_file.seek(0)
+                        fingerprint = sha256(uploaded_file.read()).hexdigest()
+                        return from_document(pdf.pages, fingerprint)
+                    except GreekRevolutError:
+                        raise
+                    except Exception as exc:
+                        raise GreekRevolutError('Greek Revolut document could not be validated; no rows imported.') from exc
                 from fifth_third_scanned import parse_document
                 fifth = parse_document(pdf, pages)
                 if fifth is not None:
@@ -1678,7 +1692,7 @@ def parse_pdf(uploaded_file):
                     diagnostics["completed_rows"] = len(frame)
                     frame.attrs["parse_diagnostics"] = diagnostics
                 return frame
-        except (FifthThirdParseError, RevolutBusinessParseError, SafraParseError, CNBParseError, ComericaChecksError, BOCParseError, CitiSourceError):
+        except (GreekRevolutError, FifthThirdParseError, RevolutBusinessParseError, SafraParseError, CNBParseError, ComericaChecksError, BOCParseError, CitiSourceError):
             raise
         except Exception:
             rows = []

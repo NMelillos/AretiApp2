@@ -10,6 +10,8 @@ def commit_statement(db, frame, name, fingerprint, balance, account):
     """Persist a validated statement, history and balance in one transaction."""
     if not str(fingerprint).strip() or not str(name).strip():
         raise ValueError('Statement identity is required.')
+    if frame.attrs.get('revolut_sections'):
+        return db.save_pending_transactions(frame, name, fingerprint)
     if db.statement_already_imported(fingerprint):
         return 0, True, 0
     if frame.attrs.get('safra_sections'):

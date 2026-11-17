@@ -1061,8 +1061,9 @@ def parse_statement_balance(file_bytes, file_name):
 
 def classify_statement_rows(parsed, memory):
     from classification import classify_transactions
+    from db import get_categories as category_taxonomy
 
-    return classify_transactions(parsed, memory)
+    return classify_transactions(parsed, memory, taxonomy=category_taxonomy(include_subcategories=True))
 
 
 def display_money(value, currency=""):
@@ -5493,6 +5494,14 @@ if page == "Import":
                     from revolut_account_context import effective_account
                     selected_account = effective_account(parsed, balance_info, selected_account)
                 parsed = apply_account_and_rates(parsed, selected_account)
+                if balance_info.get('source') == 'Citi validated cardholder summary':
+                    from citi_card_summary import validate as validate_citi_card
+                    from db import get_connection
+                    conn = get_connection()
+                    try:
+                        validate_citi_card(parsed, balance_info, selected_account, conn)
+                    finally:
+                        conn.close()
                 if balance_info.get("source") == "Russian Revolut Business":
                     from revolut_localized import validate_preview as validate_revolut
                     validate_revolut(parsed, balance_info, selected_account)

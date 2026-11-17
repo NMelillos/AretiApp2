@@ -69,6 +69,9 @@ def commit_statement(db, frame, name, fingerprint, balance, account):
                 raise ValueError('Invalid transaction amount.')
     conn = db.get_connection()
     try:
+        if balance.get('source') == 'Citi validated cardholder summary':
+            from citi_card_summary import validate
+            validate(frame, balance, account, conn)
         result = db.save_pending_transactions(frame, name, fingerprint, _connection=conn)
         inserted, duplicate, skipped = result
         if duplicate:

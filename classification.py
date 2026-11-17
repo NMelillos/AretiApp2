@@ -386,8 +386,28 @@ def _specific_history_hint(description, indexes):
     return references[best]
 
 
-def classify_transactions(df, memory_df):
-    categories = get_categories()
+def classify_transactions(df, memory_df, taxonomy=None):
+    from utils import normalize_description, simplify_merchant, extract_beneficiary, infer_transaction_type
+    from classification_evidence import history_index, history_match, taxonomy_index, taxonomy_match
+    # Some validated source frames (notably Greek wallets) carry source fields
+    # only. Derive classifier inputs on a copy; never change source movements.
+    df = df.copy()
+    for field in ('normalized_description', 'beneficiary', 'transaction_type'):
+        if field not in df:
+            df[field] = ''
+    for index, row in df.iterrows():
+        description = row.get('Description', row.get('original_description', ''))
+        if not str(row['normalized_description'] or '').strip():
+            df.at[index, 'normalized_description'] = simplify_merchant(normalize_description(description))
+        if not str(row['beneficiary'] or '').strip():
+            df.at[index, 'beneficiary'] = extract_beneficiary(description)
+        if not str(row['transaction_type'] or '').strip():
+            df.at[index, 'transaction_type'] = infer_transaction_type(description, row.get('Amount', 0))
+    if taxonomy is None:
+        taxonomy = pd.DataFrame({'category': get_categories(), 'subcategory': ''})
+    categories = taxonomy.category.dropna().unique().tolist()
+    token_index = history_index(memory_df, categories)
+    label_index = taxonomy_index(taxonomy)
     category_lookup = _category_lookup(categories)
     (
         exact_index,
@@ -413,14 +433,6 @@ def classify_transactions(df, memory_df):
         transaction_type = row.get("transaction_type", "")
         amount = row.get("Amount", row.get("amount", 0))
 
-        # Explicit current business instruction, using an existing learned pair;
-        # this suggests only, never edits historical categories or creates one.
-        if (re.search(r'\bANDREAS\s+POUPAS\b',str(normalized).upper())
-                and driver_learned and active_category('Transportation')):
-            suggestions.append(dict(suggested_category='Transportation',suggested_subcategory='Driver',
-                match_type='suggestion',matched_reference='Existing Driver history; Areti-approved beneficiary rule',confidence=0.85))
-            continue
-
         exact = exact_index.get(str(normalized), None)
         exact_category = active_category(exact.get("category", "")) if exact else ""
         if exact and exact_category:
@@ -431,6 +443,13 @@ def classify_transactions(df, memory_df):
                 "matched_reference": exact.get("original_description") or exact["normalized_description"],
                 "confidence": 1.0,
             })
+            continue
+
+        # Preserve the approved beneficiary suggestion, below exact history.
+        if (re.search(r'\bANDREAS\s+POUPAS\b',str(normalized).upper())
+                and driver_learned and active_category('Transportation')):
+            suggestions.append(dict(suggested_category='Transportation',suggested_subcategory='Driver',
+                match_type='suggestion',matched_reference='Existing Driver history; Areti-approved beneficiary rule',confidence=0.85))
             continue
 
         merchant_signature = _merchant_signature(normalized)
@@ -454,8 +473,24 @@ def classify_transactions(df, memory_df):
             })
             continue
 
-        merchant = best_by_signature.get(merchant_signature) if merchant_signature else None
+        token_match, token_ambiguous = history_match(normalized, token_index)
+        label_match, label_ambiguous = taxonomy_match(normalized, label_index)
+        evidence = token_match or ((label_match, 'Existing Setup taxonomy') if label_match else None)
+        if evidence:
+            pair, reference = evidence
+            suggestions.append(dict(suggested_category=pair[0], suggested_subcategory=pair[1],
+                match_type='suggestion', matched_reference=reference, confidence=0.90 if token_match else 0.85))
+            continue
         specific = _specific_history_hint(normalized,hint_indexes)
+        # Preserve the already-approved named-merchant and specific historical
+        # label contracts; ambiguous new token evidence cannot select a pair.
+        if label_ambiguous or (token_ambiguous and not specific
+                              and merchant_signature not in MERCHANT_BRAND_SIGNATURES):
+            suggestions.append(dict(suggested_category=_fallback_category(categories), suggested_subcategory='',
+                match_type='new', matched_reference='Ambiguous category evidence; review required', confidence=0.0))
+            continue
+
+        merchant = best_by_signature.get(merchant_signature) if merchant_signature else None
         if specific and active_category(specific.get('category')):
             suggestions.append(dict(suggested_category=active_category(specific['category']),
                 suggested_subcategory=specific['subcategory'],match_type='suggestion',
@@ -519,4 +554,6 @@ def classify_transactions(df, memory_df):
             "confidence": confidence,
         })
 
-    return pd.concat([df.reset_index(drop=True), pd.DataFrame(suggestions)], axis=1)
+    result = pd.concat([df.reset_index(drop=True), pd.DataFrame(suggestions)], axis=1)
+    result.attrs.update(df.attrs)
+    return result

@@ -385,7 +385,7 @@ class RevolutBusinessParseError(ValueError):
     """A recognized business statement failed reconciliation."""
 
 
-def _parse_revolut_business_pdf_text(text):
+def _parse_revolut_business_pdf_text(text, *, with_summaries=False):
     """Read day-first business statements, checking each currency summary."""
     from decimal import Decimal
 
@@ -393,7 +393,7 @@ def _parse_revolut_business_pdf_text(text):
     money = re.compile(rf"(?P<before>{sign}?)\s*(?P<currency>[\u20ac\u00a3$])\s*"
                        rf"(?P<after>{sign}?)\s*(?P<number>\d[\d ,]*\.\d{{2}})")
     date = re.compile(r"^(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})\s+(.+)$")
-    rows, summary, pending = [], {}, []
+    rows, summary, pending, summaries = [], {}, [], []
     currency = ""
     active = False
 
@@ -430,6 +430,9 @@ def _parse_revolut_business_pdf_text(text):
                     solutions.append(signed)
         if len(solutions) != 1:
             raise RevolutBusinessParseError("Revolut business transactions do not reconcile unambiguously")
+        summaries.append(dict(currency=currency, opening_balance=summary['Opening balance'],
+            money_in=summary['Money in'], money_out=abs(summary['Money out']),
+            closing_balance=summary['Closing balance'], transaction_count=len(pending)))
         for index, (parsed_date, description, _, _) in enumerate(pending):
             rows.append([parsed_date, description, solutions[0][index], currency, "statement row symbol"])
 
@@ -482,7 +485,7 @@ def _parse_revolut_business_pdf_text(text):
             raise RevolutBusinessParseError("Invalid Revolut business transaction date") from exc
         pending.append((parsed_date, description, amount, balance))
     finish()
-    return rows
+    return (rows, summaries) if with_summaries else rows
 
 
 def _parse_revolut_pdf_text(text):
@@ -1159,6 +1162,18 @@ def extract_statement_balance(uploaded_file, file_name=""):
         if "Revolut Bank UAB" in text and "Выписка со счета" in text:
             from revolut_localized import parse
             return parse(pages).attrs["statement_balance"]
+        if ('Revolut Bank UAB' in text and 'Transactions from ' in text
+                and 'Date (UTC) Description Money out Money in Balance' in text):
+            from revolut_business_context import bind_summary
+            rows, summaries = _parse_revolut_business_pdf_text(text, with_summaries=True)
+            frame = _frame_from_pdf_rows(rows)
+            bind_summary(pages, frame, summaries)
+            return frame.attrs['statement_balance']
+        if 'CITI' in text.upper() and 'AADVANTAGE' in text.upper():
+            from citi_card_summary import verified as verified_card
+            normal = verified_card(text, _parse_credit_card_pdf_text(text))
+            if normal is not None:
+                return normal[1]
         if is_cnb(text):
             return parse_cnb(pages, pdf.metadata).attrs['statement_balance']
         if "Bank of Cyprus" in text or "BankOfCyprus" in text or "BCYPCY2N" in text:
@@ -1636,6 +1651,13 @@ def parse_pdf(uploaded_file):
                     from revolut_localized import parse
                     return parse(pages)
                 elif "Revolut Bank" in text or "Account transactions from" in text:
+                    if ('Revolut Bank UAB' in text and 'Account statement' in text and 'Transactions from ' in text and
+                            'Date (UTC) Description Money out Money in Balance' in text):
+                        from revolut_business_context import bind_summary
+                        rows, summaries = _parse_revolut_business_pdf_text(text, with_summaries=True)
+                        frame = _frame_from_pdf_rows(rows)
+                        bind_summary(pages, frame, summaries)
+                        return frame
                     rows = _parse_revolut_pdf_text(text)
                     diagnostics = _revolut_status_counts(text)
                     from revolut_account_context import recognized, source_context
@@ -1679,6 +1701,9 @@ def parse_pdf(uploaded_file):
                 ):
                     rows = _parse_credit_card_pdf_text(text)
                     verified = verified_refund(text, rows)
+                    if verified is None:
+                        from citi_card_summary import verified as verified_card
+                        verified = verified_card(text, rows)
                     if verified is not None:
                         rows, balance = verified
                         frame = _frame_from_pdf_rows(rows)

@@ -84,7 +84,8 @@ def snapshot(db):
     mirrors _safra_page_accounts; no currency-only or name-only matching.
     Balance fields retain the existing balance/import selection. The displayed
     transaction date is independently selected from transaction-bearing history.
-    Only existence/counts are read from transactions, never transaction bodies.
+    Generic selection reads transaction counts. The narrowly scoped Greek wallet
+    authority additionally verifies committed source movements before deriving wallets.
     """
     storage_type = (lambda field: f'pg_typeof(b.{field})::text' if db.USING_POSTGRES
                     else f'typeof(b.{field})')
@@ -99,6 +100,8 @@ def snapshot(db):
         links = report_links(connection)
         from bprojects_report_context import report_links as bprojects_links
         currency_links = [(item[0], 'EUR') for item in links] + bprojects_links(connection)
+        from natalia_wallet_report import report_links as wallet_report_links
+        wallet_links = wallet_report_links(connection)
     finally:
         connection.close()
     currency_sql = 'currency'
@@ -108,16 +111,27 @@ def snapshot(db):
         currency_sql = "CASE " + ' '.join(
             "WHEN id=" + str(int(account_id)) + " AND COALESCE(currency,'')='' THEN 'EUR'"
             for account_id, _ in currency_links) + " ELSE currency END"
+    wallet_ids = ','.join(str(int(item[0])) for item in wallet_links)
+    physical = f'SELECT id,account_name,bank,account_number,{currency_sql} AS currency,rate_type FROM account_list'
+    wallet_filter = '1=1'
+    if wallet_links:
+        physical += f' WHERE id NOT IN ({wallet_ids})'
+        for account_id,currency in sorted({(item[0],item[1]) for item in wallet_links}):
+            # IDs are integers and currencies were validated against EUR/USD.
+            physical += (f" UNION ALL SELECT id,account_name,bank,account_number,'{currency}',"
+                         f"'{currency}/USD' FROM account_list WHERE id={int(account_id)}")
+        keys = ','.join("'"+key+"'" for _,_,key in wallet_links)  # recomputed SHA256 only
+        wallet_filter = f'(a.id NOT IN ({wallet_ids}) OR i.statement_hash IN ({keys}))'
     query = f'''
         WITH accounts AS (
-            SELECT id, account_name, bank, account_number, {currency_sql} AS currency, rate_type,
+            SELECT id, account_name, bank, account_number, currency, rate_type,
                    CASE WHEN LOWER(bank) LIKE '%safra%'
                         THEN REPLACE(UPPER(REPLACE(account_number, ' ', '')),
                              'CURRENTACCOUNT' || UPPER(currency) || '/IBAN', '')
                         ELSE account_number END AS match_number
-            FROM account_list
+            FROM ({physical}) physical
         ), candidates AS (
-            SELECT a.id AS account_id, i.id AS import_id, i.imported_at, i.transaction_count,
+            SELECT a.id AS account_id, a.currency AS account_currency, i.id AS import_id, i.imported_at, i.transaction_count,
                    EXISTS (SELECT 1 FROM classified_transactions matched
                            WHERE matched.statement_hash = i.statement_hash
                              AND matched.split_parent_id IS NULL
@@ -152,6 +166,7 @@ def snapshot(db):
                   AND {number_match}
             )
             LEFT JOIN statement_balances b ON b.statement_hash = i.statement_hash
+            WHERE {wallet_filter}
         )
         SELECT a.id AS account_id, a.account_number, a.account_name, a.bank,
                a.currency, a.rate_type, r.import_id, r.imported_at,
@@ -162,6 +177,7 @@ def snapshot(db):
                r.statement_bank, r.statement_account_name,
                r.source_rows, r.opening_storage_type, r.closing_storage_type
         FROM accounts a LEFT JOIN candidates r ON r.account_id = a.id
+            AND COALESCE(r.account_currency,'') = COALESCE(a.currency,'')
         ORDER BY a.bank, a.account_name, a.account_number, a.id
     '''
     connection = db.get_connection()

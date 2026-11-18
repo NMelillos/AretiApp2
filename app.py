@@ -5199,7 +5199,7 @@ def render_third_link_report():
 
         from latest_balances_compact import render as render_compact_balances
         import db as compact_db
-        render_compact_balances(st, compact_db)
+        render_compact_balances(st, compact_db, third_available_total=True)
         return
 
     status_slot = st.empty()

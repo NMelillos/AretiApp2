@@ -68,17 +68,31 @@ def _section_html(rows, generated_at=None,section_name='Deposits',grand=None,sho
     return table
 
 
-def compact_html(rows,generated_at=None):
+def compact_html(rows,generated_at=None,*,third_available_total=False):
     from balance_report_sections import partition,grand_total
     from latest_import_balances import align_balance_tables
     grand=grand_total(rows)
-    return align_balance_tables(''.join('<h3 style="margin:3px 0;font-size:11px;line-height:1.1">'+name+'</h3>'+_section_html(group,generated_at,name,grand,name=='Debts') for name,group in partition(rows).items()))
+    document=''.join('<h3 style="margin:3px 0;font-size:11px;line-height:1.1">'+name+'</h3>'+_section_html(group,generated_at,name,grand,name=='Debts' and not third_available_total) for name,group in partition(rows).items())
+    if third_available_total:
+        from balance_report_sections import totals, eligible, section
+        excluded=[row for row in rows if not eligible(row,section(row))]
+        missing=sum(row.get('Status')=='NO IMPORT' for row in excluded)
+        other=len(excluded)-missing
+        available=exact_sum(totals(rows).values()) if len(excluded)<len(rows) else None
+        value='$'+format(available,',.2f') if available is not None else 'NOT AVAILABLE'
+        note=f'Excludes {missing} accounts with no current imported balance.'
+        if other:note+=f' Also excludes {other} accounts without eligible USD balances.'
+        document+='<div><strong>Grand Total (available balances only): '+value+'</strong><br>'+note+'</div>'
+    return align_balance_tables(document)
 
 
-def render(st,db):
+def render(st,db,*,third_available_total=False):
     try:rows,_,_=snapshot(db)
     except Exception:
         st.error('Latest Import Balances is temporarily unavailable. Please try again.');return
     st.markdown('<div class="executive-section-title">5. Latest Import Balances</div>',unsafe_allow_html=True)
-    st.markdown(compact_html(rows),unsafe_allow_html=True)
-    st.caption('INTERIM PARTIAL REPORT: current Setup accounts; separate signed Deposits and Debts USD sums. Grand Total is available only with complete eligible USD coverage. Accounts with no approved FX rate and unverified balances remain excluded. Details: Latest Import Balances page.')
+    st.markdown(compact_html(rows,third_available_total=third_available_total),unsafe_allow_html=True)
+    if third_available_total:
+        st.caption('INTERIM PARTIAL REPORT: available eligible USD balances only; not a complete portfolio Grand Total. Accounts with no approved FX rate and unverified balances remain excluded. Details: Latest Import Balances page.')
+    else:
+        st.caption('INTERIM PARTIAL REPORT: current Setup accounts; separate signed Deposits and Debts USD sums. Grand Total is available only with complete eligible USD coverage. Accounts with no approved FX rate and unverified balances remain excluded. Details: Latest Import Balances page.')

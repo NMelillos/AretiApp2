@@ -599,12 +599,22 @@ st.markdown(
         font-weight: 800;
         text-transform: uppercase;
     }
-    .executive-section-title {
+    .executive-section-title,
+    .st-key-third_latest_import_balances button p {
         color: var(--text-main);
         font-size: 12px;
         font-weight: 800;
         line-height: 1.6;
         margin: 12px 0 6px;
+    }
+    .st-key-third_latest_import_balances button {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        text-align: left;
+    }
+    .st-key-executive_hierarchy_branch_group_balances .executive-section-title {
+        display: none;
     }
     .drill-row {
         display: grid;
@@ -5189,19 +5199,6 @@ def render_third_link_report():
         unsafe_allow_html=True,
     )
     render_third_report_session_line()
-    if st.button('Latest Import Balances', key='third_latest_import_balances'):
-        st.session_state['third_latest_balances_open'] = True
-
-    if st.session_state.get('third_latest_balances_open'):
-        if st.button('Return to THIRD REPORT', key='third_latest_balances_return'):
-            st.session_state['third_latest_balances_open'] = False
-            st.rerun()
-
-        from latest_balances_compact import render as render_compact_balances
-        import db as compact_db
-        render_compact_balances(st, compact_db, third_available_total=True)
-        return
-
     status_slot = st.empty()
     status_slot.info("Loading report data...")
 
@@ -5351,6 +5348,27 @@ def render_third_link_report():
     )
     status_slot.empty()
     _perf_log("third_link.total", total_started)
+
+    st.button(
+        "**5. Latest Import Balances**",
+        key="third_latest_import_balances",
+        help="Collapse" if st.session_state.get("third_latest_balances_open") else "Open",
+        on_click=_set_executive_selection,
+        args=("third_latest_balances", True),
+        kwargs={"selection_key": "third_latest_balances_open", "clear_selection_keys": []},
+    )
+    if st.session_state.get("third_latest_balances_open"):
+        with st.container(key="executive_hierarchy_branch_group_balances"):
+            from latest_balances_compact import render as render_compact_balances
+            import db as compact_db
+            render_compact_balances(st, compact_db, third_available_total=True)
+            st.button(
+                "Close",
+                key="close_income_charity_analysis_third_balances",
+                help="Close Latest Import Balances",
+                on_click=_clear_executive_selections,
+                args=("third_latest_balances_open",),
+            )
 
 
 if is_third_link_report_request():

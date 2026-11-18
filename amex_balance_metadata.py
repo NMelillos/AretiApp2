@@ -22,8 +22,8 @@ def recognized(content):
         first='\n'.join(p.extract_text() or '' for p in document.pages[:2])
     return 'Business Platinum Card' in first and 'Account Ending' in first and 'americanexpress.com' in first.lower()
 
-def parse(content):
-    pages=texts(content);text='\n'.join(pages)
+def parse(content, *, pages=None):
+    pages=texts(content) if pages is None else pages;text='\n'.join(pages)
     if ('Screen Reader Optimized version' not in pages[0] or 'Business Platinum Card' not in pages[0]
         or 'www.americanexpress.com' not in text):raise ValueError('Use the verified AMEX Screen Reader Optimized PDF for balances only.')
     def one(pattern):
@@ -152,9 +152,13 @@ def record(db,content,filename,csv_content,actor):
     finally:conn.close()
 
 def render(st,content,filename):
+    from amex_statement import render as render_pair
+    return render_pair(st,content,filename)
+
+def render_recovery(st,content,filename,csv_file=None):
     digest=sha256(content).hexdigest()
     st.info('Use the Screen Reader Optimized PDF. AMEX PDF: balance/date metadata only. Continue using CSV for transactions. Upload the corresponding already-imported original CSV as account identity evidence only.')
-    evidence=st.file_uploader('Already-imported AMEX CSV — identity evidence only; no transactions imported',type=['csv'],key='amex_balance_csv_'+digest)
+    evidence=csv_file if csv_file is not None else st.file_uploader('Already-imported AMEX CSV — identity evidence only; no transactions imported',type=['csv'],key='amex_balance_csv_'+digest)
     if evidence is None:
         st.button('Import AMEX Balance Metadata',key='amex_balance_record',disabled=True)
         st.caption('Upload the corresponding already-imported CSV to validate the account and enable this action. No CSV transactions are imported here.')

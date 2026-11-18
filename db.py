@@ -2271,7 +2271,7 @@ def build_statement_hash(file_bytes):
     return hashlib.sha256(file_bytes).hexdigest()
 
 
-def save_pending_transactions(df, statement_name, statement_hash, *, _connection=None):
+def save_pending_transactions(df, statement_name, statement_hash, *, _connection=None, _batch=False):
     if df.attrs.get('revolut_sections'):
         if _connection is not None:
             raise ValueError('Revolut wallets require their own atomic document boundary.')
@@ -2300,6 +2300,13 @@ def save_pending_transactions(df, statement_name, statement_hash, *, _connection
 
     inserted = 0
     duplicate_lines = 0
+    batch_rows = []
+    if _batch:
+        if _connection is None:
+            raise ValueError('Batch persistence requires an owned atomic connection.')
+        cur.execute('SELECT COUNT(*) FROM classified_transactions WHERE statement_hash=?', (statement_hash,))
+        if cur.fetchone()[0]:
+            raise ValueError('Batch source has orphaned transaction history.')
     existing_keys = _existing_transaction_line_keys(cur)
     relaxed_existing_keys = _existing_transaction_line_keys(cur, include_account=False)
     bank_level_existing_keys = _existing_transaction_line_keys(cur, include_account=None)
@@ -2360,12 +2367,13 @@ def save_pending_transactions(df, statement_name, statement_hash, *, _connection
             duplicate_lines += 1
             continue
 
-        cur.execute("SELECT COUNT(*) FROM classified_transactions WHERE row_hash = ?", (row_hash,))
-        if cur.fetchone()[0] > 0:
-            duplicate_lines += 1
-            continue
+        if not _batch:
+            cur.execute("SELECT COUNT(*) FROM classified_transactions WHERE row_hash = ?", (row_hash,))
+            if cur.fetchone()[0] > 0:
+                duplicate_lines += 1
+                continue
 
-        cur.execute("""
+        insert_query = """
             INSERT INTO classified_transactions
             (statement_hash, statement_name, row_hash, txn_date, original_description,
              normalized_description, amount, currency, rate_type, fx_rate, amount_usd,
@@ -2373,7 +2381,8 @@ def save_pending_transactions(df, statement_name, statement_hash, *, _connection
              category, subcategory, suggested_category, suggested_subcategory,
              match_type, confidence, reviewed, status, dup_flag, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?)
-        """, (
+        """
+        insert_values = (
             statement_hash,
             statement_name,
             row_hash,
@@ -2398,10 +2407,23 @@ def save_pending_transactions(df, statement_name, statement_hash, *, _connection
             float(row.get("confidence", 0) or 0),
             int(bool(row.get("dup_flag", False))),
             now,
-        ))
+        )
+        if _batch:
+            batch_rows.append(insert_values)
+        else:
+            cur.execute(insert_query, insert_values)
         inserted += 1
         seen_row_hashes.add(row_hash)
 
+    if batch_rows:
+        # Same validated rows and duplicate keys; bounded multi-row INSERTs avoid
+        # one network round trip per AMEX transaction. Other importers are unchanged.
+        prefix = insert_query.split('VALUES', 1)[0] + 'VALUES '
+        placeholders = insert_query.split('VALUES', 1)[1].strip()
+        for start in range(0, len(batch_rows), 32):
+            chunk = batch_rows[start:start+32]
+            cur.execute(prefix + ','.join(placeholders for _ in chunk),
+                        tuple(value for row in chunk for value in row))
     cur.execute("""
         UPDATE statement_imports
         SET transaction_count = ?

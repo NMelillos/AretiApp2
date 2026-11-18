@@ -1,5 +1,12 @@
 # Tuesday consolidated review candidate — NOT DEPLOYED
 
+**18 November update:** The client confirmed that the November AMEX CSV had not
+been successfully imported. The historical-import prerequisite below therefore
+does not apply to that new statement. See `AMEX_PAIR_REVIEW.md` for the completed,
+source-validated atomic new-import workflow and final regression ledger. The
+separate historical recovery safeguard remains unchanged. Scanned Fifth #5055
+remains intentionally fail-closed; its downloaded native source passes.
+
 Baseline: `199ded2c33696fea8861b293deb9aaad7e4d3cb0`.
 Branch: `codex/areti-master-tuesday-20261117`.
 This is a review candidate, not confirmation that every reported issue is closed.

@@ -38,7 +38,7 @@ def compact_model(rows,section_name='Deposits'):
     return visible,exact_sum(included),missing_rate,unverified
 
 
-def _section_html(rows, generated_at=None,section_name='Deposits',grand=None,show_grand=False):
+def _section_html(rows, generated_at=None,section_name='Deposits',grand=None,show_grand=False,available_footer=None):
     generated_at=generated_at or datetime.now(ZoneInfo('Europe/Nicosia'))
     visible,total,_,_=compact_model(rows,section_name)
     def money(value):
@@ -64,7 +64,11 @@ def _section_html(rows, generated_at=None,section_name='Deposits',grand=None,sho
     if show_grand:
         table+='<tr><th colspan="8" style="padding:2px;text-align:right">Grand Total</th><th style="padding:2px;text-align:right">'+('NOT AVAILABLE' if grand is None else format(grand,',.2f'))+'</th></tr>'
         if grand is None:table+='<tr><td colspan="9">Grand Total withheld: current Setup USD coverage is incomplete. Partial section sums are not a final total.</td></tr>'
+    if available_footer is not None:
+        value,note=available_footer
+        table+='<tr><th colspan="8" style="padding:2px;text-align:right;white-space:nowrap">Grand Total (available balances only)</th><th style="padding:2px;text-align:right;white-space:nowrap">'+value+'</th></tr>'
     table+='</tfoot></table></div>'
+    if available_footer is not None:table+='<div>'+note+'</div>'
     return table
 
 
@@ -72,7 +76,7 @@ def compact_html(rows,generated_at=None,*,third_available_total=False):
     from balance_report_sections import partition,grand_total
     from latest_import_balances import align_balance_tables
     grand=grand_total(rows)
-    document=''.join('<h3 style="margin:3px 0;font-size:11px;line-height:1.1">'+name+'</h3>'+_section_html(group,generated_at,name,grand,name=='Debts' and not third_available_total) for name,group in partition(rows).items())
+    available_footer=None
     if third_available_total:
         from balance_report_sections import totals, eligible, section
         excluded=[row for row in rows if not eligible(row,section(row))]
@@ -82,7 +86,8 @@ def compact_html(rows,generated_at=None,*,third_available_total=False):
         value='$'+format(available,',.2f') if available is not None else 'NOT AVAILABLE'
         note=f'Excludes {missing} accounts with no current imported balance.'
         if other:note+=f' Also excludes {other} accounts without eligible USD balances.'
-        document+='<div><strong>Grand Total (available balances only): '+value+'</strong><br>'+note+'</div>'
+        available_footer=(value,note)
+    document=''.join('<h3 style="margin:3px 0;font-size:11px;line-height:1.1">'+name+'</h3>'+_section_html(group,generated_at,name,grand,name=='Debts' and not third_available_total,available_footer if name=='Debts' else None) for name,group in partition(rows).items())
     return align_balance_tables(document)
 
 

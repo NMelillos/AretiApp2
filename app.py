@@ -3348,6 +3348,7 @@ def _render_executive_click_rows(
     show_header=True,
     blank_share_pct=False,
     child_branch_key=None,
+    stable_inline=False,
 ):
     arguments = locals().copy()
     import analytical_layout
@@ -3433,6 +3434,7 @@ def _render_executive_click_rows(
             header_cols[col_idx].markdown(f"<div class=\"summary-label\">{label}</div>", unsafe_allow_html=True)
 
     selection_key = selection_key or f"executive_{level}"
+    deferred_children = []
     for idx, row in enumerate(rows):
         is_total = bool(row.get("is_total"))
         is_selected = st.session_state.get(selection_key) == row["value"]
@@ -3513,12 +3515,25 @@ def _render_executive_click_rows(
                 f"<div class=\"drill-cell {css_class}{total_class}\">{formatter(row)}</div>",
                 unsafe_allow_html=True,
             )
-        if not is_total and render_child is not None and st.session_state.get(selection_key) == row["value"]:
+        if stable_inline and not is_total and render_child is not None:
+            # Reserve the same delta slot on every rerun. Render children after
+            # the parent grid so its row keys (especially TOTAL) cannot shift.
+            child_slot = st.empty()
+            if st.session_state.get(selection_key) == row["value"]:
+                deferred_children.append((child_slot, row["value"]))
+        elif not is_total and render_child is not None and st.session_state.get(selection_key) == row["value"]:
             if child_branch_key:
                 with st.container(key=child_branch_key):
                     render_child(row["value"])
             else:
                 render_child(row["value"])
+    for child_slot, value in deferred_children:
+        with child_slot.container():
+            if child_branch_key:
+                with st.container(key=child_branch_key):
+                    render_child(value)
+            else:
+                render_child(value)
     zero_rows = []
     for row in rows:
         if row.get("is_total"):
@@ -4430,6 +4445,7 @@ def _render_executive_drilldown(
     show_zero_explanations=True,
     inline_hierarchy=False,
     show_group_total=False,
+    stable_inline=False,
 ):
     visible_report_groups = visible_report_groups or []
     selected_group = _valid_executive_selection(
@@ -4633,6 +4649,7 @@ def _render_executive_drilldown(
         render_child=render_selected_group,
         inline_selection=True,
         child_branch_key="executive_hierarchy_branch_group",
+        stable_inline=stable_inline,
     )
 
 
@@ -5334,6 +5351,7 @@ def render_third_link_report():
             show_zero_explanations=True,
             show_group_total=True,
             inline_hierarchy=True,
+            stable_inline=True,
         )
         _perf_log("third_link.render_drilldown", step_started)
     else:

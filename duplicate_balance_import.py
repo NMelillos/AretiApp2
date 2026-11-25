@@ -114,10 +114,17 @@ def render_controls(st,content,filename):
     if not filename.lower().endswith('.pdf'):return
     digest=sha256(content).hexdigest()
     if st.session_state.get('balance_flexline_gate_hash')!=digest:
-        from flexline_balance_metadata import recognized as is_flexline
+        from flexline_balance_metadata import recognized as is_flexline, FlexlineValidationError
         st.session_state['balance_flexline_gate_hash']=digest
+        st.session_state.pop('balance_flexline_gate_error',None)
         try:st.session_state['balance_flexline_gate']=is_flexline(content)
+        except FlexlineValidationError as exc:
+            st.session_state['balance_flexline_gate']=False
+            st.session_state['balance_flexline_gate_error']=str(exc)
         except Exception:st.session_state['balance_flexline_gate']=False
+    if st.session_state.get('balance_flexline_gate_error'):
+        st.error(st.session_state['balance_flexline_gate_error'])
+        return True
     if st.session_state.get('balance_flexline_gate'):
         from flexline_balance_metadata import render as render_flexline
         return render_flexline(st,content,filename)

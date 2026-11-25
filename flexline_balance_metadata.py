@@ -5,6 +5,7 @@ from hashlib import sha256
 from io import BytesIO
 import json
 import re
+from flexline_region_ocr import FlexlineValidationError, evidence as region_evidence
 
 SOURCE = 'Fifth Third Flexline closing metadata only'
 ACTION = 'user-confirmed Flexline closing metadata only'
@@ -23,12 +24,21 @@ def first_page(content):
 
 
 def recognized(content):
-    text = compact(first_page(content))
+    native = first_page(content)
+    if not native.strip():
+        return region_evidence(content, SOURCE_ACCOUNT, 'WOKING WAY LLC') is not None
+    text = compact(native)
     return 'FIFTHTHIRDEQUITYFLEXLINE' in text and 'LINEOFCREDITSTATEMENT' in text
 
 
 def parse(content):
     text = first_page(content)
+    if not text.strip():
+        scanned = region_evidence(content, SOURCE_ACCOUNT, 'WOKING WAY LLC')
+        if scanned is None:
+            raise FlexlineValidationError('Use the Fifth Third Equity Flexline Line of Credit statement.')
+        return dict(source=SOURCE, **{key: scanned[key] for key in
+                    ('account_number', 'period_end', 'closing_balance')})
     if not ('FIFTHTHIRDEQUITYFLEXLINE' in compact(text)
             and 'LINEOFCREDITSTATEMENT' in compact(text)):
         raise ValueError('Use the Fifth Third Equity Flexline Line of Credit statement.')

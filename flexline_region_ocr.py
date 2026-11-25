@@ -9,12 +9,14 @@ from decimal import Decimal
 from hashlib import sha256
 from io import BytesIO
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
 import threading
+import time
 
 MONEY = r'-?(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}'
 REGIONS = {
@@ -31,6 +33,34 @@ REGIONS = {
 }
 _CACHE = OrderedDict()
 _CACHE_LOCK = threading.Lock()
+# Cold baseline timed out per batch at 0.12 CPU; one worker took 22.42s.
+# Allow bounded cold/resource headroom with the existing scanned route's 90s cap.
+OCR_TIMEOUT = 90
+_LOG = logging.getLogger(__name__)
+
+
+def diagnostic(stage, status, started, regions=0):
+    """Operational fields only: never exception messages or OCR/source content."""
+    _LOG.warning('flexline_ocr stage=%s status=%s regions=%d elapsed_ms=%d',
+                 stage, status, regions, round((time.monotonic() - started) * 1000))
+
+
+def worker_diagnostics(stderr, count):
+    """Forward only the fixed operational schema, including on a timeout."""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode('utf-8', errors='replace')
+    for line in (stderr or '').splitlines():
+        try:
+            event = json.loads(line)
+            if (event.get('stage') in ('model_identity', 'worker_start', 'recognize', 'worker_stop', 'input_bound')
+                    and event.get('status') in ('ok', 'begin', 'error')
+                    and type(event.get('elapsed_ms')) is int
+                    and type(event.get('completed')) is int
+                    and 0 <= event['completed'] <= count):
+                _LOG.warning('flexline_ocr worker_stage=%s status=%s regions=%d completed=%d elapsed_ms=%d',
+                             event['stage'], event['status'], count, event['completed'], event['elapsed_ms'])
+        except (ValueError, AttributeError):
+            pass
 
 
 class FlexlineValidationError(ValueError):
@@ -145,32 +175,47 @@ def _extract(content, account, owner):
         if page.width * page.height * (300 / 72)**2 > 12_000_000:
             fail()
         if not LOCK.acquire(blocking=False):
+            diagnostic('lock', 'busy', time.monotonic())
             fail()
+        started = time.monotonic()
+        stage = 'render'
         try:
             image = page.to_image(resolution=300).original
+            diagnostic(stage, 'ok', started)
             with tempfile.TemporaryDirectory(prefix='areti-flexline-regions-') as folder:
-                def read(keys):
-                    files = []
-                    for key in keys:
-                        box = tuple(round(value * (image.width if i % 2 == 0 else image.height))
-                                    for i, value in enumerate(REGIONS[key]))
-                        crop = ImageOps.expand(ImageOps.grayscale(image.crop(box)), border=20, fill=255)
-                        target = Path(folder) / (key + '.png')
-                        crop.save(target)
-                        files.append(str(target))
-                    env = {key: os.environ[key] for key in ('PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP') if key in os.environ}
-                    result = subprocess.run(['node', str(Path(__file__).parent / 'fifth_ocr/read.cjs'), *files],
-                                            capture_output=True, text=True, encoding='utf-8', timeout=10, env=env)
-                    if result.returncode:
-                        fail()
-                    data = json.loads(result.stdout)
-                    if (data.get('engine') != '7.0.0'
-                            or data.get('modelHash') != '5dc5d8d640a212c9d6184921ba103b186f50e0fed9ee716c53e6b312b400d747'
-                            or len(data.get('pages', [])) != len(keys)):
-                        fail()
-                    return dict(zip(keys, data['pages']))
-                evidence = read(['issuer', 'owner'])
-                evidence.update(read(['product', 'identity']))
+                stage = 'crop'
+                keys = list(REGIONS)
+                if not 1 <= len(keys) <= 16:
+                    fail()
+                files = []
+                for key in keys:
+                    box = tuple(round(value * (image.width if i % 2 == 0 else image.height))
+                                for i, value in enumerate(REGIONS[key]))
+                    crop = ImageOps.expand(ImageOps.grayscale(image.crop(box)), border=20, fill=255)
+                    target = Path(folder) / (key + '.png')
+                    crop.save(target)
+                    files.append(str(target))
+                diagnostic(stage, 'ok', started, len(keys))
+                stage = 'subprocess'
+                worker_started = time.monotonic()
+                env = {key: os.environ[key] for key in ('PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP') if key in os.environ}
+                result = subprocess.run(['node', str(Path(__file__).parent / 'fifth_ocr/read.cjs'), '--regions', *files],
+                                        capture_output=True, text=True, encoding='utf-8', timeout=OCR_TIMEOUT, env=env)
+                diagnostic(stage, 'nonzero' if result.returncode else 'ok', worker_started, len(keys))
+                worker_diagnostics(result.stderr, len(keys))
+                if result.returncode:
+                    fail()
+                stage = 'json'
+                data = json.loads(result.stdout)
+                stage = 'model_identity'
+                if (data.get('engine') != '7.0.0'
+                        or data.get('modelHash') != '5dc5d8d640a212c9d6184921ba103b186f50e0fed9ee716c53e6b312b400d747'
+                        or not isinstance(data.get('pages'), list)
+                        or len(data['pages']) != len(keys)
+                        or not all(isinstance(value, str) for value in data['pages'])):
+                    fail()
+                evidence = dict(zip(keys, data['pages']))
+                stage = 'source_identity'
                 product, identity = normalized(evidence['product']), normalized(evidence['identity'])
                 probable = ('FLEXLINE' in product or 'LINE OF CREDIT' in identity
                             or (normalized(evidence['owner']) == owner and account in identity))
@@ -183,10 +228,17 @@ def _extract(content, account, owner):
                         or 'LINE OF CREDIT STATEMENT' not in identity
                         or f'ACCOUNT NUMBER {account} ' not in identity + ' '):
                     fail()
-                keys = list(REGIONS)[4:]
-                for offset in range(0, len(keys), 2):
-                    evidence.update(read(keys[offset:offset + 2]))
-                return validate(evidence, account, owner)
+                stage = 'source_validation'
+                validated = validate(evidence, account, owner)
+                diagnostic('complete', 'ok', started, len(keys))
+                return validated
+        except subprocess.TimeoutExpired as error:
+            worker_diagnostics(error.stderr, len(REGIONS))
+            diagnostic(stage, 'timeout', started, len(REGIONS))
+            raise
+        except Exception as error:
+            diagnostic(stage, type(error).__name__, started, len(REGIONS))
+            raise
         finally:
             LOCK.release()
 
@@ -205,7 +257,8 @@ def evidence(content, account, owner):
         if len(content) > 30_000_000:
             fail()
         value = _extract(content, account, owner)
-    except Exception:
+    except Exception as error:
+        diagnostic('evidence', type(error).__name__, time.monotonic())
         value = False
     with _CACHE_LOCK:
         _CACHE[key] = value
